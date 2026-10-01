@@ -84,7 +84,6 @@ async-trait = "0.1"
 base64 = "0.22"
 hmac = "0.12"
 sha2 = "0.10"
-fs2 = "0.4"
 # Pure-Rust host for the pinned cjs-module-lexer 2.1.0 WASM detector. Disable
 # WAT parsing because the checked-in authority is already compiled WASM.
 wasmi = { version = "0.46.0", default-features = false, features = ["std"] }

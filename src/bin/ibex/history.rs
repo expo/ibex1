@@ -7,14 +7,13 @@
 //! history is terminal-supervisor state, never engine authority.
 
 use crate::cli::HistoryMode;
-use fs2::FileExt;
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
 use std::fmt;
 #[cfg(any(test, windows))]
 use std::fs::OpenOptions;
-use std::fs::{self, File};
+use std::fs::{self, File, TryLockError};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -623,9 +622,9 @@ impl HistoryStore {
             .map_err(classify_journal_io)?;
         let start = self.clock.now();
         loop {
-            match FileExt::try_lock_exclusive(&file) {
+            match file.try_lock() {
                 Ok(()) => return Ok(HeldLock { file }),
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                Err(TryLockError::WouldBlock) => {
                     let elapsed = self.clock.now().saturating_sub(start);
                     if elapsed >= self.limits.lock_wait {
                         return Err(StoreError::LockTimeout);
@@ -634,7 +633,7 @@ impl HistoryStore {
                     self.clock
                         .sleep(remaining.min(Duration::from_millis(LOCK_POLL_MILLIS)));
                 }
-                Err(error) => return Err(StoreError::Io(error)),
+                Err(TryLockError::Error(error)) => return Err(StoreError::Io(error)),
             }
         }
     }
@@ -748,7 +747,7 @@ struct HeldLock {
 
 impl Drop for HeldLock {
     fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.file);
+        let _ = self.file.unlock();
     }
 }
 
