@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # build-hermes.sh
-# Builds Hermes from source for iOS using their native build scripts
+# Builds Hermes from source for iOS, tvOS, and macOS using their native build scripts
 #
 # Usage:
 #   ./scripts/build-hermes.sh                      # Build pinned stable Hermes release
@@ -238,8 +238,11 @@ write_profile_receipt() {
         "$(basename "$VERSION_CACHE")"
 }
 
-# iOS deployment target (minimum iOS version)
+# Minimum OS versions for each Apple slice
 export IOS_DEPLOYMENT_TARGET="15.0"
+# Not exported: clang reads TVOS_DEPLOYMENT_TARGET from the environment and
+# rejects it beside the exported XROS_DEPLOYMENT_TARGET.
+TVOS_MIN_VERSION="15.0"
 export MAC_DEPLOYMENT_TARGET="12.0"
 export XROS_DEPLOYMENT_TARGET="1.0"
 
@@ -311,6 +314,7 @@ echo "Patch identity authority: $PATCH_IDENTITY_AUTHORITY_DIGEST"
 echo "Debugger suffix: $DEBUG_SUFFIX"
 echo "Cache dir: $VERSION_CACHE"
 echo "iOS Deployment Target: $IOS_DEPLOYMENT_TARGET"
+echo "tvOS Deployment Target: $TVOS_MIN_VERSION"
 echo "Hermes Debugger: $HERMES_DEBUGGER"
 echo ""
 
@@ -470,7 +474,7 @@ else
     "$SCRIPT_DIR/apply-hermes-patches.sh" "$HERMES_SRC"
 fi
 
-echo "=== Building Hermes for iOS ==="
+echo "=== Building Hermes for Apple platforms ==="
 echo ""
 
 NUM_CORES=$(sysctl -n hw.ncpu)
@@ -498,55 +502,40 @@ cmake -S . -B build_host_hermesc -DCMAKE_BUILD_TYPE=Release \
 cmake --build ./build_host_hermesc --target hermesc -j "${NUM_CORES}"
 cmake --build ./build_host_hermesc --target hermes -j "${NUM_CORES}"
 
-# Build for iOS device
-echo ""
-echo "Building for iphoneos (arm64)..."
-cmake -S . -B build_iphoneos \
-    -DHERMES_APPLE_TARGET_PLATFORM:STRING="iphoneos" \
-    -DCMAKE_OSX_ARCHITECTURES:STRING="arm64" \
-    -DCMAKE_OSX_DEPLOYMENT_TARGET:STRING="$IOS_DEPLOYMENT_TARGET" \
-    -DHERMES_ENABLE_DEBUGGER:BOOLEAN="$HERMES_DEBUGGER" \
-    -DHERMES_ENABLE_INTL:BOOLEAN=true \
-    -DHERMES_ENABLE_LIBFUZZER:BOOLEAN=false \
-    -DHERMES_ENABLE_FUZZILLI:BOOLEAN=false \
-    -DHERMES_ENABLE_TEST_SUITE:BOOLEAN=false \
-    -DHERMES_ENABLE_BITCODE:BOOLEAN=false \
-    -DHERMES_BUILD_APPLE_FRAMEWORK:BOOLEAN=true \
-    -DHERMES_BUILD_SHARED_JSI:BOOLEAN=false \
-    -DIMPORT_HOST_COMPILERS:PATH="$PWD/build_host_hermesc/ImportHostCompilers.cmake" \
-    -DCMAKE_BUILD_TYPE=MinSizeRel
+# Build one iOS-family slice (device or simulator) into destroot/Library/Frameworks/<platform>.
+build_apple_mobile_slice() {
+    local platform="$1"
+    local archs="$2"
+    local deployment_target="$3"
+    echo ""
+    echo "Building for $platform ($archs)..."
+    cmake -S . -B "build_$platform" \
+        -DHERMES_APPLE_TARGET_PLATFORM:STRING="$platform" \
+        -DCMAKE_OSX_ARCHITECTURES:STRING="$archs" \
+        -DCMAKE_OSX_DEPLOYMENT_TARGET:STRING="$deployment_target" \
+        -DHERMES_ENABLE_DEBUGGER:BOOLEAN="$HERMES_DEBUGGER" \
+        -DHERMES_ENABLE_INTL:BOOLEAN=true \
+        -DHERMES_ENABLE_LIBFUZZER:BOOLEAN=false \
+        -DHERMES_ENABLE_FUZZILLI:BOOLEAN=false \
+        -DHERMES_ENABLE_TEST_SUITE:BOOLEAN=false \
+        -DHERMES_ENABLE_BITCODE:BOOLEAN=false \
+        -DHERMES_BUILD_APPLE_FRAMEWORK:BOOLEAN=true \
+        -DHERMES_BUILD_SHARED_JSI:BOOLEAN=false \
+        -DIMPORT_HOST_COMPILERS:PATH="$PWD/build_host_hermesc/ImportHostCompilers.cmake" \
+        -DCMAKE_BUILD_TYPE=MinSizeRel
 
-# Build bytecode include first (required dependency)
-cmake --build ./build_iphoneos --target ExtensionsBytecodeInclude -j 1
-cmake --build ./build_iphoneos --target hermesvm -j "${NUM_CORES}"
+    # Build bytecode include first (required dependency)
+    cmake --build "./build_$platform" --target ExtensionsBytecodeInclude -j 1
+    cmake --build "./build_$platform" --target hermesvm -j "${NUM_CORES}"
 
-mkdir -p destroot/Library/Frameworks/iphoneos
-cp -R ./build_iphoneos/lib/hermesvm.framework destroot/Library/Frameworks/iphoneos/
+    mkdir -p "destroot/Library/Frameworks/$platform"
+    cp -R "./build_$platform/lib/hermesvm.framework" "destroot/Library/Frameworks/$platform/"
+}
 
-# Build for iOS simulator
-echo ""
-echo "Building for iphonesimulator (arm64, x86_64)..."
-cmake -S . -B build_iphonesimulator \
-    -DHERMES_APPLE_TARGET_PLATFORM:STRING="iphonesimulator" \
-    -DCMAKE_OSX_ARCHITECTURES:STRING="x86_64;arm64" \
-    -DCMAKE_OSX_DEPLOYMENT_TARGET:STRING="$IOS_DEPLOYMENT_TARGET" \
-    -DHERMES_ENABLE_DEBUGGER:BOOLEAN="$HERMES_DEBUGGER" \
-    -DHERMES_ENABLE_INTL:BOOLEAN=true \
-    -DHERMES_ENABLE_LIBFUZZER:BOOLEAN=false \
-    -DHERMES_ENABLE_FUZZILLI:BOOLEAN=false \
-    -DHERMES_ENABLE_TEST_SUITE:BOOLEAN=false \
-    -DHERMES_ENABLE_BITCODE:BOOLEAN=false \
-    -DHERMES_BUILD_APPLE_FRAMEWORK:BOOLEAN=true \
-    -DHERMES_BUILD_SHARED_JSI:BOOLEAN=false \
-    -DIMPORT_HOST_COMPILERS:PATH="$PWD/build_host_hermesc/ImportHostCompilers.cmake" \
-    -DCMAKE_BUILD_TYPE=MinSizeRel
-
-# Build bytecode include first (required dependency)
-cmake --build ./build_iphonesimulator --target ExtensionsBytecodeInclude -j 1
-cmake --build ./build_iphonesimulator --target hermesvm -j "${NUM_CORES}"
-
-mkdir -p destroot/Library/Frameworks/iphonesimulator
-cp -R ./build_iphonesimulator/lib/hermesvm.framework destroot/Library/Frameworks/iphonesimulator/
+build_apple_mobile_slice iphoneos "arm64" "$IOS_DEPLOYMENT_TARGET"
+build_apple_mobile_slice iphonesimulator "x86_64;arm64" "$IOS_DEPLOYMENT_TARGET"
+build_apple_mobile_slice appletvos "arm64" "$TVOS_MIN_VERSION"
+build_apple_mobile_slice appletvsimulator "x86_64;arm64" "$TVOS_MIN_VERSION"
 
 # Build for macOS
 echo ""
@@ -587,13 +576,15 @@ cp API/hermes/cdp/*.h destroot/include/hermes/cdp/
 mkdir -p destroot/include/jsi
 cp API/jsi/jsi/*.h destroot/include/jsi/
 
-# Create xcframework from iOS, simulator, and macOS
+# Create xcframework from the iOS, tvOS, and macOS slices
 echo ""
 echo "Creating xcframework..."
 mkdir -p destroot/Library/Frameworks/universal
 xcodebuild -create-xcframework \
     -framework "destroot/Library/Frameworks/iphoneos/hermesvm.framework" \
     -framework "destroot/Library/Frameworks/iphonesimulator/hermesvm.framework" \
+    -framework "destroot/Library/Frameworks/appletvos/hermesvm.framework" \
+    -framework "destroot/Library/Frameworks/appletvsimulator/hermesvm.framework" \
     -framework "destroot/Library/Frameworks/macosx/hermesvm.framework" \
     -output "destroot/Library/Frameworks/universal/hermesvm.xcframework"
 
