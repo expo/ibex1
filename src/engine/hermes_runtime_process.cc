@@ -28,6 +28,7 @@
 #include <unistd.h>
 
 #if defined(__APPLE__)
+#include <TargetConditionals.h>
 #include <crt_externs.h>
 #else
 extern "C" char** environ;
@@ -35,6 +36,27 @@ extern "C" char** environ;
 
 namespace {
 extern "C" uint64_t ex_hermes_current_runtime_nonce();
+
+// tvOS apps cannot create processes (the SDK marks fork/execve unavailable),
+// so every child_process spawn there takes the existing fork-failure path.
+pid_t s_forkChild() {
+#if defined(__APPLE__) && TARGET_OS_TV
+  errno = ENOSYS;
+  return -1;
+#else
+  return fork();
+#endif
+}
+
+void s_execChild(const char *path, char *const argv[], char *const envp[]) {
+#if defined(__APPLE__) && TARGET_OS_TV
+  (void)path;
+  (void)argv;
+  (void)envp;
+#else
+  execve(path, argv, envp);
+#endif
+}
 
 // @ref LLP 0008#sockets-dns-and-process — a cancellable timeout watchdog for the
 // SYNCHRONOUS child_process paths (ENG-23113: __exactExecSync /
@@ -1123,7 +1145,7 @@ void installChildProcessHostFunctions(ExactHermesRuntime* handle) {
         // `timedOut` that had been freed once a fast command returned.
         SyncTimeoutWatchdog watchdog;
 
-        pid_t pid = fork();
+        pid_t pid = s_forkChild();
         if (pid < 0) {
           close(stderrFd);
           close(stdoutPipe[0]);
@@ -1140,7 +1162,7 @@ void installChildProcessHostFunctions(ExactHermesRuntime* handle) {
           if (!cwd.empty() && chdir(cwd.c_str()) != 0) {
             _exit(127);
           }
-          execve(
+          s_execChild(
               execPlan.executable.c_str(),
               execPlan.argv.data(),
               execPlan.envp.data());
@@ -1638,7 +1660,7 @@ void installChildProcessHostFunctions(ExactHermesRuntime* handle) {
             file, spawnArgs, argv0, useShell, shellPath, cwd, envEntries,
             envPresent, -1);
 
-        pid_t pid = fork();
+        pid_t pid = s_forkChild();
         if (pid < 0) {
           close(execErrPipe[0]);
           close(execErrPipe[1]);
@@ -1719,7 +1741,7 @@ void installChildProcessHostFunctions(ExactHermesRuntime* handle) {
             }
           }
 
-          execve(execPlan.executable.c_str(), execPlan.argv.data(), execPlan.envp.data());
+          s_execChild(execPlan.executable.c_str(), execPlan.argv.data(), execPlan.envp.data());
           {
             int execErrno = errno;
             ssize_t nw = write(execErrPipe[1], &execErrno, sizeof(execErrno));
@@ -2427,7 +2449,7 @@ void installChildProcessHostFunctions(ExactHermesRuntime* handle) {
             file, spawnArgs, "", useShell, shellPath, cwd, envEntries,
             envPresent, ipcFd);
 
-        pid_t pid = fork();
+        pid_t pid = s_forkChild();
         if (pid < 0) {
           close(execErrPipe[0]);
           close(execErrPipe[1]);
@@ -2579,7 +2601,7 @@ void installChildProcessHostFunctions(ExactHermesRuntime* handle) {
             }
           }
 
-          execve(execPlan.executable.c_str(), execPlan.argv.data(), execPlan.envp.data());
+          s_execChild(execPlan.executable.c_str(), execPlan.argv.data(), execPlan.envp.data());
           // exec failed - write errno to parent via the error pipe
           {
             int execErrno = errno;

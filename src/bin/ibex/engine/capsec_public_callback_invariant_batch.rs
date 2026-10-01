@@ -768,7 +768,11 @@ fn artifact_object_identity(path: &std::path::Path) -> capsec_semantics::model::
         use std::os::unix::fs::MetadataExt as _;
         let metadata = file.metadata().expect("inspect embedder artifact identity");
         ObjectIdentity {
-            platform: if cfg!(any(target_os = "macos", target_os = "ios")) {
+            platform: if cfg!(any(
+                target_os = "macos",
+                target_os = "ios",
+                target_os = "tvos"
+            )) {
                 ObjectPlatform::Apple
             } else if cfg!(target_os = "android") {
                 ObjectPlatform::Android
@@ -840,6 +844,7 @@ fn embedder_runtime_target_triple() -> String {
     let suffix = match std::env::consts::OS {
         "macos" => "apple-darwin",
         "ios" => "apple-ios",
+        "tvos" => "apple-tvos",
         "linux" => "unknown-linux-gnu",
         "android" => "linux-android",
         "windows" => "pc-windows-msvc",

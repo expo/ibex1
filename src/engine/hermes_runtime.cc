@@ -7767,8 +7767,9 @@ extern "C" int32_t ex_hermes_engine_binary_path(char* out, size_t out_len) {
 #endif
 }
 
-#if defined(__APPLE__) && TARGET_OS_IOS
-// Private Rust/C++ bridge for iOS' descriptor-to-mapped-code proof. iOS does
+#if defined(__APPLE__) && (TARGET_OS_IOS || TARGET_OS_TV)
+// Private Rust/C++ bridge for iOS' descriptor-to-mapped-code proof (also used
+// on tvOS, which shares the iOS process model). iOS does
 // not expose macOS libproc mapped-vnode observations, so the decisive join is
 // a byte comparison between the exact O_NOFOLLOW descriptor Rust hashes and
 // every file-backed r-x segment in the image that supplies makeHermesRuntime.
@@ -8404,6 +8405,9 @@ static bool rootGlobalTargetApplies(
   if (std::strcmp(target, "apple") == 0) return true;
 #if TARGET_OS_IOS
   if (std::strcmp(target, "ios") == 0) return true;
+#endif
+#if TARGET_OS_TV
+  if (std::strcmp(target, "tvos") == 0) return true;
 #endif
 #endif
   return false;

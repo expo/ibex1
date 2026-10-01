@@ -67,7 +67,7 @@ fn package_fixture_binding(
             "hostBound": true,
         },
         "object": {
-            "platform": if cfg!(any(target_os = "macos", target_os = "ios")) {
+            "platform": if cfg!(any(target_os = "macos", target_os = "ios", target_os = "tvos")) {
                 "apple"
             } else {
                 "unix"
@@ -511,8 +511,7 @@ module.exports = { marker: 'v2', executions: globalThis.__memoV2Executions };"#,
         "{result}"
     );
     assert_eq!(
-        result["allowedLocator"]["code"],
-        "ERR_IBEX_IMPORT_DENIED",
+        result["allowedLocator"]["code"], "ERR_IBEX_IMPORT_DENIED",
         "{result}"
     );
     assert_eq!(result["rootExecutions"], 1, "{result}");

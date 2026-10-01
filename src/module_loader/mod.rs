@@ -3411,7 +3411,11 @@ fn package_tree_integrity_and_source_unix(
     ) -> Result<capsec_semantics::model::ObjectIdentity> {
         use capsec_semantics::model::{NonEmptyString, ObjectIdentity, ObjectPlatform};
         Ok(ObjectIdentity {
-            platform: if cfg!(any(target_os = "macos", target_os = "ios")) {
+            platform: if cfg!(any(
+                target_os = "macos",
+                target_os = "ios",
+                target_os = "tvos"
+            )) {
                 ObjectPlatform::Apple
             } else if cfg!(target_os = "android") {
                 ObjectPlatform::Android
@@ -3428,7 +3432,7 @@ fn package_tree_integrity_and_source_unix(
     fn verification_generation(fd: RawFd) -> Result<capsec_semantics::model::NonEmptyString> {
         use capsec_semantics::model::NonEmptyString;
 
-        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        #[cfg(any(target_os = "macos", target_os = "ios", target_os = "tvos"))]
         {
             let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
             if unsafe { libc::fstat(fd, status.as_mut_ptr()) } != 0 {
@@ -3448,7 +3452,7 @@ fn package_tree_integrity_and_source_unix(
             NonEmptyString::new("retained-descriptor-v1").map_err(anyhow::Error::msg)
         }
 
-        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "tvos")))]
         {
             let _ = fd;
             NonEmptyString::new("retained-descriptor-v1").map_err(anyhow::Error::msg)
@@ -3508,7 +3512,7 @@ fn package_tree_integrity_and_source_unix(
 
         #[cfg(any(target_os = "linux", target_os = "android"))]
         let link_flags = libc::O_PATH | libc::O_CLOEXEC | libc::O_NOFOLLOW;
-        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        #[cfg(any(target_os = "macos", target_os = "ios", target_os = "tvos"))]
         // O_SYMLINK is itself the Apple no-follow contract for opening the
         // link object. Combining it with O_NOFOLLOW makes openat reject the
         // symlink with ELOOP instead of returning its descriptor.
@@ -3517,7 +3521,8 @@ fn package_tree_integrity_and_source_unix(
             target_os = "linux",
             target_os = "android",
             target_os = "macos",
-            target_os = "ios"
+            target_os = "ios",
+            target_os = "tvos"
         )))]
         {
             return Err(ordinary_error)
@@ -3528,7 +3533,8 @@ fn package_tree_integrity_and_source_unix(
             target_os = "linux",
             target_os = "android",
             target_os = "macos",
-            target_os = "ios"
+            target_os = "ios",
+            target_os = "tvos"
         ))]
         {
             let link_fd = unsafe { libc::openat(directory_fd, name.as_ptr(), link_flags) };
@@ -5739,7 +5745,11 @@ mod tests {
         use std::os::unix::fs::MetadataExt;
         let metadata = std::fs::metadata(path).unwrap();
         ObjectIdentity {
-            platform: if cfg!(any(target_os = "macos", target_os = "ios")) {
+            platform: if cfg!(any(
+                target_os = "macos",
+                target_os = "ios",
+                target_os = "tvos"
+            )) {
                 ObjectPlatform::Apple
             } else if cfg!(target_os = "android") {
                 ObjectPlatform::Android
@@ -5757,7 +5767,11 @@ mod tests {
         use std::os::unix::fs::MetadataExt;
         let metadata = std::fs::symlink_metadata(path).unwrap();
         ObjectIdentity {
-            platform: if cfg!(any(target_os = "macos", target_os = "ios")) {
+            platform: if cfg!(any(
+                target_os = "macos",
+                target_os = "ios",
+                target_os = "tvos"
+            )) {
                 ObjectPlatform::Apple
             } else if cfg!(target_os = "android") {
                 ObjectPlatform::Android
@@ -8795,7 +8809,7 @@ if (globalThis.require('/src/entry.js?url') !== 42 ||
             1,
             "hard-link spellings must not duplicate an exact object guard"
         );
-        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        #[cfg(any(target_os = "macos", target_os = "ios", target_os = "tvos"))]
         assert!(
             matches!(
                 source_rows[0].verification_generation.as_str(),
@@ -8805,7 +8819,7 @@ if (globalThis.require('/src/entry.js?url') !== 42 ||
                 .as_str()
                 .starts_with("apple-st-gen:")
         );
-        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "tvos")))]
         assert_eq!(
             source_rows[0].verification_generation.as_str(),
             "retained-descriptor-v1"

@@ -2052,8 +2052,8 @@ fn main() {
     if dev_composition_abi_enabled {
         build.define("IBEX_DEV_COMPOSITION_ABI", None);
     }
-    if target_os == "ios" {
-        // iOS has no public libproc mapped-vnode query. The helper parses the
+    if target_os == "ios" || target_os == "tvos" {
+        // iOS and tvOS have no public libproc mapped-vnode query. The helper parses the
         // exact O_NOFOLLOW descriptor and compares its selected Mach-O slice
         // to the mapped r-x segments containing the Hermes factory.
         // @ref LLP 0035#platform-mapping-requirements
@@ -2144,11 +2144,8 @@ fn main() {
     // Note: bundled C deps (e.g. rusqlite's sqlite3) need the env var set before
     // cargo runs — see build-kernel.sh which exports MACOSX_DEPLOYMENT_TARGET.
     match target_os.as_str() {
-        "macos" => {
-            build.flag("-mmacosx-version-min=14.0");
-        }
-        "ios" => {
-            build.flag("-mios-version-min=17.0");
+        "macos" | "ios" | "tvos" => {
+            build.flag(apple_min_version_flag(&target_os));
         }
         "android" => {
             build.flag_if_supported("-fexceptions");
@@ -2186,8 +2183,8 @@ fn main() {
             let brotli_include = manifest_dir.join("vendor").join("brotli").join("include");
             build.include(&brotli_include);
         }
-        "ios" => {
-            // On iOS, CommonCrypto is available via the SDK (no OpenSSL needed)
+        "ios" | "tvos" => {
+            // On iOS and tvOS, CommonCrypto is available via the SDK (no OpenSSL needed)
             // Brotli is not available on iOS by default, so we disable it
             build.define("EXACT_NO_BROTLI", None);
             build.define("EXACT_NO_OPENSSL", None);
@@ -2421,19 +2418,15 @@ fn main() {
     build.compile("exact_hermes_runtime");
 
     // Compile native fetch and websocket (Objective-C++ using NSURLSession)
-    // These work on both macOS and iOS since they use Foundation
-    if target_os == "macos" || target_os == "ios" {
+    // These work on macOS, iOS, and tvOS since they use Foundation
+    if target_os == "macos" || target_os == "ios" || target_os == "tvos" {
         let mut fetch_build = cc::Build::new();
         fetch_build
             .file("src/engine/native_fetch_macos.mm")
             .flag("-fobjc-arc")
             .flag("-std=c++17")
             .flag("-stdlib=libc++");
-        if target_os == "macos" {
-            fetch_build.flag("-mmacosx-version-min=14.0");
-        } else {
-            fetch_build.flag("-mios-version-min=17.0");
-        }
+        fetch_build.flag(apple_min_version_flag(&target_os));
         fetch_build.compile("exact_native_fetch");
 
         let mut ws_build = cc::Build::new();
@@ -2442,11 +2435,7 @@ fn main() {
             .flag("-fobjc-arc")
             .flag("-std=c++17")
             .flag("-stdlib=libc++");
-        if target_os == "macos" {
-            ws_build.flag("-mmacosx-version-min=14.0");
-        } else {
-            ws_build.flag("-mios-version-min=17.0");
-        }
+        ws_build.flag(apple_min_version_flag(&target_os));
         ws_build.compile("exact_native_websocket");
 
         // Link frameworks
@@ -2478,7 +2467,7 @@ fn main() {
                 }
             }
         }
-        // On iOS, Hermes is linked by Xcode (via hermes.xcframework dependency)
+        // On iOS and tvOS, Hermes is linked by Xcode (via hermes.xcframework dependency)
 
         println!("cargo:rustc-link-lib=framework=Foundation");
         println!("cargo:rustc-link-lib=framework=Security");
@@ -2519,8 +2508,8 @@ fn main() {
             brotli_build.compile("brotli");
         }
 
-        if target_os == "ios" {
-            // Link libresolv for DNS on iOS too
+        if target_os == "ios" || target_os == "tvos" {
+            // Link libresolv for DNS on iOS and tvOS too
             println!("cargo:rustc-link-lib=resolv");
         }
     }
@@ -4152,6 +4141,16 @@ fn hermes_has_debugger_symbols(target_os: &str, binary_path: &Path) -> bool {
     symbols.contains("AsyncDebuggerAPIC") && symbols.contains("getLoadedScripts")
 }
 
+/// Minimum-OS flag for Apple C/C++/Objective-C++ sources, matching the
+/// deployment targets in the Exact Xcode project.
+fn apple_min_version_flag(target_os: &str) -> &'static str {
+    match target_os {
+        "macos" => "-mmacosx-version-min=14.0",
+        "tvos" => "-mtvos-version-min=17.0",
+        _ => "-mios-version-min=17.0",
+    }
+}
+
 // @ref LLP 0013#mechanism-3 — detect whether the exact linked desktop Hermes
 // artifact exports the capability-attribution bridge from patches/hermes/0003.
 // An unpatched engine degrades to the thread-local module id instead of failing
@@ -4163,7 +4162,7 @@ fn configure_defined_nm_command(
     binary_path: &Path,
 ) {
     match target_os {
-        "macos" | "ios" => {
+        "macos" | "ios" | "tvos" => {
             // Apple nm spells "external definitions only" as -g -U.
             command.args(["-g", "-U"]);
         }
@@ -4251,7 +4250,7 @@ fn should_enable_hermes_debugger(target_os: &str, hermes_binary: Option<&Path>) 
             true
         }
         None => match target_os {
-            "ios" | "android" => false,
+            "ios" | "tvos" | "android" => false,
             "macos" | "linux" => match hermes_binary {
                 Some(binary_path) if hermes_has_debugger_symbols(target_os, binary_path) => true,
                 Some(binary_path) => {

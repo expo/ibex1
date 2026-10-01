@@ -5,6 +5,7 @@
 **Systems:** Build, Engine, Crypto, CI
 **Author:** Charlie Cheever / Claude (Tuft)
 **Date:** 2026-06-13
+**Revised:** 2026-10-01 (tvOS gains a `build.rs` arm and Apple-mobile cfg gates: `ibex-runtime --lib` compiles for `aarch64-apple-tvos` and `aarch64-apple-tvos-sim`, the Hermes xcframework carries tvOS slices, and child_process spawning fails closed on tvOS; no CI row and no runtime evidence yet)
 **Revised:** 2026-07-17 (ENG-24933 adds a pinned patched no-debugger Windows Hermes source build/release bundle pipeline; Windows remains compatibility-only with pathname-reopen identity explicitly insufficient for mapped-image attestation)
 **Revised:** 2026-07-17 (ENG-24933 adds Windows x64 as an explicit unadvertised CapSec candidate and runs the complete exact-target report against the pinned patched no-debugger DLL; Windows remains compatibility-only while that report is incomplete)
 **Revised:** 2026-07-18 (LLP 0031 narrows Ibex 0.2 native source/module
@@ -44,9 +45,16 @@ TypeScript, source audit, or compatibility-evaluator support.
 
 Not everything that "runs ibex" is a separate build:
 
-- **Apple family**: macOS and iOS are wired in `build.rs`; tvOS is an intended
-  Apple-family target but has no `target_os = "tvos"` branch today `[observed]`
-  (`build.rs:787-835, 868-927`). iPadOS is covered by iOS `[inferred]`;
+- **Apple family**: macOS, iOS, and tvOS are wired in `build.rs` `[observed]`.
+  tvOS shares the iOS posture: CommonCrypto with `EXACT_PLATFORM_IOS`,
+  `EXACT_NO_OPENSSL`, and `EXACT_NO_BROTLI`; no vendored OpenSSL; Hermes linked
+  by the host Xcode project; and the iOS descriptor-to-mapped-code proof for
+  loaded-engine attestation (`src/engine/mod.rs`,
+  `src/engine/hermes_runtime.cc`). tvOS forbids `fork`/`execve`, so
+  child_process spawning reports `ENOSYS` there
+  (`src/engine/hermes_runtime_process.cc`). Rust 1.97 ships prebuilt std for
+  `aarch64-apple-tvos` and `aarch64-apple-tvos-sim` but not `x86_64-apple-tvos`,
+  so the Rust simulator archive is arm64 only `[observed]`. iPadOS is covered by iOS `[inferred]`;
   watchOS and visionOS are deferred until there is a concrete need `[inferred]`.
 - **Android**: **Android** is a distinct target (NDK cross-compile,
   Hermes/JSI from Android Maven/PREFAB artifacts) `[observed]`
@@ -70,12 +78,13 @@ matrix row.
 | Linux | yes | default defines `EXACT_NO_OPENSSL`; `openssl-crypto` enables OpenSSL linking; native networking requires libcurl >= 7.86 | wired in `build.rs` |
 | Windows | yes | `hermes_runtime_crypto_windows.cc`, `EXACT_NO_OPENSSL`, WinHTTP/Bcrypt/Ncrypt/Crypt32 | wired in `build.rs` |
 | **Android** | yes | `openssl-crypto` with vendored OpenSSL; Hermes/JSI from Android PREFAB; Java/JNI bridge for OkHttp fetch/WebSocket and Android platform/camera metadata | wired for cross-compile |
-| **tvOS** | **no** | no tvOS branch in `build.rs` | **needs work** |
+| tvOS | yes | same as iOS (`EXACT_PLATFORM_IOS`, `EXACT_NO_OPENSSL`, `EXACT_NO_BROTLI`); child_process unavailable | compiles (`--lib`); no CI row, no runtime evidence |
 
 The table is grounded in the target selection and compile/link branches in
-`build.rs` `[observed]` (`build.rs:804-1224`). tvOS still has no target arm and
-no Hermes-for-platform artifact path there. The matrix should include tvOS as a
-**known-red** row `[inferred: this keeps the product target set visible while
+`build.rs` `[observed]` (`build.rs:804-1224`). tvOS has a target arm and
+`scripts/build-hermes.sh` emits tvOS device/simulator slices, but nothing has
+run the engine on tvOS yet. The matrix should keep tvOS as a
+**known-red** row until a CI cross-compile row lands `[inferred: this keeps the product target set visible while
 implementation catches up]`. Android is no longer known-red for compile or for
 the default native fetch/WebSocket surface because it compiles
 `native_android_networking.cc` and delegates HTTP/WebSocket work to the Android
@@ -256,7 +265,8 @@ candidate declaration, or report execution alone `[observed]`
 1. Land the matrix for the five targets that build today (macOS, iOS, Android,
    Linux, Windows) + the Linux dual-profile row — immediate regression
    protection.
-2. Add tvOS (Apple-family `build.rs` arm; small) and flip from known-red.
+2. Add tvOS (Apple-family `build.rs` arm; small) and flip from known-red. The
+   `build.rs` arm and cfg gates have landed; the CI cross-compile row has not.
 3. Add Android (`build.rs` target arm + Hermes/JSI Android artifacts + NDK
    toolchain in CI) — initial compile support and native networking have landed;
    CI/emulator smoke remains.

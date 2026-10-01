@@ -7726,7 +7726,7 @@ fn object_verification_generation_for_fd(
     object_verification_generation_from_stat(&unsafe { stat.assume_init() })
 }
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "tvos"))]
 fn resolved_path_for_fd(fd: i32) -> Option<std::path::PathBuf> {
     use std::os::unix::ffi::OsStrExt;
     let mut buffer = vec![0u8; libc::PATH_MAX as usize];
@@ -7739,7 +7739,10 @@ fn resolved_path_for_fd(fd: i32) -> Option<std::path::PathBuf> {
     )))
 }
 
-#[cfg(all(unix, not(any(target_os = "macos", target_os = "ios"))))]
+#[cfg(all(
+    unix,
+    not(any(target_os = "macos", target_os = "ios", target_os = "tvos"))
+))]
 fn resolved_path_for_fd(fd: i32) -> Option<std::path::PathBuf> {
     std::fs::read_link(format!("/proc/self/fd/{fd}")).ok()
 }
@@ -7789,7 +7792,7 @@ fn object_verification_generation_from_stat(
     stat: &libc::stat,
 ) -> Option<capsec_semantics::model::NonEmptyString> {
     use capsec_semantics::model::NonEmptyString;
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "tvos"))]
     {
         // Apple documents st_gen as super-user-only. Zero is therefore not a
         // usable generation for ordinary armed execution; the inventory keeps
@@ -7800,7 +7803,7 @@ fn object_verification_generation_from_stat(
         }
         NonEmptyString::new("retained-descriptor-v1").ok()
     }
-    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "tvos")))]
     {
         let _ = stat;
         NonEmptyString::new("retained-descriptor-v1").ok()
@@ -7816,7 +7819,11 @@ fn object_identity_from_stat(stat: &libc::stat) -> Option<capsec_semantics::mode
 fn object_identity(dev: u64, ino: u64) -> Option<capsec_semantics::model::ObjectIdentity> {
     use capsec_semantics::model::{NonEmptyString, ObjectIdentity, ObjectPlatform};
     Some(ObjectIdentity {
-        platform: if cfg!(any(target_os = "macos", target_os = "ios")) {
+        platform: if cfg!(any(
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "tvos"
+        )) {
             ObjectPlatform::Apple
         } else if cfg!(target_os = "android") {
             ObjectPlatform::Android
@@ -10067,9 +10074,9 @@ pub extern "C" fn ex_host_sqlite_open_checked_fd(fd: i32, options: *const c_char
         if fd < 0 {
             return 0;
         }
-        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        #[cfg(any(target_os = "macos", target_os = "ios", target_os = "tvos"))]
         let descriptor_path = format!("/dev/fd/{fd}");
-        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "tvos")))]
         let descriptor_path = format!("/proc/self/fd/{fd}");
         let parsed = parse_sqlite_open_options(options);
         let flags = sqlite_open_flags(&parsed);

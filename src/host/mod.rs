@@ -7581,7 +7581,11 @@ fn object_identity_for_metadata(
     use capsec_semantics::model::{NonEmptyString, ObjectIdentity, ObjectPlatform};
     use std::os::unix::fs::MetadataExt;
     Ok(ObjectIdentity {
-        platform: if cfg!(any(target_os = "macos", target_os = "ios")) {
+        platform: if cfg!(any(
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "tvos"
+        )) {
             ObjectPlatform::Apple
         } else if cfg!(target_os = "android") {
             ObjectPlatform::Android

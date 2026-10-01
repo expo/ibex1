@@ -10447,7 +10447,7 @@ module.exports = JSON.stringify({
                         "hostBound": true,
                     },
                     "object": {
-                        "platform": if cfg!(any(target_os = "macos", target_os = "ios")) {
+                        "platform": if cfg!(any(target_os = "macos", target_os = "ios", target_os = "tvos")) {
                             "apple"
                         } else {
                             "unix"
@@ -10643,7 +10643,7 @@ module.exports = JSON.stringify({
                         "hostBound": true,
                     },
                     "object": {
-                        "platform": if cfg!(any(target_os = "macos", target_os = "ios")) {
+                        "platform": if cfg!(any(target_os = "macos", target_os = "ios", target_os = "tvos")) {
                             "apple"
                         } else {
                             "unix"
@@ -12995,7 +12995,7 @@ module.exports = JSON.stringify({
                         "hostBound": true,
                     },
                     "object": {
-                        "platform": if cfg!(any(target_os = "macos", target_os = "ios")) {
+                        "platform": if cfg!(any(target_os = "macos", target_os = "ios", target_os = "tvos")) {
                             "apple"
                         } else {
                             "unix"
@@ -15317,7 +15317,7 @@ module.exports = JSON.stringify({
                         "hostBound": true,
                     },
                     "object": {
-                        "platform": if cfg!(any(target_os = "macos", target_os = "ios")) {
+                        "platform": if cfg!(any(target_os = "macos", target_os = "ios", target_os = "tvos")) {
                             "apple"
                         } else {
                             "unix"
@@ -15635,7 +15635,7 @@ module.exports = JSON.stringify({
             protected.push(serde_json::json!({
                 "role": role,
                 "object": {
-                    "platform": if cfg!(any(target_os = "macos", target_os = "ios")) {
+                    "platform": if cfg!(any(target_os = "macos", target_os = "ios", target_os = "tvos")) {
                         "apple"
                     } else {
                         "unix"

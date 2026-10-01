@@ -301,9 +301,12 @@ pub fn platform() -> &'static str {
     return "win32";
     #[cfg(target_os = "ios")]
     return "ios";
+    #[cfg(target_os = "tvos")]
+    return "tvos";
     #[cfg(not(any(
         target_os = "macos",
         target_os = "ios",
+        target_os = "tvos",
         target_os = "linux",
         target_os = "android",
         target_os = "windows"

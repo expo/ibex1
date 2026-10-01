@@ -5946,7 +5946,11 @@ pub(crate) fn object_identity_for_metadata(
     use capsec_semantics::model::{NonEmptyString, ObjectPlatform};
     use std::os::unix::fs::MetadataExt;
     Ok(ObjectIdentity {
-        platform: if cfg!(any(target_os = "macos", target_os = "ios")) {
+        platform: if cfg!(any(
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "tvos"
+        )) {
             ObjectPlatform::Apple
         } else if cfg!(target_os = "android") {
             ObjectPlatform::Android
@@ -5964,7 +5968,11 @@ pub(crate) fn object_identity_for_metadata(
 fn object_identity_for_unix_stat(stat: &libc::stat) -> capsec_semantics::Result<ObjectIdentity> {
     use capsec_semantics::model::{NonEmptyString, ObjectPlatform};
     Ok(ObjectIdentity {
-        platform: if cfg!(any(target_os = "macos", target_os = "ios")) {
+        platform: if cfg!(any(
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "tvos"
+        )) {
             ObjectPlatform::Apple
         } else if cfg!(target_os = "android") {
             ObjectPlatform::Android

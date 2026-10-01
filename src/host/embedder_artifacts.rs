@@ -385,7 +385,7 @@ fn bound_volume_path_canonicalizers<'a>(
     Ok(rows)
 }
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "tvos"))]
 fn apple_volume_path_canonicalizer(path: &Path) -> Result<PathAliasCanonicalizerIdentity> {
     use std::os::unix::ffi::OsStrExt as _;
 
@@ -412,7 +412,7 @@ fn apple_volume_path_canonicalizer(path: &Path) -> Result<PathAliasCanonicalizer
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "tvos")))]
 fn apple_volume_path_canonicalizer(_path: &Path) -> Result<PathAliasCanonicalizerIdentity> {
     anyhow::bail!("an Apple object identity cannot be bound on this target")
 }
@@ -629,6 +629,7 @@ fn runtime_target_triple() -> String {
     let suffix = match std::env::consts::OS {
         "macos" => "apple-darwin",
         "ios" => "apple-ios",
+        "tvos" => "apple-tvos",
         "linux" => "unknown-linux-gnu",
         "android" => "linux-android",
         "windows" => "pc-windows-msvc",

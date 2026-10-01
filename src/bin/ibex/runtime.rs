@@ -5986,6 +5986,7 @@ fn exact_runtime_target() -> String {
     let suffix = match std::env::consts::OS {
         "macos" => "apple-darwin",
         "ios" => "apple-ios",
+        "tvos" => "apple-tvos",
         "linux" => "unknown-linux-gnu",
         "android" => "linux-android",
         "windows" => "pc-windows-msvc",
@@ -7114,7 +7115,7 @@ fn runtime_host_path_from_logical(
     Ok(result)
 }
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "tvos"))]
 fn apple_volume_path_canonicalizer(
     path: &std::path::Path,
 ) -> Result<capsec_semantics::path_alias::PathAliasCanonicalizerIdentity> {
@@ -7145,7 +7146,7 @@ fn apple_volume_path_canonicalizer(
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "tvos")))]
 fn apple_volume_path_canonicalizer(
     _path: &std::path::Path,
 ) -> Result<capsec_semantics::path_alias::PathAliasCanonicalizerIdentity> {

@@ -1438,7 +1438,10 @@ wrong.on('error', function (e) {{ out.wrong = String(e.message); done(); }});
     );
 }
 
-#[cfg(all(not(target_os = "ios"), feature = "tls-client-identity-openssl"))]
+#[cfg(all(
+    not(any(target_os = "ios", target_os = "tvos")),
+    feature = "tls-client-identity-openssl"
+))]
 #[tokio::test]
 async fn node_tls_bridge_mutual_tls_accepts_password_protected_pfx() {
     use base64::Engine as _;

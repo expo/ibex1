@@ -266,7 +266,7 @@ cli-notify = []
 # @ref LLP 0047#the-linux-ambient-network-gap-must-be-decided-not-inherited
 curl-sys = { version = "=0.4.90", default-features = false, features = ["static-curl", "ssl", "static-ssl"], optional = true }
 
-[target.'cfg(not(target_os = "ios"))'.dependencies]
+[target.'cfg(not(any(target_os = "ios", target_os = "tvos")))'.dependencies]
 openssl-sys = { version = "0.9", features = ["vendored"], optional = true }
 # rustls remains the wire TLS implementation. OpenSSL is used only to decode
 # the PKCS#12 and encrypted-PKCS#8 identity formats required by Node's `pfx`

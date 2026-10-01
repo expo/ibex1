@@ -29,9 +29,12 @@ use std::sync::OnceLock;
 extern "C" {
     fn ex_hermes_bytecode_version() -> u32;
     fn ex_hermes_engine_binary_path(out: *mut std::ffi::c_char, out_len: usize) -> i32;
-    #[cfg(all(
-        target_os = "ios",
-        not(feature = "capsec-simulator-performance-observer")
+    #[cfg(any(
+        target_os = "tvos",
+        all(
+            target_os = "ios",
+            not(feature = "capsec-simulator-performance-observer")
+        )
     ))]
     fn ibex_private_hermes_ios_verify_mapped_file_v1(
         fd: std::os::fd::RawFd,
@@ -48,7 +51,7 @@ extern "C" {
         windows
     ))]
     fn ex_hermes_engine_mapped_object(out_device: *mut u64, out_inode: *mut u64) -> i32;
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "tvos"))]
     fn ibex_private_apple_sha256_fd_v1(
         fd: std::os::fd::RawFd,
         expected_size: u64,
@@ -240,7 +243,7 @@ fn capture_engine_artifact_identity(
     })
 }
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(any(target_os = "macos", target_os = "ios", target_os = "tvos"))]
 pub(crate) fn hash_open_file_sha256(
     file: &mut std::fs::File,
     expected_size: u64,
@@ -257,7 +260,7 @@ pub(crate) fn hash_open_file_sha256(
     Ok(digest)
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "tvos")))]
 pub(crate) fn hash_open_file_sha256(
     file: &mut std::fs::File,
     _expected_size: u64,
@@ -301,7 +304,11 @@ fn engine_object_identity(
         use capsec_semantics::model::{NonEmptyString, ObjectIdentity, ObjectPlatform};
         use std::os::unix::fs::MetadataExt;
         Ok(ObjectIdentity {
-            platform: if cfg!(any(target_os = "macos", target_os = "ios")) {
+            platform: if cfg!(any(
+                target_os = "macos",
+                target_os = "ios",
+                target_os = "tvos"
+            )) {
                 ObjectPlatform::Apple
             } else if cfg!(target_os = "android") {
                 ObjectPlatform::Android
@@ -411,9 +418,12 @@ fn verify_loaded_mapping_object(
     Ok(())
 }
 
-#[cfg(all(
-    target_os = "ios",
-    not(feature = "capsec-simulator-performance-observer")
+#[cfg(any(
+    target_os = "tvos",
+    all(
+        target_os = "ios",
+        not(feature = "capsec-simulator-performance-observer")
+    )
 ))]
 fn verify_loaded_mapping_object(
     file: &std::fs::File,
@@ -448,6 +458,7 @@ fn verify_loaded_mapping_object(
     target_os = "android",
     target_os = "macos",
     target_os = "ios",
+    target_os = "tvos",
     windows
 )))]
 fn verify_loaded_mapping_object(
@@ -746,7 +757,7 @@ mod tests {
         }
     }
 
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "tvos"))]
     #[test]
     fn apple_open_file_sha256_matches_portable_digest() {
         use sha2::{Digest as _, Sha256};

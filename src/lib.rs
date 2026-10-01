@@ -56,7 +56,7 @@ use std::path::PathBuf;
 
 /// Determine runtime cache directory.
 /// - macOS: ~/Library/Caches/Exact
-/// - iOS: app's Caches directory
+/// - iOS/tvOS: app's Caches directory
 /// - Linux/Android: platform cache directory, falling back to ~/.cache/exact
 pub fn runtime_cache_dir() -> Result<PathBuf> {
     #[cfg(target_os = "macos")]
@@ -66,9 +66,9 @@ pub fn runtime_cache_dir() -> Result<PathBuf> {
         }
     }
 
-    #[cfg(target_os = "ios")]
+    #[cfg(any(target_os = "ios", target_os = "tvos"))]
     {
-        // On iOS, use the app's Caches directory
+        // On iOS and tvOS, use the app's Caches directory
         if let Some(dir) = dirs::cache_dir() {
             return Ok(dir.join("Exact"));
         }
@@ -93,6 +93,7 @@ pub fn runtime_cache_dir() -> Result<PathBuf> {
     #[cfg(not(any(
         target_os = "macos",
         target_os = "ios",
+        target_os = "tvos",
         target_os = "linux",
         target_os = "android"
     )))]
