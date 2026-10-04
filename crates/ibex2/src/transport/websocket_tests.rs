@@ -125,7 +125,7 @@ fn serve(mut s: TcpStream, saw: Sender<String>) {
         if matches!(opcode, 1 | 2) {
             message = Some((opcode, Vec::new()));
         }
-        if matches!(opcode, 0 | 1 | 2) {
+        if matches!(opcode, 0..=2) {
             let Some((_kind, whole)) = message.as_mut() else {
                 return;
             };

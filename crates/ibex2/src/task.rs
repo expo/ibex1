@@ -1514,6 +1514,9 @@ pub unsafe extern "C" fn ibex2_websocket_close(
 }
 
 /// Read `readyState`; an already-collected handle is CLOSED.
+///
+/// # Safety
+/// `state` must remain a live runtime-state pointer for this call.
 #[no_mangle]
 pub unsafe extern "C" fn ibex2_websocket_ready_state(
     state: *const RuntimeState,
@@ -1528,6 +1531,9 @@ pub unsafe extern "C" fn ibex2_websocket_ready_state(
 }
 
 /// Read the transport queue plus bytes discarded after closing.
+///
+/// # Safety
+/// `state` must remain a live runtime-state pointer for this call.
 #[no_mangle]
 pub unsafe extern "C" fn ibex2_websocket_buffered_amount(
     state: *const RuntimeState,

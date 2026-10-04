@@ -162,7 +162,10 @@ fn all_groups_preserve_the_shipping_global_insertion_order() {
 }
 
 #[cfg(feature = "websocket")]
-fn websocket_lifecycle(transport: Box<dyn crate::stdlib::websocket::SocketTransport>) {
+fn websocket_lifecycle(
+    transport: Box<dyn crate::stdlib::websocket::SocketTransport>,
+    install_blob: bool,
+) {
     let (port, seen) = crate::transport::websocket::tests::peer();
     let grants =
         crate::grant::GrantSet::parse(&format!("net.websocket ws://127.0.0.1:{port}\n")).unwrap();
@@ -171,9 +174,12 @@ fn websocket_lifecycle(transport: Box<dyn crate::stdlib::websocket::SocketTransp
         .endow(grants);
     let context = crate::bindings::Context::from_bindings(&bindings);
     let mut rt = Hermes::new(DynamicCode::Closed).expect("runtime");
-    let groups = crate::bindings::Groups::PURE
+    let mut groups = crate::bindings::Groups::PURE
         | crate::bindings::Groups::EVENTS
         | crate::bindings::Groups::WEBSOCKET;
+    if install_blob {
+        groups |= crate::bindings::Groups::BLOB;
+    }
     rt.install_runtime(groups, &context).unwrap();
     rt.harden().unwrap();
     rt.eval(&format!(
@@ -207,8 +213,10 @@ fn websocket_lifecycle(transport: Box<dyn crate::stdlib::websocket::SocketTransp
           socket.binaryType = 'blob';
           socket.send(new Uint8Array([1, 2, 3]));
           socket.onmessage = function (second) {{
-            socketLog.push(['blob-fallback', socket.binaryType,
-                            second.data instanceof ArrayBuffer, second.data.byteLength]);
+            socketLog.push(['binary-kind', socket.binaryType,
+                            second.data instanceof ArrayBuffer,
+                            typeof Blob === 'function' && second.data instanceof Blob,
+                            second.data.byteLength || second.data.size]);
             socket.close(3001, 'done');
           }};
         }};
@@ -254,10 +262,12 @@ fn websocket_lifecycle(transport: Box<dyn crate::stdlib::websocket::SocketTransp
         "bufferedAmount drained before the echo event"
     );
     assert_eq!(entries[6][4], true);
-    assert_eq!(
-        entries[7],
-        serde_json::json!(["blob-fallback", "blob", true, 3])
-    );
+    let expected_binary_kind = if install_blob {
+        serde_json::json!(["binary-kind", "blob", false, true, 3])
+    } else {
+        serde_json::json!(["binary-kind", "blob", true, false, 3])
+    };
+    assert_eq!(entries[7], expected_binary_kind);
     assert_eq!(
         entries[8],
         serde_json::json!(["close", 3001, "done", true, true, 3, 4])
@@ -289,7 +299,13 @@ fn websocket_lifecycle(transport: Box<dyn crate::stdlib::websocket::SocketTransp
 #[cfg(feature = "websocket")]
 #[test]
 fn javascript_websocket_lifecycle_uses_the_platform_transport() {
-    websocket_lifecycle(crate::stdlib::websocket::default_transport());
+    websocket_lifecycle(crate::stdlib::websocket::default_transport(), false);
+}
+
+#[cfg(feature = "websocket")]
+#[test]
+fn javascript_websocket_binary_type_blob_uses_the_blob_group() {
+    websocket_lifecycle(crate::stdlib::websocket::default_transport(), true);
 }
 
 #[cfg(feature = "websocket")]
@@ -373,9 +389,10 @@ fn javascript_websocket_denial_is_error_then_close_without_transport() {
 #[cfg(all(feature = "websocket", target_vendor = "apple"))]
 #[test]
 fn javascript_websocket_lifecycle_also_uses_portable_rustls_transport_on_apple() {
-    websocket_lifecycle(Box::new(
-        crate::transport::websocket::TcpSocketTransport::new(),
-    ));
+    websocket_lifecycle(
+        Box::new(crate::transport::websocket::TcpSocketTransport::new()),
+        false,
+    );
 }
 
 #[cfg(not(feature = "websocket"))]

@@ -185,12 +185,11 @@ fn group_partition_covers_the_installable_global_snapshot_exactly() {
         coverage.iter().all(|count| *count == 1),
         "each snapshot name must belong to exactly one partition: {coverage:?}"
     );
+    let ordinary = &DEFAULT_ADDED_GLOBALS[..DEFAULT_ADDED_GLOBALS.len() - 1];
+    assert_eq!(allowed_globals(crate::bindings::Groups::ALL), ordinary);
+    assert_eq!(allowed_globals(crate::bindings::Groups::DEFAULT), ordinary);
     assert_eq!(
-        allowed_globals(crate::bindings::Groups::ALL),
-        DEFAULT_ADDED_GLOBALS
-    );
-    assert_eq!(
-        allowed_globals(crate::bindings::Groups::DEFAULT),
+        allowed_globals(crate::bindings::Groups::DEFAULT | crate::bindings::Groups::WEBSOCKET),
         DEFAULT_ADDED_GLOBALS
     );
 }
