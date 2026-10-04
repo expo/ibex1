@@ -5,6 +5,8 @@
   var useEvents = typeof global.EventTarget === "function" && typeof global.Event === "function";
   var fireTrustedEvent = global.__ibex2_fire_trusted_event;
   delete global.__ibex2_fire_trusted_event;
+  var setEventAbortHooks = global.__ibex2_set_event_abort_hooks;
+  delete global.__ibex2_set_event_abort_hooks;
   var report = global.console && typeof global.console.error === "function"
     ? global.console.error
     : function () {};
@@ -177,5 +179,7 @@
   global.AbortSignal = AbortSignal;
   global.AbortController = AbortController;
   // Captured and deleted by the fetch binding before modules are evaluated.
-  global.__ibex2_abort = { own: own, subscribe: subscribe };
+  var hooks = { own: own, subscribe: subscribe };
+  if (typeof setEventAbortHooks === "function") setEventAbortHooks(hooks);
+  global.__ibex2_abort = hooks;
 })(globalThis);

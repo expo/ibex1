@@ -4,6 +4,7 @@
 
   var eventStates = new WeakMap();
   var targetStates = new WeakMap();
+  var abortSubscribe = null;
   var nativeReport = global.__ibex2_report_error;
   delete global.__ibex2_report_error;
   var reportingException = false;
@@ -202,10 +203,10 @@
     if (index < 0) return;
     entry.removed = true;
     listeners.splice(index, 1);
-    if (entry.signal && entry.abort) {
-      entry.signal.removeEventListener("abort", entry.abort);
-      entry.signal = null;
-      entry.abort = null;
+    if (entry.abortRelease) {
+      var release = entry.abortRelease;
+      entry.abortRelease = null;
+      release();
     }
   }
 
@@ -231,12 +232,15 @@
       return !entry.removed && entry.type === type && entry.callback === callback && entry.capture === capture;
     })) return;
     var entry = { type: type, callback: callback, capture: capture, once: once,
-      passive: passive, signal: null, abort: null, removed: false };
+      passive: passive, abortRelease: null, removed: false };
     state.listeners.push(entry);
     if (signal !== undefined) {
-      entry.signal = signal;
-      entry.abort = function () { removeEntry(target, entry); };
-      signal.addEventListener("abort", entry.abort, { once: true });
+      if (typeof abortSubscribe !== "function") {
+        removeEntry(target, entry);
+        throw new TypeError("AbortSignal hooks are unavailable");
+      }
+      // @ref LLP 0057.000#l3--events-abort-and-the-second-direction — signal-bound listener removal is an abort algorithm, before abort event dispatch
+      entry.abortRelease = abortSubscribe(signal, function () { removeEntry(target, entry); });
     }
   };
 
@@ -347,6 +351,13 @@
     return dispatch(target, event, true);
   }
 
+  function setAbortHooks(hooks) {
+    if (!hooks || typeof hooks.subscribe !== "function") {
+      throw new TypeError("invalid AbortSignal hooks");
+    }
+    abortSubscribe = hooks.subscribe;
+  }
+
   function defineEventHandler(name, type, errorHandler) {
     var callback = null;
     var wrapper = null;
@@ -408,6 +419,7 @@
   return {
     reportException: reportException,
     fireTrustedEvent: fireTrustedEvent,
+    setAbortHooks: setAbortHooks,
     onUnhandled: function (_, reason, promise) {
       var event = new PromiseRejectionEvent("unhandledrejection", {
         cancelable: true, promise: promise, reason: reason

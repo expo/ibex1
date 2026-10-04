@@ -321,6 +321,31 @@ fn abort_signal_uses_event_target_when_events_are_installed() {
 }
 
 #[test]
+fn signal_bound_listener_is_removed_before_abort_event_dispatch() {
+    let mut rt = with_stdlib();
+    assert_eq!(
+        rt.eval(
+            r#"
+            var controller = new AbortController();
+            var target = new EventTarget();
+            var order = [];
+            controller.signal.addEventListener('abort', function () {
+              order.push('abort');
+              target.dispatchEvent(new Event('go'));
+            });
+            target.addEventListener('go', function () { order.push('stale'); }, {
+              signal: controller.signal
+            });
+            controller.abort();
+            [order.join(','), typeof __ibex2_set_event_abort_hooks].join('|')
+            "#,
+        )
+        .unwrap(),
+        "abort|undefined"
+    );
+}
+
+#[test]
 fn abort_without_events_keeps_its_standalone_listener_and_timeout_refuses_without_timers() {
     let mut rt = Hermes::new(DynamicCode::Closed).expect("runtime");
     let context = crate::bindings::Context::new(crate::grant::GrantSet::none());
