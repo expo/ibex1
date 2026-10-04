@@ -12,7 +12,7 @@ use crate::stdlib::websocket::{
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc, Arc, Mutex,
 };
 use std::time::Duration;
@@ -78,6 +78,53 @@ enum Wire {
     Plain(TcpStream),
     Tls(Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>),
 }
+
+/// rustls keeps read and write protocol state in one connection, so the two
+/// socket halves cannot use independent `StreamOwned`s. Give a queued writer
+/// priority over the receive loop instead: otherwise a timed-out reader can
+/// immediately reacquire an unfair platform mutex forever. Linux's mutex does
+/// exactly that under contention; Darwin happened to hand the lock over.
+/// @ref LLP 0059.000#312-websocket--delegating-capability-bearing-author-required — portable framing has one serialized rustls connection
+struct SharedWire {
+    wire: Mutex<Wire>,
+    writer_waiting: AtomicBool,
+}
+
+impl SharedWire {
+    fn new(wire: Wire) -> Self {
+        Self {
+            wire: Mutex::new(wire),
+            writer_waiting: AtomicBool::new(false),
+        }
+    }
+
+    fn read(&self, out: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            while self.writer_waiting.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            let mut wire = self.wire.lock().expect("socket wire poisoned");
+            // Close the check-to-lock race. A writer which announced itself
+            // while this reader acquired the mutex gets the next turn.
+            if self.writer_waiting.load(Ordering::Acquire) {
+                drop(wire);
+                continue;
+            }
+            return wire.read(out);
+        }
+    }
+
+    fn write(
+        &self,
+        operation: impl FnOnce(&mut Wire) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        self.writer_waiting.store(true, Ordering::Release);
+        let result = operation(&mut self.wire.lock().expect("socket wire poisoned"));
+        self.writer_waiting.store(false, Ordering::Release);
+        result
+    }
+}
+
 impl Read for Wire {
     fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
         match self {
@@ -172,7 +219,7 @@ impl SocketTransport for TcpSocketTransport {
         shutdown
             .set_read_timeout(Some(Duration::from_millis(25)))
             .map_err(failed)?;
-        let wire = Arc::new(Mutex::new(wire));
+        let wire = Arc::new(SharedWire::new(wire));
         let buffered_amount = Arc::new(AtomicUsize::new(0));
         let send_state = Arc::new(Mutex::new(SendState {
             phase: OPEN,
@@ -299,7 +346,7 @@ fn handshake(
 }
 
 struct Socket {
-    wire: Arc<Mutex<Wire>>,
+    wire: Arc<SharedWire>,
     buffered: Vec<u8>,
     at: usize,
     limit: usize,
@@ -451,7 +498,7 @@ fn saturating_add(amount: &AtomicUsize, bytes: usize) {
 
 fn writer_loop(
     commands: mpsc::Receiver<Command>,
-    wire: Arc<Mutex<Wire>>,
+    wire: Arc<SharedWire>,
     shutdown: TcpStream,
     buffered: Arc<AtomicUsize>,
     state: Arc<Mutex<SendState>>,
@@ -491,33 +538,30 @@ fn writer_loop(
     }
 }
 
-fn write_message(wire: &Arc<Mutex<Wire>>, opcode: u8, payload: &[u8]) -> std::io::Result<()> {
-    let mut wire = wire.lock().expect("socket wire poisoned");
-    if payload.is_empty() {
-        wire.write_all(&masked_frame(true, opcode, payload)?)?;
-        return wire.flush();
-    }
-    for (index, chunk) in payload.chunks(FRAGMENT).enumerate() {
-        let fin = (index + 1) * FRAGMENT >= payload.len();
-        wire.write_all(&masked_frame(
-            fin,
-            if index == 0 { opcode } else { 0 },
-            chunk,
-        )?)?;
-    }
-    wire.flush()
+fn write_message(wire: &SharedWire, opcode: u8, payload: &[u8]) -> std::io::Result<()> {
+    wire.write(|wire| {
+        if payload.is_empty() {
+            wire.write_all(&masked_frame(true, opcode, payload)?)?;
+            return wire.flush();
+        }
+        for (index, chunk) in payload.chunks(FRAGMENT).enumerate() {
+            let fin = (index + 1) * FRAGMENT >= payload.len();
+            wire.write_all(&masked_frame(
+                fin,
+                if index == 0 { opcode } else { 0 },
+                chunk,
+            )?)?;
+        }
+        wire.flush()
+    })
 }
 
-fn write_one(
-    wire: &Arc<Mutex<Wire>>,
-    fin: bool,
-    opcode: u8,
-    payload: &[u8],
-) -> std::io::Result<()> {
+fn write_one(wire: &SharedWire, fin: bool, opcode: u8, payload: &[u8]) -> std::io::Result<()> {
     let frame = masked_frame(fin, opcode, payload)?;
-    let mut wire = wire.lock().expect("socket wire poisoned");
-    wire.write_all(&frame)?;
-    wire.flush()
+    wire.write(|wire| {
+        wire.write_all(&frame)?;
+        wire.flush()
+    })
 }
 
 fn masked_frame(fin: bool, opcode: u8, payload: &[u8]) -> std::io::Result<Vec<u8>> {
@@ -568,11 +612,7 @@ impl Socket {
         let mut chunk = [0u8; 16 << 10];
         while out.len() < n {
             let want = (n - out.len()).min(chunk.len());
-            let read = self
-                .wire
-                .lock()
-                .expect("socket wire poisoned")
-                .read(&mut chunk[..want]);
+            let read = self.wire.read(&mut chunk[..want]);
             match read {
                 // An abort shuts the connection down: that end is ours.
                 Ok(0) => return self.signal.check().map(|()| None),
