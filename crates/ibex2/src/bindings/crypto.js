@@ -68,6 +68,7 @@
   function algorithmName(value) {
     const name = value !== null && (typeof value === "object" || typeof value === "function")
       ? value.name : value;
+    if (name === undefined) throw new TypeError("algorithm name is required");
     return domString(name, "algorithm name").toUpperCase();
   }
   function hashName(value) {
@@ -117,7 +118,7 @@
     const result = [];
     for (const item of list) {
       const usage = domString(item, "key usage");
-      if (["encrypt", "decrypt", "sign", "verify", "deriveKey", "deriveBits"].indexOf(usage) < 0) {
+      if (["encrypt", "decrypt", "wrapKey", "unwrapKey", "sign", "verify", "deriveKey", "deriveBits"].indexOf(usage) < 0) {
         throw new TypeError("Unknown key usage " + usage);
       }
       if (result.indexOf(usage) < 0) result.push(usage);

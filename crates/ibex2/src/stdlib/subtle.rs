@@ -135,6 +135,8 @@ impl HashAlgorithm {
 pub enum KeyUsage {
     Encrypt,
     Decrypt,
+    WrapKey,
+    UnwrapKey,
     Sign,
     Verify,
     DeriveKey,
@@ -146,6 +148,8 @@ impl KeyUsage {
         match self {
             Self::Encrypt => "encrypt",
             Self::Decrypt => "decrypt",
+            Self::WrapKey => "wrapKey",
+            Self::UnwrapKey => "unwrapKey",
             Self::Sign => "sign",
             Self::Verify => "verify",
             Self::DeriveKey => "deriveKey",
@@ -157,6 +161,8 @@ impl KeyUsage {
         match value {
             "encrypt" => Ok(Self::Encrypt),
             "decrypt" => Ok(Self::Decrypt),
+            "wrapKey" => Ok(Self::WrapKey),
+            "unwrapKey" => Ok(Self::UnwrapKey),
             "sign" => Ok(Self::Sign),
             "verify" => Ok(Self::Verify),
             "deriveKey" => Ok(Self::DeriveKey),
@@ -448,7 +454,15 @@ fn import_material(
             validate_aes_length(length_bits)?;
             (
                 KeyAlgorithm::AesGcm { length_bits },
-                validate_usages(usages, &[KeyUsage::Encrypt, KeyUsage::Decrypt])?,
+                validate_usages(
+                    usages,
+                    &[
+                        KeyUsage::Encrypt,
+                        KeyUsage::Decrypt,
+                        KeyUsage::WrapKey,
+                        KeyUsage::UnwrapKey,
+                    ],
+                )?,
             )
         }
         ImportAlgorithm::Hkdf => {
@@ -470,6 +484,11 @@ fn import_material(
             )
         }
     };
+    if usages.is_empty() {
+        return Err(Error::syntax(
+            "secret keys must have at least one permitted usage",
+        ));
+    }
     Ok(CryptoKey {
         material,
         algorithm,
@@ -745,10 +764,8 @@ fn derive_material(
     length_bits: usize,
 ) -> Result<Vec<u8>> {
     require_usage(base_key, usage)?;
-    if length_bits == 0 || !length_bits.is_multiple_of(8) {
-        return Err(Error::operation(
-            "derived length must be a positive multiple of 8",
-        ));
+    if !length_bits.is_multiple_of(8) {
+        return Err(Error::operation("derived length must be a multiple of 8"));
     }
     let mut output = vec![0; length_bits / 8];
     match algorithm {
