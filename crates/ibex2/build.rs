@@ -126,7 +126,8 @@ fn main() {
         shim.file("src/engine/intl_number_format.cc")
             .file("src/engine/intl_icu.cc")
             .file("src/engine/intl_case_icu.cc")
-            .file("src/engine/intl_datetime_icu.cc");
+            .file("src/engine/intl_datetime_icu.cc")
+            .define("IBEX2_JSI_HAS_INTL", None);
     }
     if is_apple {
         shim.flag("-stdlib=libc++");

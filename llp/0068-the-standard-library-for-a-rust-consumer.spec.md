@@ -124,6 +124,28 @@ runtime-only `esm.js`, `harden.js`, and test harness. The order preserves the
 shipping runtime's established bootstrap order while filtering out unselected
 groups.
 
+The one JSI entry point is:
+
+```cpp
+Adapter adapter(runtime, context.state_ptr());
+adapter.install(groups, context.grants_ptr(), compiled_scripts, script_count);
+```
+
+Here `compiled_scripts` is the name/byte-span array produced from that exact
+`bindings::scripts(groups)` order. The adapter checks the dependency graph,
+count, names, and order before evaluating anything. It installs native host
+functions first, evaluates only precompiled bytes, materializes the selected
+endowed bindings, and returns without a checkpoint, task delivery, wait, or
+other loop action. A caller that wants a capability on its global receives it
+there (`fetch`, `fs`, `sqlite`, or `process`); Ibex's secure runtime consumes
+those endowed values during trusted bootstrap and removes them from the real
+global before module code, preserving LLP 0067 R1/R2.
+
+The pre-existing `Adapter` constructor, `set_binding`, `async_binding`,
+`storage`, `settle`, and `deliver_one` remain source-compatible for Exact2's
+current storage embedder. `storage` still returns frozen `{fs, sqlite}` and
+modifies no globals; `install` is the additive whole-surface door.
+
 Implemented 2026-09-07 (Charlie: make the bindings available in Rust and
 TypeScript; Codex). `ibex2::bindings::Context` supplies a separate Rust state
 and host-admitted grant set. Its directories and optional SQLite provider are

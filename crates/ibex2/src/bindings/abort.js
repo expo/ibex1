@@ -2,7 +2,9 @@
 (function (global) {
   "use strict";
   var signals = new WeakMap(), controllers = new WeakMap();
-  var report = global.console.error;
+  var report = global.console && typeof global.console.error === "function"
+    ? global.console.error
+    : function () {};
   function own(signal) {
     var state = signals.get(signal);
     if (!state) throw new TypeError("not an AbortSignal");
@@ -98,8 +100,11 @@
   AbortSignal.timeout = function (milliseconds) {
     var delay = +milliseconds;
     if (!isFinite(delay) || delay < 0 || delay > Number.MAX_SAFE_INTEGER) throw new TypeError("invalid timeout");
+    if (typeof global.setTimeout !== "function") {
+      throw new DOMException("AbortSignal.timeout requires the TIMERS group", "NotSupportedError");
+    }
     var signal = create();
-    setTimeout(function () { abort(signal, new DOMException("The operation timed out", "TimeoutError")); }, Math.floor(delay));
+    global.setTimeout(function () { abort(signal, new DOMException("The operation timed out", "TimeoutError")); }, Math.floor(delay));
     return signal;
   };
   AbortSignal.any = function (values) {

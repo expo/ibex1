@@ -27,6 +27,25 @@ enum : int32_t {
 
 namespace ibex2::jsi_adapter {
 namespace jsi = facebook::jsi;
+using Groups = uint16_t;
+inline constexpr Groups GROUP_PURE = 1u << 0;
+inline constexpr Groups GROUP_CONSOLE = 1u << 1;
+inline constexpr Groups GROUP_TIMERS = 1u << 2;
+inline constexpr Groups GROUP_ABORT = 1u << 3;
+inline constexpr Groups GROUP_CRYPTO = 1u << 4;
+inline constexpr Groups GROUP_FETCH = 1u << 5;
+inline constexpr Groups GROUP_STORAGE = 1u << 6;
+inline constexpr Groups GROUP_ENV = 1u << 7;
+inline constexpr Groups GROUP_SECRETS = 1u << 8;
+inline constexpr Groups GROUP_KV = 1u << 9;
+inline constexpr Groups GROUP_INTL = 1u << 10;
+
+struct CompiledScript {
+  const char* name;
+  const uint8_t* bytes;
+  size_t len;
+};
+
 Ibex2AbiValue to_abi(jsi::Runtime&, const jsi::Value&, std::vector<std::string>&);
 jsi::Value from_abi(jsi::Runtime&, Ibex2AbiValue&);
 struct HostCallResult {
@@ -57,6 +76,13 @@ public:
   // after Ibex's trusted bootstrap replaces that property. Every other
   // captured identity remains anchored to runtime construction.
   void accept_trusted_intrinsic_property(jsi::Object, const char* name);
+  // Install exactly `groups`. `scripts` must be the compiled results of
+  // bindings::scripts(groups), in that order, from the compiler belonging to
+  // this runtime's engine. Missing dependencies, wrong order, and a second
+  // install are refused. The call neither drives nor waits on the runtime.
+  // @ref LLP 0057.000#50-three-doors-one-implementation — door 2 installs into a caller-owned runtime and returns
+  void install(Groups groups, const void* grants,
+               const CompiledScript* scripts, size_t script_count);
   jsi::Function async_binding(const char* name, uint32_t op, const void* grants);
   // sqlite_factory is the completion value of precompiled bindings/sqlite.js.
   // This returns frozen {fs, sqlite}; it never modifies the global object.

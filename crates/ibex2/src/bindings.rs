@@ -1,9 +1,9 @@
 //! Installable bindings for a caller-owned JSI runtime.
 //!
 //! Rust consumers use `host::Bindings` directly. A JS embedder compiles
-//! `JSI_SOURCE` against its own JSI headers, bakes `SQLITE_SOURCE` with its
+//! `JSI_SOURCE` against its own JSI headers, bakes [`scripts`] with its
 //! engine's compiler, and creates an `Adapter` from `JSI_HEADER`. This module
-//! links no engine, installs no globals, and owns no application loop.
+//! links no engine and owns no application loop.
 //!
 //! @ref LLP 0068#2-synchronous-and-why — the consumer owns execution
 use crate::{grant::GrantSet, task::RuntimeState};
