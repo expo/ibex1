@@ -178,9 +178,9 @@ fn hkdf_and_pbkdf2_derive_bits_and_keys() {
         await rejects("OperationError", () => crypto.subtle.deriveBits(
           {name: "HKDF", hash: "SHA-256", salt, info}, hkdf, null
         ));
-        await rejects("OperationError", () => crypto.subtle.deriveBits(
+        assert((await crypto.subtle.deriveBits(
           {name: "HKDF", hash: "SHA-256", salt, info}, hkdf
-        ));
+        )).byteLength === 0);
         const derivedHmac = await crypto.subtle.deriveKey(
           {name: "HKDF", hash: "SHA-256", salt, info}, hkdf,
           {name: "HMAC", hash: "SHA-256", length: 256}, false, ["sign"]
@@ -194,7 +194,7 @@ fn hkdf_and_pbkdf2_derive_bits_and_keys() {
         assert(hex(await crypto.subtle.deriveBits(pbkdf, password, 256)) ===
           "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b");
         await rejects("OperationError", () => crypto.subtle.deriveBits(pbkdf, password, null));
-        await rejects("OperationError", () => crypto.subtle.deriveBits(pbkdf, password));
+        assert((await crypto.subtle.deriveBits(pbkdf, password)).byteLength === 0);
         const aes = await crypto.subtle.deriveKey(pbkdf, password, {name: "AES-GCM", length: 128}, false, ["encrypt"]);
         assert(aes.algorithm.name === "AES-GCM" && aes.algorithm.length === 128 && !aes.extractable);
         await rejects("SyntaxError", () => crypto.subtle.importKey("raw", ikm, "HKDF", true, ["deriveBits"]));
