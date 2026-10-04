@@ -399,7 +399,7 @@ constexpr Groups kKnownGroups = GROUP_PURE | GROUP_CONSOLE | GROUP_TIMERS |
 
 bool has(Groups groups, Groups group) { return (groups & group) == group; }
 
-void validate_groups(Groups groups) {
+void validate_groups_impl(Groups groups) {
   if ((groups & ~kKnownGroups) != 0)
     throw std::invalid_argument("unknown Ibex2 binding group bit");
   struct Requirement { Groups group; Groups required; };
@@ -615,6 +615,8 @@ void remove_global(jsi::Runtime& rt, const jsi::Object& global,
       .call(rt, global, jsi::String::createFromUtf8(rt, name));
 }
 } // namespace
+
+void validate_groups(Groups groups) { validate_groups_impl(groups); }
 
 void Adapter::install(Groups groups, const void* bindings,
                       const CompiledScript* scripts, size_t script_count) {

@@ -28,6 +28,15 @@ char *copy(const std::string &s) {
 }
 }
 extern "C" {
+int bindings_validate_groups(uint16_t groups, char **error) {
+  try {
+    ibex2::jsi_adapter::validate_groups(groups);
+    return 1;
+  } catch (const std::exception &e) {
+    if (error != nullptr) *error = copy(e.what());
+    return 0;
+  }
+}
 void *bindings_consumer_create(const void *queue, const void *bindings,
                                uint16_t groups,
                                const ibex2::jsi_adapter::CompiledScript *scripts,

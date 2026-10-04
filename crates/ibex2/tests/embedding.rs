@@ -23,6 +23,7 @@ struct CompiledScript {
 }
 
 extern "C" {
+    fn bindings_validate_groups(groups: u16, error: *mut *mut c_char) -> i32;
     fn bindings_consumer_create(
         queue: *const c_void,
         bindings: *const c_void,
@@ -370,11 +371,94 @@ fn pure_installs_exactly_its_globals_into_a_bare_runtime() {
 
 #[test]
 fn fetch_group_does_not_install_timers_or_crypto() {
-    let consumer = BareConsumer::new(Groups::PURE | Groups::ABORT | Groups::FETCH);
-    assert_eq!(
-        consumer.eval("[typeof fetch, typeof setTimeout, typeof crypto].join(',')"),
-        "function,undefined,undefined"
+    let baseline = global_names(&BareConsumer::new(Groups::empty()));
+    let installed = global_names(&BareConsumer::new(
+        Groups::PURE | Groups::ABORT | Groups::FETCH,
+    ));
+    let added: std::collections::BTreeSet<_> = installed.difference(&baseline).cloned().collect();
+    let expected: std::collections::BTreeSet<_> = [
+        "URL",
+        "URLSearchParams",
+        "Headers",
+        "TextEncoder",
+        "TextDecoder",
+        "atob",
+        "btoa",
+        "DOMException",
+        "QuotaExceededError",
+        "AbortController",
+        "AbortSignal",
+        "fetch",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .filter(|name| !baseline.contains(name))
+    .collect();
+    assert_eq!(added, expected);
+}
+
+#[test]
+fn borrowed_runtime_refuses_fetch_without_its_dependencies() {
+    let context = Context::new(GrantSet::none());
+    let mut error = std::ptr::null_mut();
+    let handle = unsafe {
+        bindings_consumer_create(
+            context.state_ptr(),
+            context.bindings_ptr(),
+            Groups::FETCH.bits(),
+            std::ptr::null(),
+            0,
+            &mut error,
+        )
+    };
+    assert!(handle.is_null(), "dependency-invalid groups were installed");
+    let error = take(error);
+    assert!(
+        error.contains("missing a dependency"),
+        "unexpected dependency error: {error}"
     );
+}
+
+#[test]
+fn rust_and_cpp_group_validation_tables_agree() {
+    let group_bits = [
+        Groups::PURE,
+        Groups::CONSOLE,
+        Groups::TIMERS,
+        Groups::ABORT,
+        Groups::CRYPTO,
+        Groups::FETCH,
+        Groups::STORAGE,
+        Groups::ENV,
+        Groups::SECRETS,
+        Groups::KV,
+        Groups::INTL,
+    ];
+    for mask in 0..(1usize << group_bits.len()) {
+        let mut groups = Groups::empty();
+        for (index, group) in group_bits.iter().enumerate() {
+            if mask & (1 << index) != 0 {
+                groups |= *group;
+            }
+        }
+        let mut error = std::ptr::null_mut();
+        let cpp_valid = unsafe { bindings_validate_groups(groups.bits(), &mut error) } == 1;
+        if !error.is_null() {
+            let _ = take(error);
+        }
+        assert_eq!(
+            cpp_valid,
+            groups.validate().is_ok(),
+            "Rust and C++ disagree for {groups:?}"
+        );
+    }
+
+    let mut error = std::ptr::null_mut();
+    let cpp_intl = unsafe { bindings_validate_groups(Groups::INTL.bits(), &mut error) } == 1;
+    if !error.is_null() {
+        let _ = take(error);
+    }
+    assert_eq!(cpp_intl, cfg!(target_os = "linux"));
 }
 
 #[test]

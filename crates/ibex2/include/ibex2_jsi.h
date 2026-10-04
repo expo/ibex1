@@ -40,6 +40,10 @@ inline constexpr Groups GROUP_SECRETS = 1u << 8;
 inline constexpr Groups GROUP_KV = 1u << 9;
 inline constexpr Groups GROUP_INTL = 1u << 10;
 
+// The dependency/availability table used by Adapter::install. Exposed so an
+// embedder can mechanically compare its public group-selection rules.
+void validate_groups(Groups groups);
+
 struct CompiledScript {
   const char* name;
   const uint8_t* bytes;

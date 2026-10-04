@@ -957,54 +957,62 @@ fn js_string_literal(text: &str) -> String {
     out
 }
 
+/// The explicit snapshot of names the ordinary runtime adds to the engine.
+/// Capability-bearing names are deliberately absent: they arrive as module
+/// parameters. Keep this as the one inventory; per-group views partition it.
+pub const DEFAULT_ADDED_GLOBALS: &[&str] = &[
+    "__ibex2_default",
+    "__ibex2_dynamic_import",
+    "__ibex2_export_all",
+    "__ibex2_fire_timer",
+    "console",
+    "setTimeout",
+    "setInterval",
+    "clearTimeout",
+    "clearInterval",
+    "performance",
+    "queueMicrotask",
+    "Headers",
+    "DOMException",
+    "QuotaExceededError",
+    "Crypto",
+    "AbortController",
+    "AbortSignal",
+    "crypto",
+    "URL",
+    "URLSearchParams",
+];
+
+const GLOBAL_PARTITION: &[(Option<crate::bindings::Groups>, &[usize])] = &[
+    (None, &[0, 1, 2]),
+    (
+        Some(crate::bindings::Groups::TIMERS),
+        &[3, 5, 6, 7, 8, 9, 10],
+    ),
+    (Some(crate::bindings::Groups::CONSOLE), &[4]),
+    (Some(crate::bindings::Groups::PURE), &[11, 12, 13, 18, 19]),
+    (Some(crate::bindings::Groups::CRYPTO), &[14, 17]),
+    (Some(crate::bindings::Groups::ABORT), &[15, 16]),
+];
+
 /// The global names a module may see for one installed group set. Anything
 /// outside this list on `globalThis` after boot is an R1 violation.
-///
-/// Capability-bearing names are deliberately absent: they arrive as parameters.
 // @ref LLP 0057.000#51-included-gated-or-a-crate — R5 follows the runtime's actual install groups
 pub fn allowed_globals(groups: crate::bindings::Groups) -> Vec<&'static str> {
-    // The lowering's helpers are runtime machinery, referenced by name from
-    // lowered module code rather than installed by door 2.
-    let mut result = vec![
-        "__ibex2_default",
-        "__ibex2_dynamic_import",
-        "__ibex2_export_all",
-    ];
-    if groups.contains(crate::bindings::Groups::PURE) {
-        result.extend([
-            "Headers",
-            "DOMException",
-            "QuotaExceededError",
-            "URL",
-            "URLSearchParams",
-            "TextEncoder",
-            "TextDecoder",
-            "atob",
-            "btoa",
-        ]);
-    }
-    if groups.contains(crate::bindings::Groups::CONSOLE) {
-        result.push("console");
-    }
-    if groups.contains(crate::bindings::Groups::TIMERS) {
-        // Called by the pump, from the engine side, once per due timer.
-        result.extend([
-            "__ibex2_fire_timer",
-            "setTimeout",
-            "setInterval",
-            "clearTimeout",
-            "clearInterval",
-            "performance",
-            "queueMicrotask",
-        ]);
-    }
-    if groups.contains(crate::bindings::Groups::ABORT) {
-        result.extend(["AbortController", "AbortSignal"]);
-    }
-    if groups.contains(crate::bindings::Groups::CRYPTO) {
-        result.extend(["Crypto", "crypto"]);
-    }
-    result
+    DEFAULT_ADDED_GLOBALS
+        .iter()
+        .enumerate()
+        .filter_map(|(index, name)| {
+            GLOBAL_PARTITION
+                .iter()
+                .find(|(_, members)| members.contains(&index))
+                .and_then(|(group, _)| {
+                    group
+                        .map_or(true, |group| groups.contains(group))
+                        .then_some(*name)
+                })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1174,6 +1182,28 @@ mod tests {
                 "{capability} must not be reachable from the global object (LLP 0067 R1)"
             );
         }
+    }
+
+    #[test]
+    fn group_partition_covers_the_default_global_snapshot_exactly() {
+        let mut coverage = vec![0usize; DEFAULT_ADDED_GLOBALS.len()];
+        for (_, members) in GLOBAL_PARTITION {
+            for &index in *members {
+                assert!(
+                    index < coverage.len(),
+                    "partition index {index} is out of range"
+                );
+                coverage[index] += 1;
+            }
+        }
+        assert!(
+            coverage.iter().all(|count| *count == 1),
+            "each snapshot name must belong to exactly one partition: {coverage:?}"
+        );
+        assert_eq!(
+            allowed_globals(crate::bindings::Groups::DEFAULT),
+            DEFAULT_ADDED_GLOBALS
+        );
     }
 
     #[test]
