@@ -283,6 +283,24 @@ fn stop_propagation_prevents_the_later_at_target_phase() {
 }
 
 #[test]
+fn event_with_an_empty_type_dispatches() {
+    let mut rt = with_stdlib();
+    assert_eq!(
+        rt.eval(
+            r#"
+            var target = new EventTarget();
+            var calls = 0;
+            target.addEventListener('', function () { calls++; });
+            var returned = target.dispatchEvent(new Event(''));
+            [returned, calls].join('|')
+            "#,
+        )
+        .unwrap(),
+        "true|1"
+    );
+}
+
+#[test]
 fn listener_exceptions_become_error_events_and_do_not_escape_dispatch() {
     let mut rt = with_stdlib();
     let observed = rt

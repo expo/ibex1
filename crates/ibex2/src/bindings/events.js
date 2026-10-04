@@ -284,8 +284,8 @@
   function dispatch(target, event, trusted) {
     targetState(target);
     var state = eventState(event);
-    if (state.dispatching || state.type === "") {
-      throw new DOMException("The event is already being dispatched or has no type", "InvalidStateError");
+    if (state.dispatching) {
+      throw new DOMException("The event is already being dispatched", "InvalidStateError");
     }
     state.trusted = trusted;
     state.dispatching = true;
