@@ -369,8 +369,9 @@ impl Context {
         self.endowment.state.set_sqlite_provider(provider)
     }
 
-    /// Worker-safe notification that schedules the embedder's loop; never
-    /// execute JS in this callback. Install before starting work.
+    /// Worker-safe notification that schedules the embedder's loop. The
+    /// callback must return without entering JS or waiting for owner-thread
+    /// work. Install before starting work.
     pub fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
         self.endowment.state.queue.set_wake(Some(wake));
     }

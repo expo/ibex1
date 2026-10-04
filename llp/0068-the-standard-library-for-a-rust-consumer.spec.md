@@ -5,7 +5,7 @@
 **Systems:** Rust Stdlib, Host ABI, CapSec, Build
 **Author:** Charlie Cheever / Claude (Fable 5)
 **Date:** 2026-08-29
-**Revised:** 2026-10-04 (§3: the last owner lease, not the last worker reference, begins shutdown and retires the wake callback); 2026-10-04 (§3: the install input is a typed, validated endowment handle; bytecode preflight checks the complete header and declared length; a failed one-shot install spends the adapter, and failure after publication requires discarding the runtime; the Hermes bootstrap order is stated as implemented); 2026-10-04 (§3: named install groups and their explicit dependency graph); 2026-09-11 (OQ2: Snapback2 0.0.24 separately qualifies and publishes the selected Linux engine-facing Intl tier; broader Intl conformance remains open); 2026-09-11 (OQ2: Linux's selected engine-facing Intl stubs are replaced by the native standard-library tier; this does not expand the no-engine Rust surface or qualify publication); 2026-09-11 (OQ2: the same transport qualified through the Linux Hermes runtime; Linux Intl and publication remain unqualified); 2026-09-07 (app-scoped filesystem and separate SQLite provider); 2026-09-06 (§2: author-required streaming and cancellation); 2026-09-03 (LLP 0057.000 plans how `Bindings` grows — one field per family, feature-gated where a family pulls a dependency or a framework, present and refusing when the feature is off — and answers OQ3 in its lane L3 with a `Receiver`; neither is built yet) 2026-08-30 (§1: `Bindings` grew `secrets` (LLP 0069) and `kv` (LLP 0070), and `Host` carries their stores beside the transport — caught by the LLP 0070 review as drift on this page; §3: the whole-surface sentence now says where the fourth and fifth bindings' tests live, caught by its round 2)
+**Revised:** 2026-10-04 (§3: wake callbacks schedule without waiting on the owner thread, and re-entrant final-owner shutdown waits only for other threads' wake invocations); 2026-10-04 (§3: the last owner lease, not the last worker reference, begins shutdown and retires the wake callback); 2026-10-04 (§3: the install input is a typed, validated endowment handle; bytecode preflight checks the complete header and declared length; a failed one-shot install spends the adapter, and failure after publication requires discarding the runtime; the Hermes bootstrap order is stated as implemented); 2026-10-04 (§3: named install groups and their explicit dependency graph); 2026-09-11 (OQ2: Snapback2 0.0.24 separately qualifies and publishes the selected Linux engine-facing Intl tier; broader Intl conformance remains open); 2026-09-11 (OQ2: Linux's selected engine-facing Intl stubs are replaced by the native standard-library tier; this does not expand the no-engine Rust surface or qualify publication); 2026-09-11 (OQ2: the same transport qualified through the Linux Hermes runtime; Linux Intl and publication remain unqualified); 2026-09-07 (app-scoped filesystem and separate SQLite provider); 2026-09-06 (§2: author-required streaming and cancellation); 2026-09-03 (LLP 0057.000 plans how `Bindings` grows — one field per family, feature-gated where a family pulls a dependency or a framework, present and refusing when the feature is off — and answers OQ3 in its lane L3 with a `Receiver`; neither is built yet) 2026-08-30 (§1: `Bindings` grew `secrets` (LLP 0069) and `kv` (LLP 0070), and `Host` carries their stores beside the transport — caught by the LLP 0070 review as drift on this page; §3: the whole-surface sentence now says where the fourth and fifth bindings' tests live, caught by its round 2)
 **Related:** LLP 0057 (§3.1 — the split, and the reason for a Rust standard library that survived: the non-JS consumer), LLP 0067 (the capability model this states in Rust), LLP 0059.000 (§4 — the families; §3.8 — the env snapshot), `rules/NOT-DOING.md` (the bar: a no-JS consumer gets the same standard library with no engine in the process)
 
 ## Summary
@@ -203,15 +203,25 @@ an unsupported value as an empty file. SQLite integers return as `bigint`.
 
 The adapter delivers at most one completion when asked; it runs no timers or
 microtask checkpoints. `Context::set_wake` schedules the caller's executor
-from a publishing worker, outside queue locks; `wait` is the blocking
-alternative. Only the owner thread touches JSI. The caller detaches the
+from a publishing worker, outside queue locks; the callback only schedules and
+returns. It never runs JavaScript and never blocks waiting for the owner
+thread; `wait` is the blocking alternative. Only the owner thread touches JSI.
+The caller detaches the
 adapter before destroying either its runtime or Rust context. Detach clears
 JS roots; retained capability functions fail closed. A `Context` holds an owner
 lease on its runtime state, and an owning Hermes runtime holds its own lease.
 Worker and completion references are not owners. Dropping the last owner clears
 and drains the wake callback before returning, begins shutdown, and cancels
-outstanding work even when a worker still holds the state; that worker cannot
-publish a completion or invoke the retired callback afterward. The
+outstanding work even when a worker still holds the state. If the last owner is
+released re-entrantly by the wake callback itself, shutdown excludes that
+thread's own claimed invocation from the wait but still waits for every other
+thread's invocation; once the callback returns, its claim is retired normally.
+That worker cannot publish a completion or invoke the retired callback
+afterward. A cross-thread synchronous dispatcher that waits for owner-thread
+work while that owner-thread work releases the last owner is unsupported: the
+owner must wait for the publisher's already-claimed invocation, while the
+publisher is waiting for the owner. The schedule-and-return contract excludes
+that cycle. The
 borrowed-runtime fixture tests installation, explicit checkpoints,
 persistence, grants and detach without the Ibex2 loader.
 
