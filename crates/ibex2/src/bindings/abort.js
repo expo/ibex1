@@ -3,6 +3,8 @@
   "use strict";
   var signals = new WeakMap(), controllers = new WeakMap();
   var useEvents = typeof global.EventTarget === "function" && typeof global.Event === "function";
+  var createTrustedEvent = global.__ibex2_create_trusted_event;
+  delete global.__ibex2_create_trusted_event;
   var report = global.console && typeof global.console.error === "function"
     ? global.console.error
     : function () {};
@@ -50,10 +52,11 @@
       var state = own(current), stopped = false;
       state.hooks.splice(0).forEach(function (hook) { if (!hook.alive || hook.alive()) hook.callback(); });
       if (useEvents) {
-        var event = new global.Event("abort");
-        // This event is fired by AbortSignal's abort algorithm, rather than
-        // constructed and dispatched by application code.
-        Object.defineProperty(event, "isTrusted", { value: true });
+        // The private factory exists only while the native installer moves
+        // from events.js to abort.js. Application code never receives it.
+        var event = typeof createTrustedEvent === "function"
+          ? createTrustedEvent("abort")
+          : new global.Event("abort");
         current.dispatchEvent(event);
         return;
       }

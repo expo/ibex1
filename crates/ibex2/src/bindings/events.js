@@ -29,6 +29,10 @@
     return state;
   }
 
+  function isTrusted() {
+    return eventState(this).trusted;
+  }
+
   function initializeEvent(event, type, init) {
     init = dictionary(init);
     eventStates.set(event, {
@@ -45,9 +49,16 @@
       currentTarget: null,
       phase: 0,
       path: [],
+      trusted: false,
       timeStamp: global.performance && typeof global.performance.now === "function"
         ? global.performance.now()
         : Date.now()
+    });
+    // Web IDL's [LegacyUnforgeable] isTrusted is an own accessor. Keep the
+    // getter shared across instances, as the platform descriptor requires.
+    Object.defineProperty(event, "isTrusted", {
+      get: isTrusted,
+      enumerable: true
     });
   }
 
@@ -67,7 +78,6 @@
     cancelable: { get: function () { return eventState(this).cancelable; }, enumerable: true },
     defaultPrevented: { get: function () { return eventState(this).canceled; }, enumerable: true },
     composed: { get: function () { return eventState(this).composed; }, enumerable: true },
-    isTrusted: { get: function () { eventState(this); return false; }, enumerable: true },
     timeStamp: { get: function () { return eventState(this).timeStamp; }, enumerable: true },
     cancelBubble: {
       get: function () { return eventState(this).stop; },
@@ -318,6 +328,12 @@
     reportException(error);
   }
 
+  function createTrustedEvent(type) {
+    var event = new Event(type);
+    eventState(event).trusted = true;
+    return event;
+  }
+
   function defineEventHandler(name, type, errorHandler) {
     var callback = null;
     var wrapper = null;
@@ -378,6 +394,7 @@
 
   return {
     reportException: reportException,
+    createTrustedEvent: createTrustedEvent,
     onUnhandled: function (_, reason, promise) {
       var event = new PromiseRejectionEvent("unhandledrejection", {
         cancelable: true, promise: promise, reason: reason

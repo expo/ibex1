@@ -9,6 +9,7 @@ use ibex2::engine::hermes::{DynamicCode, Hermes};
 
 const FILES: &[&str] = &[
     "dom/events/Event-constructors.any.js",
+    "dom/events/Event-isTrusted.any.js",
     "dom/events/EventTarget-add-remove-listener.any.js",
     "dom/events/EventTarget-addEventListener.any.js",
     "dom/events/EventTarget-constructible.any.js",
@@ -104,7 +105,7 @@ fn wpt_events_all_pass() {
         }
     }
     assert_eq!(
-        total, 75,
+        total, 76,
         "the vendored suite changed size; re-baseline deliberately"
     );
     assert!(

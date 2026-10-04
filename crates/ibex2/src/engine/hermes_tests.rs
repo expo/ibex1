@@ -298,7 +298,18 @@ fn abort_signal_uses_event_target_when_events_are_installed() {
         observed,
         "true|true|because|true|any-reason|true,abort,true,true,2,true"
     );
-    assert_eq!(rt.eval("new Event('abort').isTrusted").unwrap(), "false");
+    assert_eq!(
+        rt.eval(
+            "var e = new Event('abort'); \
+             var before = e.isTrusted; \
+             var changed; \
+             try { Object.defineProperty(e, 'isTrusted', { value: true }); changed = true; } \
+             catch (_) { changed = false; } \
+             [before, changed, e.isTrusted, typeof __ibex2_create_trusted_event].join('|')"
+        )
+        .unwrap(),
+        "false|false|false|undefined"
+    );
 }
 
 #[test]

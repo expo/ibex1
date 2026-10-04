@@ -50,6 +50,13 @@
       "fetchedOn": "2026-10-04"
     },
     {
+      "upstream": "dom/events/Event-isTrusted.any.js",
+      "local": "third_party/wpt/dom/events/Event-isTrusted.any.js",
+      "sha256": "73925cca5b100206b4070406e0666fa8516373af4a0285132af1fc40d5880084",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
       "upstream": "dom/events/EventTarget-add-remove-listener.any.js",
       "local": "third_party/wpt/dom/events/EventTarget-add-remove-listener.any.js",
       "sha256": "f1c1c806afb2a3fa88e8fc8e8c1fbbe2c1c9d3d5b7a5cc0df96680717f46f830",
@@ -140,8 +147,16 @@
       "reason": "Requires document.createElement, a closed ShadowRoot, and a five-node propagation path; Ibex's event target deliberately has no DOM tree."
     },
     {
+      "upstream": "dom/events/Event-dispatch-order-at-target.html",
+      "reason": "The unmodified HTML fixture obtains its target from document.createElement; Ibex has no Document or Element. Equivalent capture-before-bubble behavior at a plain EventTarget is covered by the native suite."
+    },
+    {
+      "upstream": "dom/events/Event-dispatch-throwing.html",
+      "reason": "The unmodified HTML fixture creates an Element and observes listener exceptions through Window.onerror; Ibex covers the same non-propagation and global error-reporting behavior on its plain EventTarget."
+    },
+    {
       "upstream": "dom/events/Event-dispatch-*.html",
-      "reason": "The remaining dispatch fixtures construct or mutate Document/Element trees, exercise activation behavior, or require multiple Window globals; none belongs to the tree-free EventTarget contract."
+      "reason": "All other dispatch fixtures construct or mutate Document/Element trees, exercise activation behavior, or require multiple Window globals; none belongs to the tree-free EventTarget contract."
     },
     {
       "upstream": "dom/abort/*.html",
