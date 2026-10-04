@@ -24,6 +24,7 @@ struct CompiledScript {
 
 extern "C" {
     fn bindings_validate_groups(groups: u16, error: *mut *mut c_char) -> i32;
+    fn bindings_expected_scripts(groups: u16, error: *mut *mut c_char) -> *mut c_char;
     fn bindings_consumer_create_uninstalled(queue: *const c_void) -> *mut c_void;
     fn bindings_consumer_install(
         handle: *mut c_void,
@@ -462,6 +463,20 @@ fn rust_and_cpp_group_validation_tables_agree() {
             groups.validate().is_ok(),
             "Rust and C++ disagree for {groups:?}"
         );
+        if groups.validate().is_ok() {
+            let mut error = std::ptr::null_mut();
+            let cpp_scripts = unsafe { bindings_expected_scripts(groups.bits(), &mut error) };
+            assert!(error.is_null(), "C++ script list refused {groups:?}");
+            assert!(!cpp_scripts.is_null(), "C++ returned no script list");
+            let cpp_scripts = take(cpp_scripts);
+            let cpp_scripts: Vec<_> = cpp_scripts.lines().collect();
+            let rust_scripts = ibex2::bindings::scripts(groups).unwrap();
+            let rust_scripts: Vec<_> = rust_scripts.iter().map(|(name, _)| *name).collect();
+            assert_eq!(
+                cpp_scripts, rust_scripts,
+                "script order differs for {groups:?}"
+            );
+        }
     }
 
     let mut error = std::ptr::null_mut();

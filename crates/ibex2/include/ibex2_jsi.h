@@ -47,6 +47,10 @@ inline constexpr Groups GROUP_INTL = 1u << 10;
 // The dependency/availability table used by Adapter::install. Exposed so an
 // embedder can mechanically compare its public group-selection rules.
 void validate_groups(Groups groups);
+// The script names Adapter::install expects, in installation order. This is
+// exposed with validate_groups so cross-language embedders can mechanically
+// verify that their compiler inputs stay in lockstep with the adapter.
+std::vector<const char*> expected_scripts(Groups groups);
 
 struct CompiledScript {
   const char* name;

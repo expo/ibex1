@@ -193,6 +193,14 @@ mod request_headers {
     }
 
     fn run_with_spec(name: &str, spec: &str, source: &str) -> Vec<String> {
+        run_with_spec_and_live_headers(name, spec, source).0
+    }
+
+    fn run_with_spec_and_live_headers(
+        name: &str,
+        spec: &str,
+        source: &str,
+    ) -> (Vec<String>, usize) {
         let project = super::common::Project::new(name);
         project.file("index.js", source);
         let mut rt = Hermes::new(DynamicCode::Closed).unwrap();
@@ -206,7 +214,8 @@ mod request_headers {
         rt.harden().unwrap();
         rt.run_entry("./index.js").unwrap();
         rt.run_to_quiescence(Duration::from_secs(30));
-        rt.drain_console().into_iter().map(|r| r.message).collect()
+        let output = rt.drain_console().into_iter().map(|r| r.message).collect();
+        (output, rt.live_header_handles_for_test())
     }
 
     fn capture(listener: TcpListener) -> thread::JoinHandle<(String, Vec<u8>)> {
@@ -496,7 +505,7 @@ mod request_headers {
     fn fetch_preserves_the_callers_headers_after_success() {
         let (listener, origin) = listener();
         let server = capture(listener);
-        let out = run_with_spec("fetch-release-success", &format!("net.fetch {origin}"), &format!(
+        let (out, live_headers) = run_with_spec_and_live_headers("fetch-release-success", &format!("net.fetch {origin}"), &format!(
             "if (typeof globalThis.__ibex2_headers_free !== 'undefined') throw new Error('free op exposed');
              const headers = new Headers({PAIRS});
              const pending = fetch('{origin}/submit', {{method:'POST', headers, body:'{{\"ok\":true}}'}});
@@ -504,6 +513,9 @@ mod request_headers {
              .then(console.log, e => console.log(e.message));"
         ));
         assert_eq!(out, ["effect-123", "ok"]);
+        // The caller's Headers and the Response headers remain. A leaked
+        // request snapshot would make this three.
+        assert_eq!(live_headers, 2);
         let (head, body) = server.join().unwrap();
         assert_authored(&head, &body);
     }
@@ -511,12 +523,15 @@ mod request_headers {
     #[test]
     fn fetch_preserves_the_callers_headers_after_rejection() {
         let (listener, origin) = listener();
-        let out = run_with_spec("fetch-release-rejection", "", &format!(
+        let (out, live_headers) = run_with_spec_and_live_headers("fetch-release-rejection", "", &format!(
             "const headers = new Headers({RECORD});
              const pending = fetch('{origin}/', {{headers}});
              pending.then(() => console.log('accepted'), e => console.log(e.message, headers.get('Idempotency-Key')));"
         ));
         assert_eq!(out, ["denied: net.fetch effect-123"]);
+        // Only the caller's Headers remains. A leaked request snapshot would
+        // make this two.
+        assert_eq!(live_headers, 1);
         assert_eq!(
             listener.accept().unwrap_err().kind(),
             std::io::ErrorKind::WouldBlock

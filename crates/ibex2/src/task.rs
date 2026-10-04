@@ -533,6 +533,11 @@ impl RuntimeState {
             .remove(&handle);
     }
 
+    #[cfg(feature = "hermes")]
+    pub(crate) fn live_headers(&self) -> usize {
+        self.headers.lock().expect("header registry poisoned").len()
+    }
+
     pub fn task_started(&self) {
         self.in_flight
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);

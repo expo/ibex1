@@ -421,7 +421,7 @@ void validate_groups_impl(Groups groups) {
 #endif
 }
 
-std::vector<const char*> expected_scripts(Groups groups) {
+std::vector<const char*> expected_scripts_impl(Groups groups) {
   std::vector<const char*> result;
   if (has(groups, GROUP_PURE)) result.push_back("headers");
   if (has(groups, GROUP_TIMERS)) result.push_back("timers");
@@ -626,6 +626,11 @@ void remove_global(jsi::Runtime& rt, const jsi::Object& global,
 } // namespace
 
 void validate_groups(Groups groups) { validate_groups_impl(groups); }
+
+std::vector<const char*> expected_scripts(Groups groups) {
+  validate_groups_impl(groups);
+  return expected_scripts_impl(groups);
+}
 
 void Adapter::install(Groups groups, const Ibex2Bindings* bindings,
                       const CompiledScript* scripts, size_t script_count) {

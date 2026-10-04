@@ -46,6 +46,20 @@ int bindings_validate_groups(uint16_t groups, char **error) {
     return 0;
   }
 }
+char *bindings_expected_scripts(uint16_t groups, char **error) {
+  try {
+    const auto scripts = ibex2::jsi_adapter::expected_scripts(groups);
+    std::string joined;
+    for (const char *script : scripts) {
+      if (!joined.empty()) joined.push_back('\n');
+      joined.append(script);
+    }
+    return copy(joined);
+  } catch (const std::exception &e) {
+    if (error != nullptr) *error = copy(e.what());
+    return nullptr;
+  }
+}
 void *bindings_consumer_create_uninstalled(const void *queue) {
   try {
     auto c = std::make_unique<Consumer>();

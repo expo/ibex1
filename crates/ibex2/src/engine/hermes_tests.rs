@@ -87,6 +87,15 @@ fn all_groups_preserve_the_shipping_global_insertion_order() {
         .into_iter()
         .filter(|name| !baseline.contains(name))
         .collect();
+    let added_set: std::collections::BTreeSet<_> = added.iter().map(String::as_str).collect();
+    let allowed_set: std::collections::BTreeSet<_> =
+        crate::loader::allowed_globals(crate::bindings::Groups::ALL)
+            .into_iter()
+            .collect();
+    assert_eq!(
+        added_set, allowed_set,
+        "the loader allowlist must describe exactly the globals installation adds"
+    );
     assert_eq!(
         added,
         [

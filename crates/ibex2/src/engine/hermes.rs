@@ -406,6 +406,18 @@ impl Hermes {
         unsafe { ibex2_hermes_collect_garbage(self.handle) == 0 }
     }
 
+    /// Number of Rust `Headers` registry entries owned by this runtime.
+    ///
+    /// Test instrumentation for checking that binding-internal snapshots are
+    /// released; applications must not use registry counts as an API.
+    #[doc(hidden)]
+    pub fn live_header_handles_for_test(&self) -> usize {
+        // SAFETY: the runtime owns this state for the lifetime of `self`.
+        let state =
+            unsafe { ibex2_hermes_state(self.handle).as_ref() }.expect("live Hermes runtime state");
+        state.live_headers()
+    }
+
     /// Drain the console records this runtime's thread has queued.
     pub fn drain_console(&self) -> Vec<crate::stdlib::console::Record> {
         crate::boundary_abi::drain_console()
