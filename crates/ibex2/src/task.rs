@@ -75,14 +75,15 @@ struct ReadyState {
 #[derive(Default)]
 struct WakeState {
     callback: Option<Arc<dyn Fn() + Send + Sync>>,
-    active: usize,
+    wake_pending: bool,
+    invoking: bool,
     closed: bool,
 }
 
-// @ref LLP 0068#3-no-engine-in-the-process — re-entrant shutdown excludes only this thread's claimed wake invocations
+// @ref LLP 0068#3-no-engine-in-the-process — re-entrant shutdown recognizes the queue's sole wake invoker
 thread_local! {
-    /// Queue identities whose wake callbacks this thread has claimed and not
-    /// yet returned from. A stack handles nested admission on the same queue.
+    /// Queue identities whose wake callbacks this thread is invoking. A wake
+    /// may synchronously admit work on another queue, so this remains a stack.
     static CLAIMED_WAKES: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -131,10 +132,18 @@ impl CompletionQueue {
         Self::default()
     }
 
-    /// Schedule the caller's executor when a task arrives. The callback runs
-    /// on the publishing thread, without queue locks. It must only schedule
-    /// the owner thread and return: it must not enter JSI or wait for owner-
-    /// thread work. A callback already in flight may finish after replacement.
+    /// Schedule the caller's executor when a task arrives. Notifications are
+    /// edge-triggered and coalesced: at most one callback runs for this queue,
+    /// and admissions during it request one more invocation after it returns.
+    /// A coalescing publisher returns without invoking or waiting for it.
+    ///
+    /// The callback runs on a publishing thread, without queue locks. It must
+    /// only schedule the owner thread and return: it must not enter JSI or wait
+    /// for owner-thread work. A callback already in flight may finish after
+    /// replacement. Releasing the last owner from the callback itself is safe.
+    /// Releasing it from another thread while holding a lock that the in-flight
+    /// callback needs is unsupported ordinary lock ordering: shutdown waits for
+    /// that callback, so the caller must release the lock first.
     pub fn set_wake(&self, wake: Option<Arc<dyn Fn() + Send + Sync>>) {
         let mut state = self.wake.lock().expect("completion wake poisoned");
         if !state.closed {
@@ -142,9 +151,10 @@ impl CompletionQueue {
         }
     }
 
-    /// Permanently remove the owner callback and wait for a callback already
-    /// claimed by a publisher. Returning is the barrier: no later completion
-    /// can call into an executor whose owner has gone away.
+    /// Permanently remove the owner callback and wait for the sole invocation,
+    /// if any. The invoking thread returns immediately when closure is
+    /// re-entrant. Returning is the barrier: no later completion can call into
+    /// an executor whose owner has gone away.
     fn close_wake(&self) {
         {
             let mut ready = self.ready.lock().expect("completion queue poisoned");
@@ -152,20 +162,18 @@ impl CompletionQueue {
         }
         self.signal.notify_all();
         let queue = std::ptr::from_ref(self) as usize;
-        let claimed_here = CLAIMED_WAKES.with(|claimed| {
-            claimed
-                .borrow()
-                .iter()
-                .filter(|claimed| **claimed == queue)
-                .count()
-        });
+        let invoking_here = CLAIMED_WAKES.with(|claimed| claimed.borrow().contains(&queue));
         let mut state = self.wake.lock().expect("completion wake poisoned");
         state.closed = true;
         state.callback = None;
+        state.wake_pending = false;
         // A wake may release the last owner itself. Its own invocation cannot
-        // return before this call, so wait only for claims held by other
-        // threads (and preserve the ordinary post-return barrier for them).
-        while state.active > claimed_here {
+        // return before this call, so it leaves the invocation flag for the
+        // outer loop to retire. Every other thread waits for that one invoker.
+        if invoking_here {
+            return;
+        }
+        while state.invoking {
             state = self
                 .wake_drained
                 .wait(state)
@@ -191,25 +199,46 @@ impl CompletionQueue {
             ready.tasks.push_back(task);
         }
         self.signal.notify_all();
-        let wake = {
+        let invoke = {
             let mut state = self.wake.lock().expect("completion wake poisoned");
             if state.closed {
-                None
+                false
             } else {
-                let wake = state.callback.clone();
-                state.active += usize::from(wake.is_some());
-                wake
+                state.wake_pending = true;
+                if state.invoking || state.callback.is_none() {
+                    false
+                } else {
+                    state.invoking = true;
+                    true
+                }
             }
         };
-        if let Some(wake) = wake {
-            let claimed = ClaimedWake::new(self);
+        if invoke {
+            self.invoke_wake();
+        }
+    }
+
+    /// Run the queue's one coalescing wake loop. The caller has changed
+    /// `invoking` from false to true under the wake lock.
+    fn invoke_wake(&self) {
+        let _claimed = ClaimedWake::new(self);
+        loop {
+            let wake = {
+                let mut state = self.wake.lock().expect("completion wake poisoned");
+                if state.closed || !state.wake_pending || state.callback.is_none() {
+                    state.invoking = false;
+                    self.wake_drained.notify_all();
+                    return;
+                }
+                state.wake_pending = false;
+                state.callback.clone().expect("callback checked above")
+            };
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| wake()));
-            drop(claimed);
-            let mut state = self.wake.lock().expect("completion wake poisoned");
-            state.active -= 1;
-            self.wake_drained.notify_all();
-            drop(state);
             if let Err(payload) = outcome {
+                let mut state = self.wake.lock().expect("completion wake poisoned");
+                state.invoking = false;
+                self.wake_drained.notify_all();
+                drop(state);
                 std::panic::resume_unwind(payload);
             }
         }
@@ -1169,34 +1198,35 @@ mod tests {
     }
 
     #[test]
-    fn reentrant_close_still_waits_for_another_threads_wake() {
+    fn concurrent_publishers_do_not_deadlock_reentrant_owner_shutdown() {
         let state = Arc::new(RuntimeState::new(Box::new(
             crate::transport::dev_tcp::DevTcpTransport::new(),
         )));
         let owner = Arc::new(Mutex::new(Some(OwnerLease::new(Arc::clone(&state)))));
-        let call = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let (first_entered, first_is_blocked) = std::sync::mpsc::channel();
-        let (release_first, first_may_return) = std::sync::mpsc::channel();
-        let first_may_return = Arc::new(Mutex::new(first_may_return));
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (holding_lock, lock_is_held) = std::sync::mpsc::channel();
+        let (release_callback, callback_may_finish) = std::sync::mpsc::channel();
+        let callback_may_finish = Arc::new(Mutex::new(callback_may_finish));
         let callback_owner = Arc::clone(&owner);
-        let callback_call = Arc::clone(&call);
-        let callback_release = Arc::clone(&first_may_return);
+        let callback_calls = Arc::clone(&calls);
+        let callback_release = Arc::clone(&callback_may_finish);
         state.queue.set_wake(Some(Arc::new(move || {
-            if callback_call.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
-                first_entered.send(()).unwrap();
-                callback_release.lock().unwrap().recv().unwrap();
-            } else {
-                drop(callback_owner.lock().unwrap().take());
-            }
+            callback_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut owner = callback_owner.lock().unwrap();
+            holding_lock.send(()).unwrap();
+            callback_release.lock().unwrap().recv().unwrap();
+            drop(owner.take());
         })));
 
         let first_state = Arc::clone(&state);
+        let (first_finished, first_observed) = std::sync::mpsc::channel();
         let first = std::thread::spawn(move || {
             first_state
                 .queue
                 .complete(1, Ok(HostValue::Str("first".into())));
+            first_finished.send(()).unwrap();
         });
-        first_is_blocked
+        lock_is_held
             .recv_timeout(std::time::Duration::from_secs(2))
             .unwrap();
 
@@ -1208,18 +1238,91 @@ mod tests {
                 .complete(2, Ok(HostValue::Str("second".into())));
             second_finished.send(()).unwrap();
         });
+        let second_result = second_observed.recv_timeout(std::time::Duration::from_secs(2));
+        release_callback.send(()).unwrap();
         assert_eq!(
-            second_observed.recv_timeout(std::time::Duration::from_millis(100)),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout),
-            "shutdown returned before the other thread's wake callback"
+            second_result,
+            Ok(()),
+            "a publisher blocked behind the in-flight wake callback"
         );
-        release_first.send(()).unwrap();
-        second_observed
+        first_observed
             .recv_timeout(std::time::Duration::from_secs(2))
-            .unwrap();
+            .expect("re-entrant last-owner shutdown deadlocked");
         first.join().unwrap();
         second.join().unwrap();
         assert!(state.is_shutdown());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn burst_admissions_coalesce_without_concurrent_or_lost_wakes() {
+        const PUBLISHERS: usize = 32;
+        let queue = Arc::new(CompletionQueue::new());
+        let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let max_active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let admissions_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let woke_after_last_admission = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (first_entered, first_is_blocked) = std::sync::mpsc::channel();
+        let (release_first, first_may_return) = std::sync::mpsc::channel();
+        let first_may_return = Arc::new(Mutex::new(first_may_return));
+
+        let callback_active = Arc::clone(&active);
+        let callback_max = Arc::clone(&max_active);
+        let callback_calls = Arc::clone(&calls);
+        let callback_done = Arc::clone(&admissions_done);
+        let callback_after_last = Arc::clone(&woke_after_last_admission);
+        let callback_release = Arc::clone(&first_may_return);
+        queue.set_wake(Some(Arc::new(move || {
+            let now = callback_active.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            callback_max.fetch_max(now, std::sync::atomic::Ordering::SeqCst);
+            let call = callback_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if callback_done.load(std::sync::atomic::Ordering::SeqCst) {
+                callback_after_last.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            if call == 0 {
+                first_entered.send(()).unwrap();
+                callback_release.lock().unwrap().recv().unwrap();
+            }
+            callback_active.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        })));
+
+        let first_queue = Arc::clone(&queue);
+        let first = std::thread::spawn(move || {
+            first_queue.complete(0, Ok(HostValue::Undefined));
+        });
+        first_is_blocked
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("first wake did not begin");
+
+        let start = Arc::new(std::sync::Barrier::new(PUBLISHERS + 1));
+        let mut publishers = Vec::new();
+        for task_id in 1..=PUBLISHERS {
+            let queue = Arc::clone(&queue);
+            let start = Arc::clone(&start);
+            publishers.push(std::thread::spawn(move || {
+                start.wait();
+                queue.complete(task_id as u64, Ok(HostValue::Undefined));
+            }));
+        }
+        start.wait();
+        for publisher in publishers {
+            publisher.join().unwrap();
+        }
+        admissions_done.store(true, std::sync::atomic::Ordering::SeqCst);
+        release_first.send(()).unwrap();
+        first.join().unwrap();
+
+        assert_eq!(
+            max_active.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "wake callbacks ran concurrently"
+        );
+        assert!(
+            woke_after_last_admission.load(std::sync::atomic::Ordering::SeqCst),
+            "the final coalesced wake was lost"
+        );
+        assert!(calls.load(std::sync::atomic::Ordering::SeqCst) >= 2);
     }
 
     #[test]

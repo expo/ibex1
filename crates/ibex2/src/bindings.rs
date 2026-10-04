@@ -375,9 +375,15 @@ impl Context {
         self.endowment.state.set_sqlite_provider(provider)
     }
 
-    /// Worker-safe notification that schedules the embedder's loop. The
-    /// callback must return without entering JS or waiting for owner-thread
-    /// work. Install before starting work.
+    /// Worker-safe, edge-triggered notification that schedules the embedder's
+    /// loop. Admissions coalesce and at most one callback runs at a time; a
+    /// publisher that finds one running records another edge and returns.
+    ///
+    /// The callback must return without entering JS or waiting for owner-thread
+    /// work. Releasing the last owner from the callback is safe. Releasing it
+    /// on another thread while holding a lock that the in-flight callback needs
+    /// is unsupported ordinary lock ordering, because shutdown waits for the
+    /// callback. Install before starting work.
     pub fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
         self.endowment.state.queue.set_wake(Some(wake));
     }
