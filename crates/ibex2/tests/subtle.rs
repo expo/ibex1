@@ -90,6 +90,10 @@ fn non_octet_hmac_generate_sign_and_export_round_trips() {
         const importedSignature = await crypto.subtle.sign("HMAC", imported, new TextEncoder().encode("ibex"));
         assert(hex(importedSignature) === "09dc61ba3ab858026005afe0e64a7e864f4be1256bedefce0e16d78dd5a571ae");
         assert(await crypto.subtle.verify("HMAC", imported, importedSignature, new TextEncoder().encode("ibex")));
+        await rejects("DataError", () => crypto.subtle.importKey(
+          "raw", new Uint8Array(32),
+          {name: "HMAC", hash: "SHA-256", length: 128}, true, ["sign"]
+        ));
 
         const generated = await crypto.subtle.generateKey(
           {name: "HMAC", hash: "SHA-256", length: 17}, true, ["sign", "verify"]
@@ -110,11 +114,21 @@ fn non_octet_hmac_generate_sign_and_export_round_trips() {
         );
         const derived = await crypto.subtle.deriveKey(
           {name: "HKDF", hash: "SHA-256", salt: new Uint8Array(), info: new Uint8Array()},
-          hkdf, {name: "HMAC", hash: "SHA-256", length: 17}, true, ["sign"]
+          hkdf, {name: "HMAC", hash: "SHA-256", length: 24}, true, ["sign"]
         );
         const derivedRaw = new Uint8Array(await crypto.subtle.exportKey("raw", derived));
-        assert(derived.algorithm.length === 17);
-        assert(derivedRaw.length === 3 && (derivedRaw[2] & 127) === 0);
+        assert(derived.algorithm.length === 24 && derivedRaw.length === 3);
+        await rejects("OperationError", () => crypto.subtle.deriveKey(
+          {name: "HKDF", hash: "SHA-256", salt: new Uint8Array(), info: new Uint8Array()},
+          hkdf, {name: "HMAC", hash: "SHA-256", length: 17}, true, ["sign"]
+        ));
+        await rejects("TypeError", () => crypto.subtle.deriveKey(
+          {name: "HKDF", hash: "SHA-256", salt: new Uint8Array(), info: new Uint8Array()},
+          hkdf, {name: "HMAC", hash: "SHA-256", length: 0}, true, ["sign"]
+        ));
+        await rejects("OperationError", () => crypto.subtle.generateKey(
+          {name: "HMAC", hash: "SHA-256", length: 0}, true, ["sign"]
+        ));
         "#,
     );
 }
@@ -188,9 +202,9 @@ fn hkdf_and_pbkdf2_derive_bits_and_keys() {
     );
 }
 
-#[cfg(feature = "crypto")]
+#[cfg(feature = "crypto-asymmetric")]
 #[test]
-fn ecdsa_p256_key_pair_formats_and_all_hashes() {
+fn ecdsa_p256_key_pair_formats_and_stock_ring_hashes() {
     let mut runtime = runtime();
     run_async(
         &mut runtime,
@@ -203,11 +217,20 @@ fn ecdsa_p256_key_pair_formats_and_all_hashes() {
         assert(pair.publicKey.algorithm.name === "ECDSA" && pair.publicKey.algorithm.namedCurve === "P-256");
         assert(pair.publicKey.usages.join(",") === "verify" && pair.privateKey.usages.join(",") === "sign");
         const data = new TextEncoder().encode("ibex ecdsa");
-        for (const hash of ["SHA-256", "SHA-384", "SHA-512"]) {
-          const signature = await crypto.subtle.sign({name: "ECDSA", hash}, pair.privateKey, data);
-          assert(new Uint8Array(signature).length === 64);
-          assert(await crypto.subtle.verify({name: "ECDSA", hash}, pair.publicKey, signature, data));
-          assert(!(await crypto.subtle.verify({name: "ECDSA", hash}, pair.publicKey, signature, new Uint8Array([1]))));
+        const signature256 = await crypto.subtle.sign(
+          {name: "ECDSA", hash: "SHA-256"}, pair.privateKey, data
+        );
+        assert(new Uint8Array(signature256).length === 64);
+        assert(await crypto.subtle.verify(
+          {name: "ECDSA", hash: "SHA-256"}, pair.publicKey, signature256, data
+        ));
+        for (const hash of ["SHA-384", "SHA-512"]) {
+          await rejects("NotSupportedError", () => crypto.subtle.sign(
+            {name: "ECDSA", hash}, pair.privateKey, data
+          ));
+          await rejects("NotSupportedError", () => crypto.subtle.verify(
+            {name: "ECDSA", hash}, pair.publicKey, signature256, data
+          ));
         }
         await rejects("InvalidAccessError", () => crypto.subtle.exportKey("pkcs8", pair.privateKey));
 
@@ -268,7 +291,12 @@ fn hostile_integer_sizes_are_rejected_by_name() {
         const hkdfParams = {
           name: "HKDF", hash: "SHA-256", salt: new Uint8Array(), info: new Uint8Array()
         };
-        await rejects("TypeError", () => crypto.subtle.deriveBits(hkdfParams, hkdf, 4294967296));
+        for (const length of [4294967296, NaN, Infinity, -Infinity]) {
+          const derived = await crypto.subtle.deriveBits(hkdfParams, hkdf, length);
+          assert(derived.byteLength === 0);
+        }
+        await rejects("TypeError", () => crypto.subtle.deriveBits(hkdfParams, hkdf, 1n));
+        await rejects("TypeError", () => crypto.subtle.deriveBits(hkdfParams, hkdf, Symbol()));
         await rejects("OperationError", () => crypto.subtle.deriveBits(hkdfParams, hkdf, 65288));
         await rejects("OperationError", () => crypto.subtle.deriveKey(
           hkdfParams, hkdf,
@@ -285,11 +313,18 @@ fn hostile_integer_sizes_are_rejected_by_name() {
         await rejects("OperationError", () => crypto.subtle.deriveBits(pbkdf(0), password, 8));
         await rejects("OperationError", () => crypto.subtle.deriveBits(pbkdf(1000001), password, 8));
         await rejects("OperationError", () => crypto.subtle.deriveBits(pbkdf(1), password, 1000008));
+
+        const deriveKeyOnly = await crypto.subtle.importKey(
+          "raw", ikm, "HKDF", false, ["deriveKey"]
+        );
+        await rejects("InvalidAccessError", () => crypto.subtle.deriveBits(
+          hkdfParams, deriveKeyOnly, null
+        ));
         "#,
     );
 }
 
-#[cfg(feature = "crypto")]
+#[cfg(feature = "crypto-asymmetric")]
 #[test]
 fn ed25519_known_answer_and_format_round_trips() {
     let mut runtime = runtime();
@@ -344,6 +379,54 @@ fn hmac_generation_does_not_inherit_get_random_values_quota() {
 
 #[cfg(feature = "crypto")]
 #[test]
+fn import_rejections_preflight_borrowed_material_and_jwk_fields() {
+    let mut runtime = runtime();
+    run_async(
+        &mut runtime,
+        r#"
+        await rejects("DataError", () => crypto.subtle.importKey(
+          "raw", new Uint8Array(1024 * 1024), "AES-GCM", true, ["encrypt"]
+        ));
+        await rejects("SyntaxError", () => crypto.subtle.importKey(
+          "raw", new Uint8Array(1024 * 1024), "HKDF", true, ["deriveBits"]
+        ));
+        await rejects("DataError", () => crypto.subtle.importKey(
+          "jwk", {kty: "x".repeat(65), k: "AA"},
+          {name: "HMAC", hash: "SHA-256"}, true, ["sign"]
+        ));
+        await rejects("OperationError", () => crypto.subtle.importKey(
+          "jwk", {kty: "oct", k: "A".repeat(166668)},
+          {name: "HMAC", hash: "SHA-256"}, true, ["sign"]
+        ));
+        await rejects("DataError", () => crypto.subtle.importKey(
+          "jwk", {kty: "oct", k: "AA", key_ops: ["s".repeat(129)]},
+          {name: "HMAC", hash: "SHA-256"}, true, ["sign"]
+        ));
+        "#,
+    );
+}
+
+#[cfg(feature = "crypto-asymmetric")]
+#[test]
+fn asymmetric_imports_preflight_der_and_jwk_component_sizes() {
+    let mut runtime = runtime();
+    run_async(
+        &mut runtime,
+        r#"
+        await rejects("DataError", () => crypto.subtle.importKey(
+          "spki", new Uint8Array(1024 * 1024),
+          {name: "ECDSA", namedCurve: "P-256"}, true, ["verify"]
+        ));
+        await rejects("DataError", () => crypto.subtle.importKey(
+          "jwk", {kty: "EC", crv: "P-256", x: "A".repeat(44), y: "A".repeat(43)},
+          {name: "ECDSA", namedCurve: "P-256"}, true, ["verify"]
+        ));
+        "#,
+    );
+}
+
+#[cfg(feature = "crypto")]
+#[test]
 fn out_of_scope_algorithms_and_formats_are_named_refusals() {
     let mut runtime = runtime();
     run_async(
@@ -365,6 +448,27 @@ fn out_of_scope_algorithms_and_formats_are_named_refusals() {
         await rejects("NotSupportedError", () => crypto.subtle.importKey("spki", bytes, {name: "HMAC", hash: "SHA-256"}, true, ["verify"]));
         await rejects("NotSupportedError", () => crypto.subtle.wrapKey());
         await rejects("NotSupportedError", () => crypto.subtle.unwrapKey());
+        "#,
+    );
+}
+
+#[cfg(all(feature = "crypto", not(feature = "crypto-asymmetric")))]
+#[test]
+fn asymmetric_feature_off_refuses_by_name() {
+    let mut runtime = runtime();
+    run_async(
+        &mut runtime,
+        r#"
+        await rejects("NotSupportedError", () => crypto.subtle.generateKey(
+          {name: "ECDSA", namedCurve: "P-256"}, true, ["sign"]
+        ));
+        try {
+          await crypto.subtle.generateKey("Ed25519", true, ["sign"]);
+          throw new Error("expected Ed25519 refusal");
+        } catch (error) {
+          assert(error.name === "NotSupportedError");
+          assert(error.message.indexOf("omitted") >= 0);
+        }
         "#,
     );
 }

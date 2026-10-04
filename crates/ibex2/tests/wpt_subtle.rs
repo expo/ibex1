@@ -1,5 +1,5 @@
 //! Unmodified WPT WebCrypto fixtures for the L2 crypto surface.
-#![cfg(all(feature = "hermes", feature = "crypto"))]
+#![cfg(all(feature = "hermes", feature = "crypto-asymmetric"))]
 
 use ibex2::engine::hermes::{DynamicCode, Hermes};
 use std::collections::BTreeMap;
@@ -226,6 +226,12 @@ fn excluded(suite: &str, name: &str) -> Option<&'static str> {
         "ecdsa" if upper.contains("P-384") || upper.contains("P-521") => {
             Some("P-384 and P-521 are explicitly outside L2")
         }
+        "ecdsa"
+            if upper.contains("P-256")
+                && (upper.contains("SHA-384") || upper.contains("SHA-512")) =>
+        {
+            Some("unmodified ring exposes fixed-length P-256 only with SHA-256")
+        }
         "ecdsa" if name.contains("wrong algorithm name") => {
             Some("the fixture's wrong-key setup requires out-of-scope SHA-1")
         }
@@ -248,6 +254,9 @@ fn excluded(suite: &str, name: &str) -> Option<&'static str> {
         }
         "ec-import-export" if name.contains("compressed") => {
             Some("ring does not decompress SEC1 compressed points")
+        }
+        "ec-import-export" if name.contains("PKCS8 private-only: P-256") => {
+            Some("ring's public API cannot derive a missing P-256 public point")
         }
         "generate-ecdsa" if upper.contains("P-384") || upper.contains("P-521") => {
             Some("P-384 and P-521 are explicitly outside L2")
@@ -302,7 +311,7 @@ fn webcrypto_wpt() {
     assert_eq!(total, 14_933, "the pinned upstream test set changed");
     assert_eq!(
         exclusions.len(),
-        8_660,
+        8_694,
         "an exclusion changed; audit it before updating the count"
     );
     assert!(

@@ -62,6 +62,19 @@ fn unsigned_long(args: &[HostArg<'_>], index: usize, label: &str) -> Result<u32,
     unsigned_range(args, index, label, u32::MAX)
 }
 
+fn webidl_unsigned_long(args: &[HostArg<'_>], index: usize, label: &str) -> Result<u32, HostError> {
+    match args.get(index) {
+        Some(HostArg::Number(value)) => {
+            if !value.is_finite() || *value == 0.0 {
+                return Ok(0);
+            }
+            Ok(value.trunc().rem_euclid(4_294_967_296.0) as u32)
+        }
+        Some(HostArg::Undefined) | None => Ok(0),
+        _ => Err(invalid(format!("expected {label}"))),
+    }
+}
+
 fn optional_unsigned_long(
     args: &[HostArg<'_>],
     index: usize,
@@ -79,8 +92,8 @@ fn nullable_unsigned_long(
     label: &str,
 ) -> Result<Option<u32>, HostError> {
     match args.get(index) {
-        Some(HostArg::Null | HostArg::Undefined) | None => Ok(None),
-        _ => unsigned_long(args, index, label).map(Some),
+        Some(HostArg::Null) => Ok(None),
+        _ => webidl_unsigned_long(args, index, label).map(Some),
     }
 }
 
@@ -266,6 +279,7 @@ pub(crate) fn dispatch(
             IMPORT_KEY => {
                 let format = string(args, 0, "a key format")?;
                 let algorithm = import_algorithm(args, 2)?;
+                subtle::ensure_import_feature(algorithm).map_err(failed)?;
                 let extractable = boolean(args, 5, "extractable")?;
                 let usages = usages(string(args, 6, "key usages")?)?;
                 let key = match format {
@@ -282,17 +296,30 @@ pub(crate) fn dispatch(
                             Some(1) => Some(true),
                             _ => return Err(invalid("JWK ext must be boolean when present")),
                         };
+                        let kty = string(args, 7, "JWK kty")?;
+                        let k = optional_string(args, 1);
+                        let alg = optional_string(args, 8);
+                        let key_use = optional_string(args, 9);
+                        let key_ops = optional_string(args, 10);
+                        let crv = optional_string(args, 12);
+                        let x = optional_string(args, 13);
+                        let y = optional_string(args, 14);
+                        let d = optional_string(args, 15);
+                        #[cfg(feature = "crypto")]
+                        subtle::preflight_jwk_fields(
+                            algorithm, kty, k, crv, x, y, d, alg, key_use, key_ops,
+                        )
+                        .map_err(failed)?;
                         let jwk = JsonWebKey {
-                            kty: string(args, 7, "JWK kty")?.into(),
-                            k: optional_string(args, 1).map(str::to_owned),
-                            crv: optional_string(args, 12).map(str::to_owned),
-                            x: optional_string(args, 13).map(str::to_owned),
-                            y: optional_string(args, 14).map(str::to_owned),
-                            d: optional_string(args, 15).map(str::to_owned),
-                            alg: optional_string(args, 8).map(str::to_owned),
-                            key_use: optional_string(args, 9).map(str::to_owned),
-                            key_ops: optional_string(args, 10)
-                                .map(|ops| ops.split(',').map(str::to_owned).collect()),
+                            kty: kty.into(),
+                            k: k.map(str::to_owned),
+                            crv: crv.map(str::to_owned),
+                            x: x.map(str::to_owned),
+                            y: y.map(str::to_owned),
+                            d: d.map(str::to_owned),
+                            alg: alg.map(str::to_owned),
+                            key_use: key_use.map(str::to_owned),
+                            key_ops: key_ops.map(|ops| ops.split(',').map(str::to_owned).collect()),
                             ext,
                         };
                         subtle::import_jwk_key(&jwk, algorithm, extractable, &usages)
@@ -405,12 +432,13 @@ pub(crate) fn dispatch(
             }
             DERIVE_BITS => {
                 let algorithm = derive_algorithm(args, 1)?;
-                let Some(length) = nullable_unsigned_long(args, 6, "derived bit length")? else {
-                    return Err(HostError::Failed(
-                        "OperationError: deriveBits length must not be null".into(),
-                    ));
-                };
+                let length = nullable_unsigned_long(args, 6, "derived bit length")?;
                 with_key(runtime, handle(args, 0)?, |key| {
+                    #[cfg(feature = "crypto")]
+                    subtle::preflight_derive_access(algorithm, key, KeyUsage::DeriveBits)?;
+                    let length = length.ok_or_else(|| {
+                        subtle::Error::operation("deriveBits length must not be null")
+                    })?;
                     subtle::derive_bits(algorithm, key, length as usize)
                 })
                 .map(HostValue::Bytes)
@@ -446,7 +474,7 @@ mod tests {
     }
 
     #[test]
-    fn nullable_unsigned_long_keeps_null_distinct_from_zero() {
+    fn nullable_unsigned_long_uses_ordinary_webidl_conversion() {
         assert_eq!(
             nullable_unsigned_long(&[HostArg::Null], 0, "value").unwrap(),
             None
@@ -454,6 +482,20 @@ mod tests {
         assert_eq!(
             nullable_unsigned_long(&[HostArg::Number(0.0)], 0, "value").unwrap(),
             Some(0)
+        );
+        for value in [f64::NAN, f64::INFINITY, 4_294_967_296.0] {
+            assert_eq!(
+                nullable_unsigned_long(&[HostArg::Number(value)], 0, "value").unwrap(),
+                Some(0)
+            );
+        }
+        assert_eq!(
+            nullable_unsigned_long(&[HostArg::Undefined], 0, "value").unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            nullable_unsigned_long(&[HostArg::Number(-1.0)], 0, "value").unwrap(),
+            Some(u32::MAX)
         );
     }
 }

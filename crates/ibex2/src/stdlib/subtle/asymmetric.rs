@@ -4,9 +4,13 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ring::signature::KeyPair as _;
 
 use super::{
-    der, validate_usages, CryptoKey, CryptoKeyPair, Error, ExportedKey, GenerateAlgorithm,
-    HashAlgorithm, ImportAlgorithm, JsonWebKey, KeyAlgorithm, KeyFormat, KeyType, KeyUsage, Result,
+    der, preflight_jwk_fields, validate_usages, validate_usages_borrowed, CryptoKey, CryptoKeyPair,
+    Error, ExportedKey, GenerateAlgorithm, HashAlgorithm, ImportAlgorithm, JsonWebKey,
+    KeyAlgorithm, KeyFormat, KeyType, KeyUsage, Result,
 };
+
+const MAX_P256_PKCS8_BYTES: usize = 160;
+const MAX_ED25519_PKCS8_BYTES: usize = 96;
 
 fn public_key(
     material: Vec<u8>,
@@ -159,24 +163,55 @@ fn validate_jwk_metadata(
         return Err(Error::data("JWK use must be sig"));
     }
     if let Some(ops) = &jwk.key_ops {
-        let mut seen = Vec::new();
-        for op in ops {
+        for (index, op) in ops.iter().enumerate() {
             let usage = KeyUsage::parse(op).map_err(|_| Error::data("JWK key_ops is invalid"))?;
-            if seen.contains(&usage) {
+            if ops[..index].iter().any(|earlier| earlier == op) {
                 return Err(Error::data("JWK key_ops contains a duplicate"));
             }
-            seen.push(usage);
             if !allowed.contains(&usage) {
                 return Err(Error::data("JWK key_ops is invalid for this key type"));
             }
         }
-        if usages.iter().any(|usage| !seen.contains(usage)) {
+        if usages
+            .iter()
+            .any(|usage| !ops.iter().any(|op| op == usage.name()))
+        {
             return Err(Error::data(
                 "JWK key_ops does not contain every requested usage",
             ));
         }
     }
     Ok(())
+}
+
+fn preflight_component_usages(private: bool, usages: &[KeyUsage]) -> Result<()> {
+    let allowed = if private {
+        &[KeyUsage::Sign][..]
+    } else {
+        &[KeyUsage::Verify][..]
+    };
+    validate_usages_borrowed(usages, allowed)?;
+    if private && usages.is_empty() {
+        return Err(Error::syntax("private keys must have at least one usage"));
+    }
+    Ok(())
+}
+
+fn preflight_der_length(format: &str, algorithm: ImportAlgorithm, len: usize) -> Result<()> {
+    let valid = match (format, algorithm) {
+        ("spki", ImportAlgorithm::EcdsaP256) => len == 91,
+        ("spki", ImportAlgorithm::Ed25519) => len == 44,
+        ("pkcs8", ImportAlgorithm::EcdsaP256) => len <= MAX_P256_PKCS8_BYTES,
+        ("pkcs8", ImportAlgorithm::Ed25519) => len <= MAX_ED25519_PKCS8_BYTES,
+        _ => true,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(Error::data(format!(
+            "{format} key data exceeds the requested algorithm's size"
+        )))
+    }
 }
 
 fn import_components(
@@ -219,6 +254,8 @@ pub(super) fn import_raw(
             ))
         }
     };
+    preflight_component_usages(false, usages)?;
+    validate_public(algorithm.clone(), material)?;
     import_components(algorithm, None, material.to_vec(), extractable, usages)
 }
 
@@ -233,6 +270,8 @@ pub(super) fn import_spki(
         ImportAlgorithm::Ed25519 => (der::Algorithm::Ed25519, KeyAlgorithm::Ed25519),
         _ => return Err(Error::unsupported("spki requires an asymmetric algorithm")),
     };
+    preflight_component_usages(false, usages)?;
+    preflight_der_length("spki", algorithm, material.len())?;
     let (parsed, public) = der::parse_spki(material)?;
     if parsed != expected.0 {
         return Err(Error::data(
@@ -253,6 +292,8 @@ pub(super) fn import_pkcs8(
         ImportAlgorithm::Ed25519 => (der::Algorithm::Ed25519, KeyAlgorithm::Ed25519),
         _ => return Err(Error::unsupported("pkcs8 requires an asymmetric algorithm")),
     };
+    preflight_component_usages(true, usages)?;
+    preflight_der_length("pkcs8", algorithm, material.len())?;
     let parsed = der::parse_pkcs8(material)?;
     if parsed.algorithm != expected.0 {
         return Err(Error::data(
@@ -267,15 +308,11 @@ pub(super) fn import_pkcs8(
                 .as_ref()
                 .to_vec()
         }
-        (KeyAlgorithm::EcdsaP256, None) => ring::signature::EcdsaKeyPair::from_private_key(
-            &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
-            &parsed.private,
-            &ring::rand::SystemRandom::new(),
-        )
-        .map_err(|_| Error::data("invalid P-256 private scalar"))?
-        .public_key()
-        .as_ref()
-        .to_vec(),
+        (KeyAlgorithm::EcdsaP256, None) => {
+            return Err(Error::unsupported(
+                "P-256 PKCS#8 public key must be present in the private-key structure",
+            ))
+        }
         (_, Some(public)) => public,
         _ => return Err(Error::data("private key has no public component")),
     };
@@ -294,22 +331,48 @@ pub(super) fn import_jwk(
     extractable: bool,
     usages: &[KeyUsage],
 ) -> Result<CryptoKey> {
+    let import_algorithm = algorithm;
     let algorithm = match algorithm {
         ImportAlgorithm::EcdsaP256 => KeyAlgorithm::EcdsaP256,
         ImportAlgorithm::Ed25519 => KeyAlgorithm::Ed25519,
         _ => return Err(Error::invalid_access("JWK is not asymmetric")),
     };
+    preflight_jwk_fields(
+        import_algorithm,
+        &jwk.kty,
+        jwk.k.as_deref(),
+        jwk.crv.as_deref(),
+        jwk.x.as_deref(),
+        jwk.y.as_deref(),
+        jwk.d.as_deref(),
+        jwk.alg.as_deref(),
+        jwk.key_use.as_deref(),
+        None,
+    )?;
+    if jwk.key_ops.as_ref().is_some_and(|ops| {
+        match ops.iter().try_fold(0usize, |total, op| {
+            total
+                .checked_add(op.len())
+                .and_then(|total| total.checked_add(1))
+        }) {
+            Some(total) => total > 128,
+            None => true,
+        }
+    }) {
+        return Err(Error::data("JWK key_ops is too large"));
+    }
+    let key_type = if jwk.d.is_some() {
+        KeyType::Private
+    } else {
+        KeyType::Public
+    };
+    preflight_component_usages(key_type == KeyType::Private, usages)?;
+    validate_jwk_metadata(jwk, algorithm.clone(), key_type, extractable, usages)?;
     let private = jwk
         .d
         .as_deref()
         .map(|value| decode_component(jwk, "d", Some(value)))
         .transpose()?;
-    let key_type = if private.is_some() {
-        KeyType::Private
-    } else {
-        KeyType::Public
-    };
-    validate_jwk_metadata(jwk, algorithm.clone(), key_type, extractable, usages)?;
     let x = decode_component(jwk, "x", jwk.x.as_deref())?;
     let public = match algorithm {
         KeyAlgorithm::EcdsaP256 => {
@@ -443,21 +506,25 @@ pub(super) fn generate_pair(
     })
 }
 
-fn ecdsa_signing_algorithm(hash: HashAlgorithm) -> &'static ring::signature::EcdsaSigningAlgorithm {
+fn ecdsa_signing_algorithm(
+    hash: HashAlgorithm,
+) -> Result<&'static ring::signature::EcdsaSigningAlgorithm> {
     match hash {
-        HashAlgorithm::Sha256 => &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
-        HashAlgorithm::Sha384 => &ring::signature::ECDSA_P256_SHA384_FIXED_SIGNING,
-        HashAlgorithm::Sha512 => &ring::signature::ECDSA_P256_SHA512_FIXED_SIGNING,
+        HashAlgorithm::Sha256 => Ok(&ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING),
+        HashAlgorithm::Sha384 | HashAlgorithm::Sha512 => Err(Error::unsupported(
+            "P-256 signing supports only SHA-256 with the unmodified ring backend",
+        )),
     }
 }
 
 fn ecdsa_verification_algorithm(
     hash: HashAlgorithm,
-) -> &'static ring::signature::EcdsaVerificationAlgorithm {
+) -> Result<&'static ring::signature::EcdsaVerificationAlgorithm> {
     match hash {
-        HashAlgorithm::Sha256 => &ring::signature::ECDSA_P256_SHA256_FIXED,
-        HashAlgorithm::Sha384 => &ring::signature::ECDSA_P256_SHA384_FIXED,
-        HashAlgorithm::Sha512 => &ring::signature::ECDSA_P256_SHA512_FIXED,
+        HashAlgorithm::Sha256 => Ok(&ring::signature::ECDSA_P256_SHA256_FIXED),
+        HashAlgorithm::Sha384 | HashAlgorithm::Sha512 => Err(Error::unsupported(
+            "P-256 verification supports only SHA-256 with the unmodified ring backend",
+        )),
     }
 }
 
@@ -473,7 +540,7 @@ pub(super) fn sign(
     match (algorithm, &key.algorithm) {
         (super::SignatureAlgorithm::Ecdsa { hash }, KeyAlgorithm::EcdsaP256) => {
             let pair = ring::signature::EcdsaKeyPair::from_private_key_and_public_key(
-                ecdsa_signing_algorithm(hash),
+                ecdsa_signing_algorithm(hash)?,
                 &key.material,
                 public_for_private(key)?,
                 &ring::rand::SystemRandom::new(),
@@ -510,7 +577,7 @@ pub(super) fn verify(
     let result = match (algorithm, &key.algorithm) {
         (super::SignatureAlgorithm::Ecdsa { hash }, KeyAlgorithm::EcdsaP256) => {
             ring::signature::UnparsedPublicKey::new(
-                ecdsa_verification_algorithm(hash),
+                ecdsa_verification_algorithm(hash)?,
                 &key.material,
             )
             .verify(data, signature)
@@ -576,7 +643,7 @@ mod tests {
     }
 
     #[test]
-    fn rfc_6979_p256_verification_vectors_for_all_webcrypto_hashes() {
+    fn rfc_6979_p256_sha256_and_stock_ring_hash_refusals() {
         let public = hex(concat!(
             "04",
             "60fed4ba255a9d31c961eb74c6356d68c049b8923b61fa6ce669622e60f29fb6",
@@ -590,36 +657,31 @@ mod tests {
             &[KeyUsage::Verify],
         )
         .unwrap();
-        for (hash, signature) in [
-            (
-                HashAlgorithm::Sha256,
-                concat!(
-                    "efd48b2aacb6a8fd1140dd9cd45e81d69d2c877b56aaf991c34d0ea84eaf3716",
-                    "f7cb1c942d657c41d436c7a1b6e29f65f3e900dbb9aff4064dc4ab2f843acda8"
-                ),
-            ),
-            (
-                HashAlgorithm::Sha384,
-                concat!(
-                    "0eafea039b20e9b42309fb1d89e213057cbf973dc0cfc8f129edddc800ef7719",
-                    "4861f0491e6998b9455193e34e7b0d284ddd7149a74b95b9261f13abde940954"
-                ),
-            ),
-            (
-                HashAlgorithm::Sha512,
-                concat!(
-                    "8496a60b5e9b47c825488827e0495b0e3fa109ec4568fd3f8d1097678eb97f00",
-                    "2362ab1adbe2b8adf9cb9edab740ea6049c028114f2460f96554f61fae3302fe"
-                ),
-            ),
-        ] {
-            assert!(verify(
-                SignatureAlgorithm::Ecdsa { hash },
-                &key,
-                &hex(signature),
-                b"sample"
-            )
-            .unwrap());
+        let signature = hex(concat!(
+            "efd48b2aacb6a8fd1140dd9cd45e81d69d2c877b56aaf991c34d0ea84eaf3716",
+            "f7cb1c942d657c41d436c7a1b6e29f65f3e900dbb9aff4064dc4ab2f843acda8"
+        ));
+        assert!(verify(
+            SignatureAlgorithm::Ecdsa {
+                hash: HashAlgorithm::Sha256
+            },
+            &key,
+            &signature,
+            b"sample"
+        )
+        .unwrap());
+        for hash in [HashAlgorithm::Sha384, HashAlgorithm::Sha512] {
+            assert_eq!(
+                verify(
+                    SignatureAlgorithm::Ecdsa { hash },
+                    &key,
+                    &signature,
+                    b"sample"
+                )
+                .unwrap_err()
+                .name,
+                super::super::ErrorName::NotSupportedError
+            );
         }
     }
 
@@ -629,7 +691,7 @@ mod tests {
             let pair = generate_pair(algorithm, true, &[KeyUsage::Sign, KeyUsage::Verify]).unwrap();
             let signature_algorithm = match algorithm {
                 GenerateAlgorithm::EcdsaP256 => SignatureAlgorithm::Ecdsa {
-                    hash: HashAlgorithm::Sha512,
+                    hash: HashAlgorithm::Sha256,
                 },
                 GenerateAlgorithm::Ed25519 => SignatureAlgorithm::Ed25519,
                 _ => unreachable!(),
@@ -657,6 +719,19 @@ mod tests {
             let signature = sign(signature_algorithm, &private, b"again").unwrap();
             assert!(verify(signature_algorithm, &public, &signature, b"again").unwrap());
         }
+    }
+
+    #[test]
+    fn p256_pkcs8_requires_an_embedded_public_key() {
+        let mut pkcs8 = hex(concat!(
+            "3041020100301306072a8648ce3d020106082a8648ce3d030107",
+            "042730250201010420"
+        ));
+        pkcs8.extend_from_slice(&[5; 32]);
+        let error =
+            import_pkcs8(&pkcs8, ImportAlgorithm::EcdsaP256, true, &[KeyUsage::Sign]).unwrap_err();
+        assert_eq!(error.name, super::super::ErrorName::NotSupportedError);
+        assert!(error.message.contains("public key must be present"));
     }
 
     #[test]

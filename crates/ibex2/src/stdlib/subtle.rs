@@ -9,15 +9,19 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use std::fmt;
 
-#[cfg(feature = "crypto")]
+#[cfg(feature = "crypto-asymmetric")]
 mod asymmetric;
-#[cfg(feature = "crypto")]
+#[cfg(feature = "crypto-asymmetric")]
 mod der;
 
 /// PBKDF2 remains a synchronous pure operation under LLP 0059.000 §1.1, so
 /// bound the work admitted by one host call instead of allowing an unbounded
 /// iteration count to monopolize the runtime thread.
 pub const MAX_PBKDF2_ITERATIONS: u32 = 1_000_000;
+/// PBKDF2's combined synchronous-work ceiling is measured in one PRF call or
+/// one hash-block of salt input per derived block. The salt ceiling keeps the
+/// first PRF call from hiding unbounded work outside the iteration count.
+pub const MAX_PBKDF2_SALT_BYTES: usize = 125_000;
 
 /// Bound caller-selected secret/output sizes so a pure synchronous host call
 /// cannot turn an integer parameter into an effectively unbounded allocation.
@@ -74,8 +78,7 @@ impl Error {
         Self::new(ErrorName::DataError, message)
     }
 
-    #[cfg(feature = "crypto")]
-    fn operation(message: impl Into<String>) -> Self {
+    pub(crate) fn operation(message: impl Into<String>) -> Self {
         Self::new(ErrorName::OperationError, message)
     }
 
@@ -85,6 +88,12 @@ impl Error {
 
     pub fn feature_unavailable() -> Self {
         Self::unsupported("crypto.subtle was omitted from this build")
+    }
+
+    pub fn asymmetric_feature_unavailable() -> Self {
+        Self::unsupported(
+            "asymmetric crypto algorithms were omitted from this build; enable crypto-asymmetric",
+        )
     }
 }
 
@@ -119,6 +128,19 @@ impl HashAlgorithm {
             Self::Sha256 => 256,
             Self::Sha384 => 384,
             Self::Sha512 => 512,
+        }
+    }
+
+    #[cfg(feature = "crypto")]
+    const fn output_bytes(self) -> usize {
+        self.output_bits() / 8
+    }
+
+    #[cfg(feature = "crypto")]
+    const fn compression_block_bytes(self) -> usize {
+        match self {
+            Self::Sha256 => 64,
+            Self::Sha384 | Self::Sha512 => 128,
         }
     }
 
@@ -224,6 +246,20 @@ pub enum ImportAlgorithm {
     Ed25519,
 }
 
+pub(crate) fn ensure_import_feature(algorithm: ImportAlgorithm) -> Result<()> {
+    if matches!(
+        algorithm,
+        ImportAlgorithm::EcdsaP256 | ImportAlgorithm::Ed25519
+    ) {
+        #[cfg(not(feature = "crypto-asymmetric"))]
+        return Err(Error::asymmetric_feature_unavailable());
+    }
+    #[cfg(not(feature = "crypto"))]
+    return Err(Error::feature_unavailable());
+    #[cfg(feature = "crypto")]
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GenerateAlgorithm {
     Hmac {
@@ -314,6 +350,7 @@ pub struct CryptoKeyPair {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(not(feature = "crypto"), allow(dead_code))]
+#[cfg_attr(not(feature = "crypto-asymmetric"), allow(dead_code))]
 enum KeyType {
     Secret,
     Public,
@@ -378,8 +415,7 @@ impl CryptoKey {
 }
 
 #[cfg(feature = "crypto")]
-fn validate_usages(usages: &[KeyUsage], allowed: &[KeyUsage]) -> Result<Vec<KeyUsage>> {
-    let mut normalized = Vec::with_capacity(usages.len());
+fn validate_usages_borrowed(usages: &[KeyUsage], allowed: &[KeyUsage]) -> Result<()> {
     for usage in usages {
         if !allowed.contains(usage) {
             return Err(Error::syntax(format!(
@@ -387,6 +423,15 @@ fn validate_usages(usages: &[KeyUsage], allowed: &[KeyUsage]) -> Result<Vec<KeyU
                 usage.name()
             )));
         }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "crypto")]
+fn validate_usages(usages: &[KeyUsage], allowed: &[KeyUsage]) -> Result<Vec<KeyUsage>> {
+    validate_usages_borrowed(usages, allowed)?;
+    let mut normalized = Vec::with_capacity(usages.len());
+    for usage in usages {
         if !normalized.contains(usage) {
             normalized.push(*usage);
         }
@@ -521,6 +566,111 @@ fn validate_hmac_import_length(
 }
 
 #[cfg(feature = "crypto")]
+fn preflight_secret_import(
+    material_bytes: usize,
+    algorithm: ImportAlgorithm,
+    extractable: bool,
+    usages: &[KeyUsage],
+) -> Result<()> {
+    match algorithm {
+        ImportAlgorithm::Hmac { length_bits, .. } => {
+            validate_hmac_import_length(material_bytes, length_bits)?;
+            validate_usages_borrowed(usages, &[KeyUsage::Sign, KeyUsage::Verify])?;
+        }
+        ImportAlgorithm::AesGcm => {
+            let length_bits = material_bytes
+                .checked_mul(8)
+                .ok_or_else(|| Error::operation("AES-GCM key data is too large"))?;
+            validate_aes_length(length_bits)?;
+            validate_usages_borrowed(
+                usages,
+                &[
+                    KeyUsage::Encrypt,
+                    KeyUsage::Decrypt,
+                    KeyUsage::WrapKey,
+                    KeyUsage::UnwrapKey,
+                ],
+            )?;
+        }
+        ImportAlgorithm::Hkdf => {
+            if extractable {
+                return Err(Error::syntax("HKDF base keys must be non-extractable"));
+            }
+            validate_usages_borrowed(usages, &[KeyUsage::DeriveKey, KeyUsage::DeriveBits])?;
+        }
+        ImportAlgorithm::Pbkdf2 => {
+            if extractable {
+                return Err(Error::syntax("PBKDF2 base keys must be non-extractable"));
+            }
+            validate_usages_borrowed(usages, &[KeyUsage::DeriveKey, KeyUsage::DeriveBits])?;
+        }
+        ImportAlgorithm::EcdsaP256 | ImportAlgorithm::Ed25519 => {
+            return Err(Error::invalid_access(
+                "asymmetric key material must use an asymmetric importer",
+            ));
+        }
+    }
+    if usages.is_empty() {
+        return Err(Error::syntax(
+            "secret keys must have at least one permitted usage",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "crypto")]
+const MAX_JWK_METADATA_BYTES: usize = 64;
+#[cfg(feature = "crypto")]
+const MAX_JWK_KEY_OPS_BYTES: usize = 128;
+
+/// Bound borrowed JWK members before the ABI constructs owned strings. The
+/// decoder performs exact semantic checks after this allocation preflight.
+#[cfg(feature = "crypto")]
+pub(crate) fn preflight_jwk_fields(
+    algorithm: ImportAlgorithm,
+    kty: &str,
+    k: Option<&str>,
+    crv: Option<&str>,
+    x: Option<&str>,
+    y: Option<&str>,
+    d: Option<&str>,
+    alg: Option<&str>,
+    key_use: Option<&str>,
+    key_ops: Option<&str>,
+) -> Result<()> {
+    for (label, value) in [
+        ("kty", Some(kty)),
+        ("crv", crv),
+        ("alg", alg),
+        ("use", key_use),
+    ] {
+        if value.is_some_and(|value| value.len() > MAX_JWK_METADATA_BYTES) {
+            return Err(Error::data(format!("JWK {label} is too large")));
+        }
+    }
+    if key_ops.is_some_and(|value| value.len() > MAX_JWK_KEY_OPS_BYTES) {
+        return Err(Error::data("JWK key_ops is too large"));
+    }
+
+    let component_limit = match algorithm {
+        ImportAlgorithm::Hmac { .. } => MAX_HMAC_KEY_BITS.div_ceil(6),
+        ImportAlgorithm::AesGcm | ImportAlgorithm::EcdsaP256 | ImportAlgorithm::Ed25519 => 43,
+        ImportAlgorithm::Hkdf | ImportAlgorithm::Pbkdf2 => 0,
+    };
+    for (label, value) in [("k", k), ("x", x), ("y", y), ("d", d)] {
+        if value.is_some_and(|value| value.len() > component_limit) {
+            let message = format!("JWK {label} exceeds the requested algorithm's size limit");
+            return Err(if matches!(algorithm, ImportAlgorithm::Hmac { .. }) {
+                Error::operation(message)
+            } else {
+                Error::data(message)
+            });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "crypto")]
 fn truncate_hmac_material(material: &mut Vec<u8>, length_bits: usize) {
     material.truncate(length_bits.div_ceil(8));
     let retained = length_bits % 8;
@@ -611,22 +761,29 @@ pub fn import_raw_key(
 ) -> Result<CryptoKey> {
     #[cfg(not(feature = "crypto"))]
     {
-        let _ = (material, algorithm, extractable, usages);
-        Err(Error::feature_unavailable())
-    }
-    #[cfg(feature = "crypto")]
-    {
-        if let ImportAlgorithm::Hmac { length_bits, .. } = algorithm {
-            validate_hmac_import_length(material.len(), length_bits)?;
-        }
+        let _ = (material, extractable, usages);
         if matches!(
             algorithm,
             ImportAlgorithm::EcdsaP256 | ImportAlgorithm::Ed25519
         ) {
-            asymmetric::import_raw(material, algorithm, extractable, usages)
+            Err(Error::asymmetric_feature_unavailable())
         } else {
-            import_material(material.to_vec(), algorithm, extractable, usages)
+            Err(Error::feature_unavailable())
         }
+    }
+    #[cfg(feature = "crypto")]
+    {
+        if matches!(
+            algorithm,
+            ImportAlgorithm::EcdsaP256 | ImportAlgorithm::Ed25519
+        ) {
+            #[cfg(feature = "crypto-asymmetric")]
+            return asymmetric::import_raw(material, algorithm, extractable, usages);
+            #[cfg(not(feature = "crypto-asymmetric"))]
+            return Err(Error::asymmetric_feature_unavailable());
+        }
+        preflight_secret_import(material.len(), algorithm, extractable, usages)?;
+        import_material(material.to_vec(), algorithm, extractable, usages)
     }
 }
 
@@ -639,10 +796,18 @@ pub fn import_spki_key(
     #[cfg(not(feature = "crypto"))]
     {
         let _ = (material, algorithm, extractable, usages);
-        Err(Error::feature_unavailable())
+        Err(Error::asymmetric_feature_unavailable())
     }
     #[cfg(feature = "crypto")]
-    asymmetric::import_spki(material, algorithm, extractable, usages)
+    {
+        #[cfg(feature = "crypto-asymmetric")]
+        return asymmetric::import_spki(material, algorithm, extractable, usages);
+        #[cfg(not(feature = "crypto-asymmetric"))]
+        {
+            let _ = (material, algorithm, extractable, usages);
+            Err(Error::asymmetric_feature_unavailable())
+        }
+    }
 }
 
 pub fn import_pkcs8_key(
@@ -654,10 +819,18 @@ pub fn import_pkcs8_key(
     #[cfg(not(feature = "crypto"))]
     {
         let _ = (material, algorithm, extractable, usages);
-        Err(Error::feature_unavailable())
+        Err(Error::asymmetric_feature_unavailable())
     }
     #[cfg(feature = "crypto")]
-    asymmetric::import_pkcs8(material, algorithm, extractable, usages)
+    {
+        #[cfg(feature = "crypto-asymmetric")]
+        return asymmetric::import_pkcs8(material, algorithm, extractable, usages);
+        #[cfg(not(feature = "crypto-asymmetric"))]
+        {
+            let _ = (material, algorithm, extractable, usages);
+            Err(Error::asymmetric_feature_unavailable())
+        }
+    }
 }
 
 pub fn import_jwk_key(
@@ -668,8 +841,15 @@ pub fn import_jwk_key(
 ) -> Result<CryptoKey> {
     #[cfg(not(feature = "crypto"))]
     {
-        let _ = (jwk, algorithm, extractable, usages);
-        Err(Error::feature_unavailable())
+        let _ = (jwk, extractable, usages);
+        if matches!(
+            algorithm,
+            ImportAlgorithm::EcdsaP256 | ImportAlgorithm::Ed25519
+        ) {
+            Err(Error::asymmetric_feature_unavailable())
+        } else {
+            Err(Error::feature_unavailable())
+        }
     }
     #[cfg(feature = "crypto")]
     {
@@ -680,7 +860,10 @@ pub fn import_jwk_key(
             algorithm,
             ImportAlgorithm::EcdsaP256 | ImportAlgorithm::Ed25519
         ) {
+            #[cfg(feature = "crypto-asymmetric")]
             return asymmetric::import_jwk(jwk, algorithm, extractable, usages);
+            #[cfg(not(feature = "crypto-asymmetric"))]
+            return Err(Error::asymmetric_feature_unavailable());
         }
         let encoded = jwk
             .k
@@ -706,27 +889,28 @@ pub fn import_jwk_key(
             }
             _ => {}
         }
-        let material = URL_SAFE_NO_PAD
-            .decode(encoded.as_bytes())
-            .map_err(|_| Error::data("JWK k is not unpadded base64url"))?;
-        if URL_SAFE_NO_PAD.encode(&material) != encoded {
-            return Err(Error::data("JWK k is not canonical unpadded base64url"));
-        }
         let expected = match algorithm {
             ImportAlgorithm::Hmac { hash, .. } => match hash {
                 HashAlgorithm::Sha256 => "HS256",
                 HashAlgorithm::Sha384 => "HS384",
                 HashAlgorithm::Sha512 => "HS512",
             },
-            ImportAlgorithm::AesGcm => match material.len() * 8 {
-                128 => "A128GCM",
-                192 => return Err(Error::unsupported("AES-GCM-192 is not supported by ring")),
-                256 => "A256GCM",
+            ImportAlgorithm::AesGcm => match encoded.len() {
+                22 => "A128GCM",
+                32 => return Err(Error::unsupported("AES-GCM-192 is not supported by ring")),
+                43 => "A256GCM",
                 _ => return Err(Error::data("AES-GCM JWK has an invalid key length")),
             },
             _ => unreachable!(),
         };
         validate_jwk(jwk, expected, extractable, usages)?;
+        let material = URL_SAFE_NO_PAD
+            .decode(encoded.as_bytes())
+            .map_err(|_| Error::data("JWK k is not unpadded base64url"))?;
+        if URL_SAFE_NO_PAD.encode(&material) != encoded {
+            return Err(Error::data("JWK k is not canonical unpadded base64url"));
+        }
+        preflight_secret_import(material.len(), algorithm, extractable, usages)?;
         import_material(material, algorithm, extractable, usages)
     }
 }
@@ -746,7 +930,10 @@ pub fn export_key(format: KeyFormat, key: &CryptoKey) -> Result<ExportedKey> {
             key.algorithm,
             KeyAlgorithm::EcdsaP256 | KeyAlgorithm::Ed25519
         ) {
+            #[cfg(feature = "crypto-asymmetric")]
             return asymmetric::export_key(format, key);
+            #[cfg(not(feature = "crypto-asymmetric"))]
+            return Err(Error::asymmetric_feature_unavailable());
         }
         if matches!(key.algorithm, KeyAlgorithm::Hkdf | KeyAlgorithm::Pbkdf2) {
             return Err(Error::unsupported(
@@ -810,9 +997,12 @@ pub fn generate_key(
                 (ImportAlgorithm::AesGcm, length_bits)
             }
             GenerateAlgorithm::EcdsaP256 | GenerateAlgorithm::Ed25519 => {
+                #[cfg(not(feature = "crypto-asymmetric"))]
+                return Err(Error::asymmetric_feature_unavailable());
+                #[cfg(feature = "crypto-asymmetric")]
                 return Err(Error::invalid_access(
                     "asymmetric algorithms return a key pair; use generate_key_pair",
-                ))
+                ));
             }
         };
         // Validate usage syntax before entropy or key-material allocation.
@@ -848,10 +1038,18 @@ pub fn generate_key_pair(
     #[cfg(not(feature = "crypto"))]
     {
         let _ = (algorithm, extractable, usages);
-        Err(Error::feature_unavailable())
+        Err(Error::asymmetric_feature_unavailable())
     }
     #[cfg(feature = "crypto")]
-    asymmetric::generate_pair(algorithm, extractable, usages)
+    {
+        #[cfg(feature = "crypto-asymmetric")]
+        return asymmetric::generate_pair(algorithm, extractable, usages);
+        #[cfg(not(feature = "crypto-asymmetric"))]
+        {
+            let _ = (algorithm, extractable, usages);
+            Err(Error::asymmetric_feature_unavailable())
+        }
+    }
 }
 
 pub fn digest(hash: HashAlgorithm, data: &[u8]) -> Result<Vec<u8>> {
@@ -912,7 +1110,10 @@ pub fn sign_with_algorithm(
         if algorithm == SignatureAlgorithm::Hmac {
             sign(key, data)
         } else {
-            asymmetric::sign(algorithm, key, data)
+            #[cfg(feature = "crypto-asymmetric")]
+            return asymmetric::sign(algorithm, key, data);
+            #[cfg(not(feature = "crypto-asymmetric"))]
+            return Err(Error::asymmetric_feature_unavailable());
         }
     }
 }
@@ -950,7 +1151,10 @@ pub fn verify_with_algorithm(
         if algorithm == SignatureAlgorithm::Hmac {
             verify(key, signature, data)
         } else {
-            asymmetric::verify(algorithm, key, signature, data)
+            #[cfg(feature = "crypto-asymmetric")]
+            return asymmetric::verify(algorithm, key, signature, data);
+            #[cfg(not(feature = "crypto-asymmetric"))]
+            return Err(Error::asymmetric_feature_unavailable());
         }
     }
 }
@@ -1027,13 +1231,82 @@ pub fn decrypt(key: &CryptoKey, params: AesGcmParams<'_>, ciphertext: &[u8]) -> 
 }
 
 #[cfg(feature = "crypto")]
+pub(crate) fn preflight_derive_access(
+    algorithm: DeriveAlgorithm<'_>,
+    base_key: &CryptoKey,
+    usage: KeyUsage,
+) -> Result<()> {
+    require_usage(base_key, usage)?;
+    match algorithm {
+        DeriveAlgorithm::Hkdf { .. } if base_key.algorithm != KeyAlgorithm::Hkdf => {
+            Err(Error::invalid_access("HKDF requires an HKDF base key"))
+        }
+        DeriveAlgorithm::Pbkdf2 { .. } if base_key.algorithm != KeyAlgorithm::Pbkdf2 => {
+            Err(Error::invalid_access("PBKDF2 requires a PBKDF2 base key"))
+        }
+        _ => Ok(()),
+    }
+}
+
+#[cfg(feature = "crypto")]
+fn validate_pbkdf2_work(
+    hash: HashAlgorithm,
+    salt_len: usize,
+    iterations: u32,
+    length_bits: usize,
+) -> Result<()> {
+    if iterations == 0 {
+        return Err(Error::operation("PBKDF2 iterations must be non-zero"));
+    }
+    if iterations > MAX_PBKDF2_ITERATIONS {
+        return Err(Error::operation(format!(
+            "PBKDF2 iterations exceed the per-call limit of {MAX_PBKDF2_ITERATIONS}"
+        )));
+    }
+    if salt_len > MAX_PBKDF2_SALT_BYTES {
+        return Err(Error::operation(format!(
+            "PBKDF2 salt exceeds the per-call limit of {MAX_PBKDF2_SALT_BYTES} bytes"
+        )));
+    }
+
+    let output_bytes = length_bits / 8;
+    let output_blocks = output_bytes.div_ceil(hash.output_bytes());
+    let salt_bytes = salt_len
+        .checked_add(4)
+        .ok_or_else(|| Error::operation("PBKDF2 salt length overflow"))?;
+    let salt_blocks = salt_bytes.div_ceil(hash.compression_block_bytes()).max(1);
+    let per_output_block = u64::from(iterations)
+        .checked_add(
+            u64::try_from(salt_blocks)
+                .map_err(|_| Error::operation("PBKDF2 salt work overflow"))?,
+        )
+        .ok_or_else(|| Error::operation("PBKDF2 work overflow"))?;
+    let work = u64::try_from(output_blocks)
+        .ok()
+        .and_then(|blocks| blocks.checked_mul(per_output_block))
+        .ok_or_else(|| Error::operation("PBKDF2 work overflow"))?;
+    let maximum_salt_blocks = (MAX_PBKDF2_SALT_BYTES + 4)
+        .div_ceil(hash.compression_block_bytes())
+        .max(1);
+    let maximum = u64::from(MAX_PBKDF2_ITERATIONS)
+        + u64::try_from(maximum_salt_blocks).expect("the fixed PBKDF2 salt ceiling fits in u64");
+    if work > maximum {
+        return Err(Error::operation(format!(
+            "PBKDF2 combined work {work} exceeds the per-call limit of {maximum} for {}",
+            hash.name()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "crypto")]
 fn derive_material(
     algorithm: DeriveAlgorithm<'_>,
     base_key: &CryptoKey,
     usage: KeyUsage,
     length_bits: usize,
 ) -> Result<Vec<u8>> {
-    require_usage(base_key, usage)?;
+    preflight_derive_access(algorithm, base_key, usage)?;
     if !length_bits.is_multiple_of(8) {
         return Err(Error::operation("derived length must be a multiple of 8"));
     }
@@ -1047,9 +1320,6 @@ fn derive_material(
     // limits before allocating the caller-selected output buffer.
     match algorithm {
         DeriveAlgorithm::Hkdf { hash, .. } => {
-            if base_key.algorithm != KeyAlgorithm::Hkdf {
-                return Err(Error::invalid_access("HKDF requires an HKDF base key"));
-            }
             let maximum = 255 * hash.output_bits();
             if length_bits > maximum {
                 return Err(Error::operation(format!(
@@ -1058,18 +1328,12 @@ fn derive_material(
                 )));
             }
         }
-        DeriveAlgorithm::Pbkdf2 { iterations, .. } => {
-            if base_key.algorithm != KeyAlgorithm::Pbkdf2 {
-                return Err(Error::invalid_access("PBKDF2 requires a PBKDF2 base key"));
-            }
-            if iterations == 0 {
-                return Err(Error::operation("PBKDF2 iterations must be non-zero"));
-            }
-            if iterations > MAX_PBKDF2_ITERATIONS {
-                return Err(Error::operation(format!(
-                    "PBKDF2 iterations exceed the per-call limit of {MAX_PBKDF2_ITERATIONS}"
-                )));
-            }
+        DeriveAlgorithm::Pbkdf2 {
+            hash,
+            salt,
+            iterations,
+        } => {
+            validate_pbkdf2_work(hash, salt.len(), iterations, length_bits)?;
         }
     }
 
@@ -1178,12 +1442,7 @@ pub fn derive_key(
             }
             _ => unreachable!(),
         }
-        let material = derive_material(
-            algorithm,
-            base_key,
-            KeyUsage::DeriveKey,
-            length_bits.div_ceil(8) * 8,
-        )?;
+        let material = derive_material(algorithm, base_key, KeyUsage::DeriveKey, length_bits)?;
         import_material(material, import, extractable, usages)
     }
 }
@@ -1289,6 +1548,20 @@ mod tests {
         assert_eq!(
             sign(&key, b"ibex").unwrap(),
             hex("09dc61ba3ab858026005afe0e64a7e864f4be1256bedefce0e16d78dd5a571ae")
+        );
+        assert_eq!(
+            import_raw_key(
+                &[0xff; 20],
+                ImportAlgorithm::Hmac {
+                    hash: HashAlgorithm::Sha256,
+                    length_bits: Some(152),
+                },
+                true,
+                &[KeyUsage::Sign],
+            )
+            .unwrap_err()
+            .name,
+            ErrorName::DataError
         );
     }
 
@@ -1458,6 +1731,47 @@ mod tests {
                 },
                 &pbkdf2,
                 MAX_DERIVED_BITS + 8,
+            )
+            .unwrap_err()
+            .name,
+            ErrorName::OperationError
+        );
+
+        for hash in [
+            HashAlgorithm::Sha256,
+            HashAlgorithm::Sha384,
+            HashAlgorithm::Sha512,
+        ] {
+            validate_pbkdf2_work(
+                hash,
+                MAX_PBKDF2_SALT_BYTES,
+                MAX_PBKDF2_ITERATIONS,
+                hash.output_bits(),
+            )
+            .unwrap();
+            assert_eq!(
+                validate_pbkdf2_work(
+                    hash,
+                    MAX_PBKDF2_SALT_BYTES,
+                    MAX_PBKDF2_ITERATIONS,
+                    hash.output_bits() + 8,
+                )
+                .unwrap_err()
+                .name,
+                ErrorName::OperationError
+            );
+        }
+
+        assert_eq!(
+            derive_key(
+                hkdf_params,
+                &hkdf,
+                DerivedKeyAlgorithm::Hmac {
+                    hash: HashAlgorithm::Sha256,
+                    length_bits: Some(17),
+                },
+                true,
+                &[KeyUsage::Sign],
             )
             .unwrap_err()
             .name,
