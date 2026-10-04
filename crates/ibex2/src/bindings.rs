@@ -71,7 +71,7 @@ impl Groups {
     pub const ALL: Self = Self::PORTABLE_ALL;
 
     /// The ordinary runtime profile. BLOB is linked but stays explicit: its
-    /// measured floor cost exceeds LLP 0057.000 D5's 50 µs threshold.
+    /// repeated floor measurements cross LLP 0057.000 D5's 50 µs threshold.
     #[cfg(target_os = "linux")]
     pub const DEFAULT: Self = Self(Self::PORTABLE_DEFAULT.0 | Self::INTL.0);
     /// The ordinary runtime profile. See the Linux definition above.
