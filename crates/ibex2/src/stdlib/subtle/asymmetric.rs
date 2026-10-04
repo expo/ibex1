@@ -4,9 +4,10 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ring::signature::KeyPair as _;
 
 use super::{
-    der, preflight_jwk_fields, validate_usages, validate_usages_borrowed, CryptoKey, CryptoKeyPair,
-    Error, ExportedKey, GenerateAlgorithm, HashAlgorithm, ImportAlgorithm, JsonWebKey,
-    JwkFieldRefs, KeyAlgorithm, KeyFormat, KeyType, KeyUsage, Result,
+    der, preflight_jwk_fields, preflight_jwk_key_ops, validate_jwk_key_ops, validate_usages,
+    validate_usages_borrowed, CryptoKey, CryptoKeyPair, Error, ExportedKey, GenerateAlgorithm,
+    HashAlgorithm, ImportAlgorithm, JsonWebKey, JwkFieldRefs, KeyAlgorithm, KeyFormat, KeyType,
+    KeyUsage, Result,
 };
 
 const MAX_P256_PKCS8_BYTES: usize = 160;
@@ -115,31 +116,12 @@ fn decode_component(jwk: &JsonWebKey, name: &str, value: Option<&str>) -> Result
 fn validate_jwk_metadata(
     jwk: &JsonWebKey,
     algorithm: KeyAlgorithm,
-    key_type: KeyType,
     extractable: bool,
     usages: &[KeyUsage],
 ) -> Result<()> {
-    let (kty, crv, algorithms, allowed) = match algorithm {
-        KeyAlgorithm::EcdsaP256 => (
-            "EC",
-            "P-256",
-            &["ES256"][..],
-            match key_type {
-                KeyType::Private => &[KeyUsage::Sign][..],
-                KeyType::Public => &[KeyUsage::Verify][..],
-                KeyType::Secret => unreachable!(),
-            },
-        ),
-        KeyAlgorithm::Ed25519 => (
-            "OKP",
-            "Ed25519",
-            &["Ed25519", "EdDSA"][..],
-            match key_type {
-                KeyType::Private => &[KeyUsage::Sign][..],
-                KeyType::Public => &[KeyUsage::Verify][..],
-                KeyType::Secret => unreachable!(),
-            },
-        ),
+    let (kty, crv, algorithms) = match algorithm {
+        KeyAlgorithm::EcdsaP256 => ("EC", "P-256", &["ES256"][..]),
+        KeyAlgorithm::Ed25519 => ("OKP", "Ed25519", &["Ed25519", "EdDSA"][..]),
         _ => return Err(Error::invalid_access("key is not asymmetric")),
     };
     if jwk.kty != kty || jwk.crv.as_deref() != Some(crv) {
@@ -162,25 +144,7 @@ fn validate_jwk_metadata(
     if jwk.key_use.as_deref().is_some_and(|value| value != "sig") {
         return Err(Error::data("JWK use must be sig"));
     }
-    if let Some(ops) = &jwk.key_ops {
-        for (index, op) in ops.iter().enumerate() {
-            let usage = KeyUsage::parse(op).map_err(|_| Error::data("JWK key_ops is invalid"))?;
-            if ops[..index].iter().any(|earlier| earlier == op) {
-                return Err(Error::data("JWK key_ops contains a duplicate"));
-            }
-            if !allowed.contains(&usage) {
-                return Err(Error::data("JWK key_ops is invalid for this key type"));
-            }
-        }
-        if usages
-            .iter()
-            .any(|usage| !ops.iter().any(|op| op == usage.name()))
-        {
-            return Err(Error::data(
-                "JWK key_ops does not contain every requested usage",
-            ));
-        }
-    }
+    validate_jwk_key_ops(jwk.key_ops.as_deref(), usages)?;
     Ok(())
 }
 
@@ -348,28 +312,20 @@ pub(super) fn import_jwk(
             d: jwk.d.as_deref(),
             alg: jwk.alg.as_deref(),
             key_use: jwk.key_use.as_deref(),
-            key_ops: None,
         },
     )?;
-    if jwk.key_ops.as_ref().is_some_and(|ops| {
-        match ops.iter().try_fold(0usize, |total, op| {
-            total
-                .checked_add(op.len())
-                .and_then(|total| total.checked_add(1))
-        }) {
-            Some(total) => total > 128,
-            None => true,
-        }
-    }) {
-        return Err(Error::data("JWK key_ops is too large"));
-    }
+    let key_ops = jwk
+        .key_ops
+        .as_ref()
+        .map(|ops| ops.iter().map(String::as_str).collect::<Vec<_>>());
+    preflight_jwk_key_ops(key_ops.as_deref())?;
     let key_type = if jwk.d.is_some() {
         KeyType::Private
     } else {
         KeyType::Public
     };
     preflight_component_usages(key_type == KeyType::Private, usages)?;
-    validate_jwk_metadata(jwk, algorithm.clone(), key_type, extractable, usages)?;
+    validate_jwk_metadata(jwk, algorithm.clone(), extractable, usages)?;
     let private = jwk
         .d
         .as_deref()

@@ -477,6 +477,27 @@ fn jwk_algorithm(algorithm: &KeyAlgorithm) -> &'static str {
 }
 
 #[cfg(feature = "crypto")]
+fn validate_jwk_key_ops(key_ops: Option<&[String]>, usages: &[KeyUsage]) -> Result<()> {
+    if let Some(ops) = key_ops {
+        for (index, op) in ops.iter().enumerate() {
+            KeyUsage::parse(op).map_err(|_| Error::data("JWK key_ops is invalid"))?;
+            if ops[..index].iter().any(|earlier| earlier == op) {
+                return Err(Error::data("JWK key_ops contains a duplicate"));
+            }
+        }
+        if usages
+            .iter()
+            .any(|usage| !ops.iter().any(|op| op == usage.name()))
+        {
+            return Err(Error::data(
+                "JWK key_ops does not contain every requested usage",
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "crypto")]
 fn validate_jwk(
     jwk: &JsonWebKey,
     expected_alg: &str,
@@ -498,15 +519,7 @@ fn validate_jwk(
             "a non-extractable JWK cannot be imported as extractable",
         ));
     }
-    if let Some(ops) = &jwk.key_ops {
-        for usage in usages {
-            if !ops.iter().any(|op| op == usage.name()) {
-                return Err(Error::data(
-                    "JWK key_ops does not contain every requested usage",
-                ));
-            }
-        }
-    }
+    validate_jwk_key_ops(jwk.key_ops.as_deref(), usages)?;
     if let Some(key_use) = &jwk.key_use {
         let expected = if expected_alg.starts_with("HS") {
             "sig"
@@ -626,6 +639,7 @@ fn preflight_secret_import(
 const MAX_JWK_METADATA_BYTES: usize = 64;
 #[cfg(feature = "crypto")]
 const MAX_JWK_KEY_OPS_BYTES: usize = 128;
+pub(crate) const MAX_JWK_KEY_OPS_COUNT: usize = 8;
 
 /// Bound borrowed JWK members before the ABI constructs owned strings. The
 /// decoder performs exact semantic checks after this allocation preflight.
@@ -639,7 +653,27 @@ pub(crate) struct JwkFieldRefs<'a> {
     pub(crate) d: Option<&'a str>,
     pub(crate) alg: Option<&'a str>,
     pub(crate) key_use: Option<&'a str>,
-    pub(crate) key_ops: Option<&'a str>,
+}
+
+#[cfg(feature = "crypto")]
+pub(crate) fn preflight_jwk_key_ops(key_ops: Option<&[&str]>) -> Result<()> {
+    let Some(ops) = key_ops else {
+        return Ok(());
+    };
+    if ops.len() > MAX_JWK_KEY_OPS_COUNT {
+        return Err(Error::data("JWK key_ops has too many entries"));
+    }
+    let total = ops.iter().try_fold(0usize, |total, op| {
+        total
+            .checked_add(op.len())
+            .and_then(|total| total.checked_add(1))
+    });
+    if ops.iter().any(|op| op.len() > MAX_JWK_KEY_OPS_BYTES)
+        || total.is_none_or(|total| total > MAX_JWK_KEY_OPS_BYTES)
+    {
+        return Err(Error::data("JWK key_ops is too large"));
+    }
+    Ok(())
 }
 
 #[cfg(feature = "crypto")]
@@ -656,7 +690,6 @@ pub(crate) fn preflight_jwk_fields(
         d,
         alg,
         key_use,
-        key_ops,
     } = fields;
     for (label, value) in [
         ("kty", Some(kty)),
@@ -668,10 +701,6 @@ pub(crate) fn preflight_jwk_fields(
             return Err(Error::data(format!("JWK {label} is too large")));
         }
     }
-    if key_ops.is_some_and(|value| value.len() > MAX_JWK_KEY_OPS_BYTES) {
-        return Err(Error::data("JWK key_ops is too large"));
-    }
-
     let component_limit = match algorithm {
         ImportAlgorithm::Hmac { .. } => MAX_HMAC_KEY_BITS.div_ceil(6),
         ImportAlgorithm::AesGcm | ImportAlgorithm::EcdsaP256 | ImportAlgorithm::Ed25519 => 43,

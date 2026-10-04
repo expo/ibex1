@@ -129,6 +129,22 @@ fn usages(value: &str) -> Result<Vec<KeyUsage>, HostError> {
         .collect()
 }
 
+fn jwk_key_ops<'a>(args: &'a [HostArg<'a>]) -> Result<Option<Vec<&'a str>>, HostError> {
+    let Some(count) = optional_unsigned_long(args, 10, "JWK key_ops count")? else {
+        return Ok(None);
+    };
+    let count = count as usize;
+    if count > subtle::MAX_JWK_KEY_OPS_COUNT {
+        return Err(HostError::Failed(
+            "DataError: JWK key_ops has too many entries".into(),
+        ));
+    }
+    (0..count)
+        .map(|index| string(args, 17 + index, "a JWK key_ops entry"))
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
+}
+
 fn import_algorithm(args: &[HostArg<'_>], name_index: usize) -> Result<ImportAlgorithm, HostError> {
     match string(args, name_index, "an algorithm name")? {
         "HMAC" => Ok(ImportAlgorithm::Hmac {
@@ -287,7 +303,7 @@ pub(crate) fn dispatch(
                         let k = optional_string(args, 1);
                         let alg = optional_string(args, 8);
                         let key_use = optional_string(args, 9);
-                        let key_ops = optional_string(args, 10);
+                        let key_ops = jwk_key_ops(args)?;
                         let crv = optional_string(args, 12);
                         let x = optional_string(args, 13);
                         let y = optional_string(args, 14);
@@ -304,10 +320,11 @@ pub(crate) fn dispatch(
                                 d,
                                 alg,
                                 key_use,
-                                key_ops,
                             },
                         )
                         .map_err(failed)?;
+                        #[cfg(feature = "crypto")]
+                        subtle::preflight_jwk_key_ops(key_ops.as_deref()).map_err(failed)?;
                         let jwk = JsonWebKey {
                             kty: kty.into(),
                             k: k.map(str::to_owned),
@@ -317,7 +334,8 @@ pub(crate) fn dispatch(
                             d: d.map(str::to_owned),
                             alg: alg.map(str::to_owned),
                             key_use: key_use.map(str::to_owned),
-                            key_ops: key_ops.map(|ops| ops.split(',').map(str::to_owned).collect()),
+                            key_ops: key_ops
+                                .map(|ops| ops.into_iter().map(str::to_owned).collect()),
                             ext,
                         };
                         subtle::import_jwk_key(&jwk, algorithm, extractable, &usages)

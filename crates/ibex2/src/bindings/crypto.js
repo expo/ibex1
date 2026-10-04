@@ -323,7 +323,7 @@
           kty = domString(keyData.kty, "JWK kty");
           alg = keyData.alg === undefined ? undefined : domString(keyData.alg, "JWK alg");
           use = keyData.use === undefined ? undefined : domString(keyData.use, "JWK use");
-          keyOps = keyData.key_ops === undefined ? undefined : jwkKeyOps(keyData.key_ops).join(",");
+          keyOps = keyData.key_ops === undefined ? undefined : jwkKeyOps(keyData.key_ops);
           ext = keyData.ext === undefined ? -1 : (Boolean(keyData.ext) ? 1 : 0);
           crv = keyData.crv === undefined ? undefined : domString(keyData.crv, "JWK crv");
           x = keyData.x === undefined ? undefined : domString(keyData.x, "JWK x");
@@ -333,8 +333,10 @@
         }
         const handle = native.importKey(
           format, material, algorithm.name, algorithm.hash, algorithm.length,
-          extractable, usages.join(","), kty, alg, use, keyOps, ext,
-          crv, x, y, d, algorithm.namedCurve
+          extractable, usages.join(","), kty, alg, use,
+          keyOps === undefined ? -1 : keyOps.length, ext,
+          crv, x, y, d, algorithm.namedCurve,
+          ...(keyOps === undefined ? [] : keyOps)
         );
         const type = algorithm.name === "HMAC" || algorithm.name === "AES-GCM" ||
           algorithm.name === "HKDF" || algorithm.name === "PBKDF2"

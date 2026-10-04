@@ -255,8 +255,19 @@ fn ecdsa_p256_key_pair_formats_and_stock_ring_hashes() {
         const importedPrivate = await crypto.subtle.importKey(
           "jwk", privateJwk, {name: "ECDSA", namedCurve: "P-256"}, true, ["sign"]
         );
+        await rejects("DataError", () => crypto.subtle.importKey(
+          "jwk", Object.assign({}, privateJwk, {key_ops: ["sign", "sign"]}),
+          {name: "ECDSA", namedCurve: "P-256"}, true, ["sign"]
+        ));
+        const privateWithPublicOp = await crypto.subtle.importKey(
+          "jwk", Object.assign({}, privateJwk, {key_ops: ["sign", "verify"]}),
+          {name: "ECDSA", namedCurve: "P-256"}, true, ["sign"]
+        );
         const signature = await crypto.subtle.sign({name: "ECDSA", hash: "SHA-256"}, importedPrivate, data);
         assert(await crypto.subtle.verify({name: "ECDSA", hash: "SHA-256"}, importedPublic, signature, data));
+        assert((await crypto.subtle.sign(
+          {name: "ECDSA", hash: "SHA-256"}, privateWithPublicOp, data
+        )).byteLength === 64);
         await rejects("DataError", () => crypto.subtle.importKey(
           "raw", new Uint8Array(33).fill(2), {name: "ECDSA", namedCurve: "P-256"}, true, ["verify"]
         ));
@@ -380,6 +391,10 @@ fn ed25519_known_answer_and_format_round_trips() {
         assert(hex(await crypto.subtle.exportKey("spki", publicKey)) === hex(spki));
         const jwk = await crypto.subtle.exportKey("jwk", privateKey);
         assert(jwk.kty === "OKP" && jwk.crv === "Ed25519" && jwk.alg === "Ed25519" && jwk.d);
+        await rejects("DataError", () => crypto.subtle.importKey(
+          "jwk", Object.assign({}, jwk, {key_ops: ["sign", "sign"]}),
+          "Ed25519", true, ["sign"]
+        ));
         const imported = await crypto.subtle.importKey("jwk", jwk, "Ed25519", true, ["sign"]);
         assert(hex(await crypto.subtle.sign("Ed25519", imported, new Uint8Array())) === expected);
 
@@ -430,6 +445,14 @@ fn import_rejections_preflight_borrowed_material_and_jwk_fields() {
         ));
         await rejects("DataError", () => crypto.subtle.importKey(
           "jwk", {kty: "oct", k: "AA", key_ops: ["s".repeat(129)]},
+          {name: "HMAC", hash: "SHA-256"}, true, ["sign"]
+        ));
+        await rejects("DataError", () => crypto.subtle.importKey(
+          "jwk", {kty: "oct", k: "AA", key_ops: ["sign,verify"]},
+          {name: "HMAC", hash: "SHA-256"}, true, ["sign", "verify"]
+        ));
+        await rejects("DataError", () => crypto.subtle.importKey(
+          "jwk", {kty: "oct", k: "AA", key_ops: ["sign", "sign"]},
           {name: "HMAC", hash: "SHA-256"}, true, ["sign"]
         ));
         "#,
