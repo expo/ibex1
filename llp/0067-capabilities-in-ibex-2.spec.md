@@ -5,13 +5,14 @@
 **Systems:** CapSec, Module Loader, Runtime, Host ABI, Build
 **Author:** Charlie Cheever / Claude (Fable 5)
 **Date:** 2026-08-29
+**Revised:** 2026-10-04 (§1: `WebSocket` is a per-module grant-bound constructor and absent from the secure global)
 **Revised:** 2026-10-04 (§5: the legacy closure test traverses the resolved all-feature normal/build dependency graph and excludes dev-only edges); 2026-10-04 (§5: the legacy closure boundary is enforced from resolved Cargo dependencies; local `crate::host` is the intended R-c implementation); 2026-10-04 (§2: `net.websocket` is a built family; the `net.fetch` subdomain grant — both upstreamed from exact2's vendored copy); 2026-09-11 (§5: selected Linux Intl publication qualified in Snapback2 0.0.24; broader conformance boundaries remain open); 2026-09-11 (§5: selected Intl option-alias and locale-case callable limits, and TimeClip semantics); 2026-09-11 (§4, §5: Linux native Intl completion over vanilla Hermes, narrow post-install intrinsic admission, and the bounded exotic-constructor limitation); 2026-09-11 (§5: Linux vanilla-Hermes artifact, qualified scope, and Intl limitation); 2026-09-07 (app paths, rename source authority, and SQLite); 2026-08-30 (§2, §8: five families — `secret.keep` (LLP 0069) and `storage.kv` (LLP 0070) were added to the corpus without patching this page, which the LLP 0070 review caught; §8 now states the author-required form of a call site both arrived under) 2026-08-29 (accepted by Charlie Cheever, the same day) 2026-08-29 (§7: the tests the review added; §2 and §3 after the Grok 4.6 / Codex review: package identity is the bound install; fs paths are checked as realized as well as as spelt)
 **Related:** LLP 0057 (§3.1 the boundary split, §4, and OQ2 — the decision this states), LLP 0059.000 (§4 — the capability families), LLP 0062 (the measurements: the escape inventory and the freeze), LLP 0065 (§4 — grants and resolution), LLP 0058.000.000 (the adapter protocol the runtime follows), LLP 0060 and LLP 0058.000 (superseded by this document for the model), LLP 0058.000.001 (tombstoned — the program this replaces with tests)
 
 ## Summary
 
-Authority is an object a module is handed. A module's `fetch` carries its
-grant in its closure; the runtime checks a request against that grant at one
+Authority is an object a module is handed. A module's `fetch` or `WebSocket`
+constructor carries its grant in its closure; the runtime checks an operation against that grant at one
 Rust chokepoint and never asks who is calling. Nothing capability-bearing is on
 the global object, so a module that was not handed a capability has no
 expression that evaluates to one. That is the whole model. This page states it
@@ -27,8 +28,8 @@ Cited from code as R1–R5.
   lowering helpers, and nothing that reaches.
 - **R2 — Capabilities arrive as parameters of the module's own scope.** Every
   module is evaluated as
-  `function (module, exports, require, fetch, fs, process, __ibex2_meta, sqlite)`, and
-  the `fetch`, `fs`, and `process` it receives were built for it with its
+  `function (module, exports, require, fetch, fs, process, __ibex2_meta, sqlite, WebSocket)`, and
+  the `fetch`, `fs`, `process`, `sqlite`, and `WebSocket` it receives were built for it with its
   grant captured. A module cannot borrow another's binding by name.
 - **R3 — Modules ship as bytecode.** Compiled ahead of time against the engine
   this binary links (§5); a `--precompiled` run compiles nothing, resolves
