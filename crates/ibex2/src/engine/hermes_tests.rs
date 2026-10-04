@@ -376,6 +376,31 @@ fn abort_signal_uses_event_target_when_events_are_installed() {
 }
 
 #[test]
+fn abort_trust_does_not_flow_through_a_replaced_global_event_constructor() {
+    let mut rt = with_stdlib();
+    assert_eq!(
+        rt.eval(
+            r#"
+            var PlatformEvent = Event;
+            var appEvent = new PlatformEvent("application");
+            var controller = new AbortController();
+            var received;
+            controller.signal.addEventListener("abort", function (event) {
+              received = event;
+            });
+            Event = function Event() { return appEvent; };
+            controller.abort();
+            [appEvent.isTrusted, appEvent.target === null,
+             received !== appEvent, received instanceof PlatformEvent,
+             received.type, received.isTrusted].join("|")
+            "#,
+        )
+        .unwrap(),
+        "false|true|true|true|abort|true"
+    );
+}
+
+#[test]
 fn signal_bound_listener_is_removed_before_abort_event_dispatch() {
     let mut rt = with_stdlib();
     assert_eq!(

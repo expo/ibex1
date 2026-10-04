@@ -4,6 +4,7 @@
   var brand = global.__ibex2_brand || function (value) { return value; };
   var signals = new WeakMap(), controllers = new WeakMap();
   var useEvents = typeof global.EventTarget === "function" && typeof global.Event === "function";
+  var EventCtor = global.Event;
   var fireTrustedEvent = global.__ibex2_fire_trusted_event;
   delete global.__ibex2_fire_trusted_event;
   var setEventAbortHooks = global.__ibex2_set_event_abort_hooks;
@@ -57,9 +58,8 @@
       if (useEvents) {
         // The private firing path exists only while the native installer moves
         // from events.js to abort.js. Application code never receives it.
-        var event = new global.Event("abort");
-        if (typeof fireTrustedEvent === "function") fireTrustedEvent(current, event);
-        else current.dispatchEvent(event);
+        if (typeof fireTrustedEvent === "function") fireTrustedEvent(current, "abort");
+        else current.dispatchEvent(new EventCtor("abort"));
         return;
       }
       var event = { type: "abort", target: current, currentTarget: current,

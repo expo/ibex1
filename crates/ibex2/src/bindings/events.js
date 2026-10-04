@@ -351,8 +351,8 @@
     reportException(error);
   }
 
-  function fireTrustedEvent(target, event) {
-    return dispatch(target, event, true);
+  function fireTrustedEvent(target, type) {
+    return dispatch(target, new Event(type), true);
   }
 
   function setAbortHooks(hooks) {
