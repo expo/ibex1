@@ -351,9 +351,11 @@ pub(crate) fn conversation(transport: &dyn SocketTransport) {
         }
     );
     sending.join().unwrap();
-    let before = sender.buffered_amount();
     sender.send_text("after-peer-close").unwrap();
-    assert_eq!(sender.buffered_amount(), before + "after-peer-close".len());
+    assert!(
+        sender.buffered_amount() >= "after-peer-close".len(),
+        "the discarded post-close payload remains accounted even while earlier racing sends complete"
+    );
     loop {
         let report = wait(&seen);
         if report == "/peer-close close 1000 peer" {
