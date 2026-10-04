@@ -18,6 +18,7 @@
   var arraySome = uncurry(Array.prototype.some);
   var arraySplice = uncurry(Array.prototype.splice);
   var objectCreate = Object.create;
+  var objectKeys = Object.keys;
   var objectDefineProperty = Object.defineProperty;
   var objectDefineProperties = Object.defineProperties;
   var objectFreeze = Object.freeze;
@@ -31,6 +32,13 @@
     : null;
   var dateNow = Date.now;
 
+  // @ref LLP 0057.000#l3--events-abort-and-the-second-direction — private records have no prototype, so inherited setters never see them
+  function privateRecord(fields) {
+    var record = objectCreate(null);
+    var keys = objectKeys(fields);
+    for (var i = 0; i < keys.length; i++) record[keys[i]] = fields[keys[i]];
+    return record;
+  }
   var eventStates = new WeakMapCtor();
   var targetStates = new WeakMapCtor();
   var brand = global.__ibex2_brand || function (value) { return value; };
@@ -64,7 +72,7 @@
 
   function initializeEvent(event, type, init, kind) {
     init = dictionary(init);
-    weakMapSet(eventStates, event, {
+    weakMapSet(eventStates, event, privateRecord({
       type: domString(type),
       bubbles: !!init.bubbles,
       cancelable: !!init.cancelable,
@@ -82,7 +90,7 @@
       timeStamp: performanceNow
         ? functionCall(performanceNow, performanceObject)
         : dateNow()
-    });
+    }));
     // Web IDL's [LegacyUnforgeable] isTrusted is an own accessor. Keep the
     // getter shared across instances, as the platform descriptor requires.
     objectDefineProperty(event, "isTrusted", {
@@ -222,7 +230,7 @@
 
   function EventTarget() {
     if (!new.target) throw new TypeError("EventTarget requires new");
-    weakMapSet(targetStates, this, { listeners: [] });
+    weakMapSet(targetStates, this, privateRecord({ listeners: [] }));
     brand(this, "EventTarget");
   }
 
@@ -264,8 +272,8 @@
     if (arraySome(state.listeners, function (entry) {
       return !entry.removed && entry.type === type && entry.callback === callback && entry.capture === capture;
     })) return;
-    var entry = { type: type, callback: callback, capture: capture, once: once,
-      passive: passive, abortRelease: null, removed: false };
+    var entry = privateRecord({ type: type, callback: callback, capture: capture, once: once,
+      passive: passive, abortRelease: null, removed: false });
     arrayPush(state.listeners, entry);
     if (signal !== undefined) {
       if (typeof abortSubscribe !== "function") {
@@ -418,7 +426,7 @@
   }
 
   // @ref LLP 0057.000#l3--events-abort-and-the-second-direction — keep the engine global's prototype intact; only its private target record is new
-  weakMapSet(targetStates, global, { listeners: [] });
+  weakMapSet(targetStates, global, privateRecord({ listeners: [] }));
   global.Event = Event;
   global.EventTarget = EventTarget;
   global.CustomEvent = CustomEvent;

@@ -704,6 +704,47 @@ fn borrowed_unhardened_runtime_cannot_forge_event_trust_through_intrinsics() {
 }
 
 #[test]
+fn borrowed_unhardened_runtime_inherited_setters_never_see_private_event_records() {
+    let consumer = BareConsumer::new(Groups::PURE | Groups::EVENTS);
+    assert_eq!(
+        consumer.eval(
+            r#"
+            var captured = [];
+            ['detail', 'message', 'filename', 'lineno', 'colno', 'error',
+             'promise', 'reason', 'removed', 'abortRelease', 'trusted'
+            ].forEach(function (name) {
+              Object.defineProperty(Object.prototype, name, {
+                configurable: true,
+                set: function (value) { captured.push(this); },
+                get: function () { return undefined; }
+              });
+            });
+            var events = [
+              new CustomEvent('c', { detail: 1 }),
+              new ErrorEvent('e', { message: 'm', filename: 'f', lineno: 1, colno: 2, error: 3 }),
+              new PromiseRejectionEvent('p', { promise: Promise.resolve(), reason: 4 })
+            ];
+            var target = new EventTarget();
+            var listener = function () {};
+            target.addEventListener('c', listener);
+            target.removeEventListener('c', listener);
+            for (var i = 0; i < captured.length; i++) {
+              try { captured[i].trusted = true; } catch (_) {}
+            }
+            var seen = [];
+            target.addEventListener('c', function (e) { seen.push(e.isTrusted); });
+            target.dispatchEvent(events[0]);
+            [captured.length,
+             events.map(function (e) { return e.isTrusted; }).join(','),
+             seen.join(','),
+             events[0].detail, events[1].message, events[2].reason].join('|');
+            "#,
+        ),
+        "0|false,false,false|false|1|m|4"
+    );
+}
+
+#[test]
 fn borrowed_unhardened_runtime_cannot_recover_or_write_platform_brand_registry() {
     let consumer = BareConsumer::new(Groups::PURE);
     assert_eq!(
