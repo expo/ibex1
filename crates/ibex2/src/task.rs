@@ -201,21 +201,33 @@ impl CompletionQueue {
 
     /// Admit a task to the FIFO. Order of admission is the order of delivery.
     pub fn admit(&self, task: HostTask) {
-        {
-            let mut ready = self.ready.lock().expect("completion queue poisoned");
-            // Queue closure and insertion share this lock. A result offered
-            // after closure is dropped here, including any owned payload.
-            // @ref LLP 0058.000.000#9-teardown-and-lifecycle — late worker results cannot publish after Closing
-            if ready.closed {
-                return;
-            }
-            let sequence = ready.next_sequence;
-            ready.next_sequence = ready
-                .next_sequence
-                .checked_add(1)
-                .expect("host-task admission sequence overflow");
-            ready.tasks.push_back(AdmittedTask { sequence, task });
+        if !self.enqueue(task) {
+            return;
         }
+        self.notify_admission();
+    }
+
+    /// Insert without notifying the embedder. Event publication uses this
+    /// while holding its subscription registry lock, then wakes only after
+    /// releasing that lock.
+    fn enqueue(&self, task: HostTask) -> bool {
+        let mut ready = self.ready.lock().expect("completion queue poisoned");
+        // Queue closure and insertion share this lock. A result offered
+        // after closure is dropped here, including any owned payload.
+        // @ref LLP 0058.000.000#9-teardown-and-lifecycle — late worker results cannot publish after Closing
+        if ready.closed {
+            return false;
+        }
+        let sequence = ready.next_sequence;
+        ready.next_sequence = ready
+            .next_sequence
+            .checked_add(1)
+            .expect("host-task admission sequence overflow");
+        ready.tasks.push_back(AdmittedTask { sequence, task });
+        true
+    }
+
+    fn notify_admission(&self) {
         self.signal.notify_all();
         let invoke = {
             let mut state = self.wake.lock().expect("completion wake poisoned");
@@ -805,23 +817,31 @@ impl RuntimeState {
     }
 
     /// Publish from a host source without touching JSI. Holding the registry
-    /// lock through admission closes the race with unsubscribe: either this
-    /// task is admitted first and cancellation removes it, or publication sees
-    /// the missing subscription and refuses it.
+    /// lock through FIFO insertion closes the race with unsubscribe: either
+    /// this task is inserted first and cancellation removes it, or publication
+    /// sees the missing subscription and refuses it. Notification happens only
+    /// after that lock is released because the embedder wake may re-enter any
+    /// subscription operation.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn publish_event(&self, subscription: u64, payload: HostValue) -> bool {
-        let subscriptions = self
-            .subscriptions
-            .lock()
-            .expect("event subscriptions poisoned");
-        if self.is_shutdown() || !subscriptions.contains_key(&subscription) {
-            return false;
+        // @ref LLP 0058.000.000#8-tasks-microtasks-timers-and-callbacks — subscription liveness and FIFO insertion are atomic, but wake is outside the registry lock
+        let admitted = {
+            let subscriptions = self
+                .subscriptions
+                .lock()
+                .expect("event subscriptions poisoned");
+            if self.is_shutdown() || !subscriptions.contains_key(&subscription) {
+                return false;
+            }
+            self.queue.enqueue(HostTask::Event {
+                subscription,
+                payload,
+            })
+        };
+        if admitted {
+            self.queue.notify_admission();
         }
-        self.queue.admit(HostTask::Event {
-            subscription,
-            payload,
-        });
-        true
+        admitted
     }
 }
 
@@ -1297,6 +1317,74 @@ mod tests {
         subscription.unsubscribe();
         assert!(state.queue.take().is_none());
         assert!(!state.publish_event(subscription_id, HostValue::Str("late".into())));
+    }
+
+    #[test]
+    fn event_wake_can_unsubscribe_without_deadlocking_publication() {
+        let state = Arc::new(RuntimeState::new(Box::new(
+            crate::transport::dev_tcp::DevTcpTransport::new(),
+        )));
+        let (subscription_id, subscription) = state.subscribe_event();
+        state
+            .queue
+            .set_wake(Some(Arc::new(move || subscription.unsubscribe())));
+
+        let publisher = Arc::clone(&state);
+        let (finished, observed) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            finished
+                .send(
+                    publisher
+                        .publish_event(subscription_id, HostValue::Str("canceled by wake".into())),
+                )
+                .unwrap();
+        });
+        assert_eq!(
+            observed.recv_timeout(std::time::Duration::from_secs(2)),
+            Ok(true),
+            "wake deadlocked trying to unsubscribe"
+        );
+        worker.join().unwrap();
+        state.queue.set_wake(None);
+        assert!(state.queue.take().is_none());
+        assert!(!state.publish_event(subscription_id, HostValue::Undefined));
+    }
+
+    #[test]
+    fn event_wake_can_publish_without_deadlocking_or_recursing() {
+        let state = Arc::new(RuntimeState::new(Box::new(
+            crate::transport::dev_tcp::DevTcpTransport::new(),
+        )));
+        let (subscription_id, subscription) = state.subscribe_event();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let callback_calls = Arc::clone(&calls);
+        let callback_state = Arc::downgrade(&state);
+        state.queue.set_wake(Some(Arc::new(move || {
+            if callback_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                assert!(callback_state
+                    .upgrade()
+                    .unwrap()
+                    .publish_event(subscription_id, HostValue::Str("from wake".into()),));
+            }
+        })));
+
+        let publisher = Arc::clone(&state);
+        let (finished, observed) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let published =
+                publisher.publish_event(subscription_id, HostValue::Str("outer".into()));
+            finished.send(published).unwrap();
+        });
+        assert_eq!(
+            observed.recv_timeout(std::time::Duration::from_secs(2)),
+            Ok(true),
+            "wake deadlocked trying to publish"
+        );
+        worker.join().unwrap();
+        state.queue.set_wake(None);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(state.queue.len(), 2);
+        drop(subscription);
     }
 
     #[test]
