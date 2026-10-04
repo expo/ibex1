@@ -477,6 +477,7 @@ fn masked_frame(fin: bool, opcode: u8, payload: &[u8]) -> std::io::Result<Vec<u8
 enum Received {
     Text(String),
     Binary(Vec<u8>),
+    BinaryLength(usize),
     TooLarge,
     Closed { code: u16, reason: String },
 }
@@ -525,7 +526,7 @@ impl Socket {
         Ok(Some(out))
     }
 
-    fn receive(&mut self) -> Result<Received, HostError> {
+    fn receive(&mut self, binary_payload: bool) -> Result<Received, HostError> {
         if self.sender.phase.load(Ordering::Acquire) == CLOSED {
             return Ok(Received::Closed {
                 code: 1006,
@@ -615,6 +616,13 @@ impl Socket {
                 }
                 continue;
             }
+            // Preserve the receive-only API exact2 already consumes: the
+            // first binary frame's declared length is returned immediately,
+            // before its payload is read or allocated. Event consumers use
+            // the payload-bearing path below instead.
+            if opcode == 0x2 && message.is_none() && !binary_payload {
+                return Ok(Received::BinaryLength(len as usize));
+            }
             match (opcode, &message) {
                 (0x1, None) | (0x2, None) => message = Some((opcode, Vec::new())),
                 (0x0, Some(_)) => {}
@@ -651,18 +659,20 @@ impl Socket {
 
 impl MessageSource for Socket {
     fn next(&mut self) -> Result<Incoming, HostError> {
-        Ok(match self.receive()? {
+        Ok(match self.receive(false)? {
             Received::Text(text) => Incoming::Text(text),
             Received::Binary(bytes) => Incoming::Binary(bytes.len()),
+            Received::BinaryLength(length) => Incoming::Binary(length),
             Received::TooLarge => Incoming::TooLarge,
             Received::Closed { code, reason } => Incoming::Closed { code, reason },
         })
     }
 
     fn next_event(&mut self) -> Result<Event, HostError> {
-        Ok(match self.receive()? {
+        Ok(match self.receive(true)? {
             Received::Text(text) => Event::Message(Message::Text(text)),
             Received::Binary(bytes) => Event::Message(Message::Binary(bytes)),
+            Received::BinaryLength(_) => unreachable!("event receive requested binary bytes"),
             Received::TooLarge => {
                 return Err(HostError::Failed(
                     "the socket message exceeded its configured limit".into(),
