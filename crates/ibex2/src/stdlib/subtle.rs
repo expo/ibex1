@@ -1440,6 +1440,10 @@ fn derive_material(
 
     let mut output = vec![0; length_bits / 8];
     match algorithm {
+        // A zero-length HKDF result is empty, and computing it would still
+        // hash all of `info` once inside ring. The work budget counts no
+        // expand blocks for it, so it must never reach the backend.
+        DeriveAlgorithm::Hkdf { .. } if output.is_empty() => {}
         DeriveAlgorithm::Hkdf { hash, salt, info } => {
             let algorithm = match hash {
                 HashAlgorithm::Sha256 => ring::hkdf::HKDF_SHA256,
@@ -1723,6 +1727,30 @@ mod tests {
         )
         .unwrap();
         assert_eq!(output, hex("3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865"));
+    }
+
+    #[test]
+    fn zero_length_hkdf_never_reaches_the_backend() {
+        let key = import_raw_key(
+            b"key",
+            ImportAlgorithm::Hkdf,
+            false,
+            &[KeyUsage::DeriveBits],
+        )
+        .unwrap();
+        // Over the budget at one output block, so a zero-length request that
+        // still invoked ring would hash all of it uncounted.
+        let info = vec![0x5a; MAX_HKDF_COMPRESSION_BLOCKS * 64];
+        let hkdf = || DeriveAlgorithm::Hkdf {
+            hash: HashAlgorithm::Sha256,
+            salt: b"",
+            info: &info,
+        };
+        assert_eq!(derive_bits(hkdf(), &key, 0).unwrap(), Vec::<u8>::new());
+        assert_eq!(
+            derive_bits(hkdf(), &key, 256).unwrap_err().name,
+            ErrorName::OperationError
+        );
     }
 
     #[test]
