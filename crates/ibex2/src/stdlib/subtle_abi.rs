@@ -7,7 +7,7 @@ use crate::boundary::{HostArg, HostError, HostValue};
 
 use super::subtle::{
     self, AesGcmParams, DeriveAlgorithm, DerivedKeyAlgorithm, ExportedKey, GenerateAlgorithm,
-    HashAlgorithm, ImportAlgorithm, JsonWebKey, KeyFormat, KeyUsage,
+    HashAlgorithm, ImportAlgorithm, JsonWebKey, KeyFormat, KeyUsage, SignatureAlgorithm,
 };
 
 const DIGEST: u32 = 90;
@@ -114,6 +114,14 @@ fn import_algorithm(args: &[HostArg<'_>], name_index: usize) -> Result<ImportAlg
         "AES-GCM" => Ok(ImportAlgorithm::AesGcm),
         "HKDF" => Ok(ImportAlgorithm::Hkdf),
         "PBKDF2" => Ok(ImportAlgorithm::Pbkdf2),
+        "ECDSA" => match optional_string(args, 16) {
+            Some("P-256") => Ok(ImportAlgorithm::EcdsaP256),
+            Some(curve) => Err(HostError::Failed(format!(
+                "NotSupportedError: named curve {curve} is not supported"
+            ))),
+            None => Err(invalid("ECDSA namedCurve")),
+        },
+        "ED25519" => Ok(ImportAlgorithm::Ed25519),
         name => Err(HostError::Failed(format!(
             "NotSupportedError: key algorithm {name} is not supported"
         ))),
@@ -129,8 +137,32 @@ fn generate_algorithm(args: &[HostArg<'_>]) -> Result<GenerateAlgorithm, HostErr
         "AES-GCM" => Ok(GenerateAlgorithm::AesGcm {
             length_bits: integer(args, 2, "an AES-GCM length")?,
         }),
+        "ECDSA" => match optional_string(args, 5) {
+            Some("P-256") => Ok(GenerateAlgorithm::EcdsaP256),
+            Some(curve) => Err(HostError::Failed(format!(
+                "NotSupportedError: named curve {curve} is not supported"
+            ))),
+            None => Err(invalid("ECDSA namedCurve")),
+        },
+        "ED25519" => Ok(GenerateAlgorithm::Ed25519),
         name => Err(HostError::Failed(format!(
             "NotSupportedError: key algorithm {name} is not supported"
+        ))),
+    }
+}
+
+fn signature_algorithm(
+    args: &[HostArg<'_>],
+    name_index: usize,
+) -> Result<SignatureAlgorithm, HostError> {
+    match string(args, name_index, "a signature algorithm")? {
+        "HMAC" => Ok(SignatureAlgorithm::Hmac),
+        "ECDSA" => Ok(SignatureAlgorithm::Ecdsa {
+            hash: hash(args, name_index + 1)?,
+        }),
+        "ED25519" => Ok(SignatureAlgorithm::Ed25519),
+        name => Err(HostError::Failed(format!(
+            "NotSupportedError: signature algorithm {name} is not supported"
         ))),
     }
 }
@@ -226,7 +258,11 @@ pub(crate) fn dispatch(
                         };
                         let jwk = JsonWebKey {
                             kty: string(args, 7, "JWK kty")?.into(),
-                            k: string(args, 1, "JWK k")?.into(),
+                            k: optional_string(args, 1).map(str::to_owned),
+                            crv: optional_string(args, 12).map(str::to_owned),
+                            x: optional_string(args, 13).map(str::to_owned),
+                            y: optional_string(args, 14).map(str::to_owned),
+                            d: optional_string(args, 15).map(str::to_owned),
                             alg: optional_string(args, 8).map(str::to_owned),
                             key_use: optional_string(args, 9).map(str::to_owned),
                             key_ops: optional_string(args, 10)
@@ -235,6 +271,18 @@ pub(crate) fn dispatch(
                         };
                         subtle::import_jwk_key(&jwk, algorithm, extractable, &usages)
                     }
+                    "spki" => subtle::import_spki_key(
+                        bytes(args, 1, "spki key data")?,
+                        algorithm,
+                        extractable,
+                        &usages,
+                    ),
+                    "pkcs8" => subtle::import_pkcs8_key(
+                        bytes(args, 1, "pkcs8 key data")?,
+                        algorithm,
+                        extractable,
+                        &usages,
+                    ),
                     format => {
                         return Err(HostError::Failed(format!(
                             "NotSupportedError: key format {format} is not supported"
@@ -248,6 +296,8 @@ pub(crate) fn dispatch(
                 let format = match string(args, 1, "a key format")? {
                     "raw" => KeyFormat::Raw,
                     "jwk" => KeyFormat::Jwk,
+                    "spki" => KeyFormat::Spki,
+                    "pkcs8" => KeyFormat::Pkcs8,
                     format => {
                         return Err(HostError::Failed(format!(
                             "NotSupportedError: key format {format} is not supported"
@@ -259,38 +309,57 @@ pub(crate) fn dispatch(
                 })
                 .map(|exported| match exported {
                     ExportedKey::Raw(bytes) => HostValue::Bytes(bytes),
-                    ExportedKey::Jwk(jwk) => HostValue::Str(jwk.k),
+                    ExportedKey::Pkcs8(bytes) | ExportedKey::Spki(bytes) => HostValue::Bytes(bytes),
+                    ExportedKey::Jwk(jwk) => {
+                        let encoded = if let Some(k) = jwk.k {
+                            k
+                        } else {
+                            [jwk.x, jwk.y, jwk.d]
+                                .into_iter()
+                                .flatten()
+                                .collect::<Vec<_>>()
+                                .join(".")
+                        };
+                        HostValue::Str(encoded)
+                    }
                 })
             }
             GENERATE_KEY => {
                 let algorithm = generate_algorithm(args)?;
                 let extractable = boolean(args, 3, "extractable")?;
                 let usages = usages(string(args, 4, "key usages")?)?;
-                let key = subtle::generate_key(algorithm, extractable, &usages).map_err(failed)?;
-                Ok(HostValue::Number(runtime.store_crypto_key(key) as f64))
+                if matches!(
+                    algorithm,
+                    GenerateAlgorithm::EcdsaP256 | GenerateAlgorithm::Ed25519
+                ) {
+                    let pair = subtle::generate_key_pair(algorithm, extractable, &usages)
+                        .map_err(failed)?;
+                    let public = runtime.store_crypto_key(pair.public_key);
+                    let private = runtime.store_crypto_key(pair.private_key);
+                    Ok(HostValue::Str(format!("{public},{private}")))
+                } else {
+                    let key =
+                        subtle::generate_key(algorithm, extractable, &usages).map_err(failed)?;
+                    Ok(HostValue::Number(runtime.store_crypto_key(key) as f64))
+                }
             }
-            SIGN => with_key(runtime, handle(args, 0)?, |key| {
-                subtle::sign(
-                    key,
-                    bytes(args, 1, "data").map_err(|error| subtle::Error {
-                        name: subtle::ErrorName::DataError,
-                        message: error.to_string(),
-                    })?,
-                )
-            })
-            .map(HostValue::Bytes),
-            VERIFY => with_key(runtime, handle(args, 0)?, |key| {
-                let signature = bytes(args, 1, "signature").map_err(|error| subtle::Error {
-                    name: subtle::ErrorName::DataError,
-                    message: error.to_string(),
-                })?;
-                let data = bytes(args, 2, "data").map_err(|error| subtle::Error {
-                    name: subtle::ErrorName::DataError,
-                    message: error.to_string(),
-                })?;
-                subtle::verify(key, signature, data)
-            })
-            .map(HostValue::Bool),
+            SIGN => {
+                let algorithm = signature_algorithm(args, 1)?;
+                let data = bytes(args, 3, "data")?;
+                with_key(runtime, handle(args, 0)?, |key| {
+                    subtle::sign_with_algorithm(algorithm, key, data)
+                })
+                .map(HostValue::Bytes)
+            }
+            VERIFY => {
+                let algorithm = signature_algorithm(args, 1)?;
+                let signature = bytes(args, 3, "signature")?;
+                let data = bytes(args, 4, "data")?;
+                with_key(runtime, handle(args, 0)?, |key| {
+                    subtle::verify_with_algorithm(algorithm, key, signature, data)
+                })
+                .map(HostValue::Bool)
+            }
             ENCRYPT | DECRYPT => {
                 let params = AesGcmParams {
                     iv: bytes(args, 1, "AES-GCM iv")?,

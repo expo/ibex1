@@ -9,6 +9,11 @@
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use std::fmt;
 
+#[cfg(feature = "crypto")]
+mod asymmetric;
+#[cfg(feature = "crypto")]
+mod der;
+
 /// PBKDF2 remains a synchronous pure operation under LLP 0059.000 §1.1, so
 /// bound the work admitted by one host call instead of allowing an unbounded
 /// iteration count to monopolize the runtime thread.
@@ -183,6 +188,8 @@ pub enum KeyAlgorithm {
     },
     Hkdf,
     Pbkdf2,
+    EcdsaP256,
+    Ed25519,
 }
 
 impl KeyAlgorithm {
@@ -192,6 +199,8 @@ impl KeyAlgorithm {
             Self::AesGcm { .. } => "AES-GCM",
             Self::Hkdf => "HKDF",
             Self::Pbkdf2 => "PBKDF2",
+            Self::EcdsaP256 => "ECDSA",
+            Self::Ed25519 => "Ed25519",
         }
     }
 }
@@ -205,6 +214,8 @@ pub enum ImportAlgorithm {
     AesGcm,
     Hkdf,
     Pbkdf2,
+    EcdsaP256,
+    Ed25519,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -216,6 +227,15 @@ pub enum GenerateAlgorithm {
     AesGcm {
         length_bits: usize,
     },
+    EcdsaP256,
+    Ed25519,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SignatureAlgorithm {
+    Hmac,
+    Ecdsa { hash: HashAlgorithm },
+    Ed25519,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -254,12 +274,18 @@ pub struct AesGcmParams<'a> {
 pub enum KeyFormat {
     Raw,
     Jwk,
+    Pkcs8,
+    Spki,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct JsonWebKey {
     pub kty: String,
-    pub k: String,
+    pub k: Option<String>,
+    pub crv: Option<String>,
+    pub x: Option<String>,
+    pub y: Option<String>,
+    pub d: Option<String>,
     pub alg: Option<String>,
     pub key_use: Option<String>,
     pub key_ops: Option<Vec<String>>,
@@ -269,12 +295,30 @@ pub struct JsonWebKey {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExportedKey {
     Raw(Vec<u8>),
+    Pkcs8(Vec<u8>),
+    Spki(Vec<u8>),
     Jwk(JsonWebKey),
+}
+
+#[derive(Debug)]
+pub struct CryptoKeyPair {
+    pub public_key: CryptoKey,
+    pub private_key: CryptoKey,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(not(feature = "crypto"), allow(dead_code))]
+enum KeyType {
+    Secret,
+    Public,
+    Private,
 }
 
 /// An owned secret key. Debug output deliberately excludes material.
 pub struct CryptoKey {
     material: Vec<u8>,
+    public_material: Option<Vec<u8>>,
+    key_type: KeyType,
     algorithm: KeyAlgorithm,
     extractable: bool,
     usages: Vec<KeyUsage>,
@@ -283,7 +327,7 @@ pub struct CryptoKey {
 impl fmt::Debug for CryptoKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CryptoKey")
-            .field("type", &"secret")
+            .field("type", &self.key_type())
             .field("algorithm", &self.algorithm)
             .field("extractable", &self.extractable)
             .field("usages", &self.usages)
@@ -294,12 +338,19 @@ impl fmt::Debug for CryptoKey {
 impl Drop for CryptoKey {
     fn drop(&mut self) {
         self.material.fill(0);
+        if let Some(public) = &mut self.public_material {
+            public.fill(0);
+        }
     }
 }
 
 impl CryptoKey {
     pub const fn key_type(&self) -> &'static str {
-        "secret"
+        match self.key_type {
+            KeyType::Secret => "secret",
+            KeyType::Public => "public",
+            KeyType::Private => "private",
+        }
     }
 
     pub const fn extractable(&self) -> bool {
@@ -483,6 +534,11 @@ fn import_material(
                 validate_usages(usages, &[KeyUsage::DeriveKey, KeyUsage::DeriveBits])?,
             )
         }
+        ImportAlgorithm::EcdsaP256 | ImportAlgorithm::Ed25519 => {
+            return Err(Error::invalid_access(
+                "asymmetric key material must use an asymmetric importer",
+            ))
+        }
     };
     if usages.is_empty() {
         return Err(Error::syntax(
@@ -491,6 +547,8 @@ fn import_material(
     }
     Ok(CryptoKey {
         material,
+        public_material: None,
+        key_type: KeyType::Secret,
         algorithm,
         extractable,
         usages,
@@ -509,7 +567,46 @@ pub fn import_raw_key(
         Err(Error::feature_unavailable())
     }
     #[cfg(feature = "crypto")]
-    import_material(material.to_vec(), algorithm, extractable, usages)
+    {
+        if matches!(
+            algorithm,
+            ImportAlgorithm::EcdsaP256 | ImportAlgorithm::Ed25519
+        ) {
+            asymmetric::import_raw(material, algorithm, extractable, usages)
+        } else {
+            import_material(material.to_vec(), algorithm, extractable, usages)
+        }
+    }
+}
+
+pub fn import_spki_key(
+    material: &[u8],
+    algorithm: ImportAlgorithm,
+    extractable: bool,
+    usages: &[KeyUsage],
+) -> Result<CryptoKey> {
+    #[cfg(not(feature = "crypto"))]
+    {
+        let _ = (material, algorithm, extractable, usages);
+        Err(Error::feature_unavailable())
+    }
+    #[cfg(feature = "crypto")]
+    asymmetric::import_spki(material, algorithm, extractable, usages)
+}
+
+pub fn import_pkcs8_key(
+    material: &[u8],
+    algorithm: ImportAlgorithm,
+    extractable: bool,
+    usages: &[KeyUsage],
+) -> Result<CryptoKey> {
+    #[cfg(not(feature = "crypto"))]
+    {
+        let _ = (material, algorithm, extractable, usages);
+        Err(Error::feature_unavailable())
+    }
+    #[cfg(feature = "crypto")]
+    asymmetric::import_pkcs8(material, algorithm, extractable, usages)
 }
 
 pub fn import_jwk_key(
@@ -528,9 +625,22 @@ pub fn import_jwk_key(
         if matches!(algorithm, ImportAlgorithm::Hkdf | ImportAlgorithm::Pbkdf2) {
             return Err(Error::unsupported("HKDF and PBKDF2 accept raw keys only"));
         }
+        if matches!(
+            algorithm,
+            ImportAlgorithm::EcdsaP256 | ImportAlgorithm::Ed25519
+        ) {
+            return asymmetric::import_jwk(jwk, algorithm, extractable, usages);
+        }
+        let encoded = jwk
+            .k
+            .as_deref()
+            .ok_or_else(|| Error::data("JWK k is required"))?;
         let material = URL_SAFE_NO_PAD
-            .decode(jwk.k.as_bytes())
+            .decode(encoded.as_bytes())
             .map_err(|_| Error::data("JWK k is not unpadded base64url"))?;
+        if URL_SAFE_NO_PAD.encode(&material) != encoded {
+            return Err(Error::data("JWK k is not canonical unpadded base64url"));
+        }
         let expected = match algorithm {
             ImportAlgorithm::Hmac { hash, .. } => match hash {
                 HashAlgorithm::Sha256 => "HS256",
@@ -561,6 +671,12 @@ pub fn export_key(format: KeyFormat, key: &CryptoKey) -> Result<ExportedKey> {
         if !key.extractable {
             return Err(Error::invalid_access("key is not extractable"));
         }
+        if matches!(
+            key.algorithm,
+            KeyAlgorithm::EcdsaP256 | KeyAlgorithm::Ed25519
+        ) {
+            return asymmetric::export_key(format, key);
+        }
         if matches!(key.algorithm, KeyAlgorithm::Hkdf | KeyAlgorithm::Pbkdf2) {
             return Err(Error::unsupported(
                 "derivation base keys cannot be exported",
@@ -570,12 +686,21 @@ pub fn export_key(format: KeyFormat, key: &CryptoKey) -> Result<ExportedKey> {
             KeyFormat::Raw => ExportedKey::Raw(key.material.clone()),
             KeyFormat::Jwk => ExportedKey::Jwk(JsonWebKey {
                 kty: "oct".into(),
-                k: URL_SAFE_NO_PAD.encode(&key.material),
+                k: Some(URL_SAFE_NO_PAD.encode(&key.material)),
+                crv: None,
+                x: None,
+                y: None,
+                d: None,
                 alg: Some(jwk_algorithm(&key.algorithm).into()),
                 key_use: None,
                 key_ops: Some(key.usages.iter().map(|usage| usage.name().into()).collect()),
                 ext: Some(key.extractable),
             }),
+            KeyFormat::Pkcs8 | KeyFormat::Spki => {
+                return Err(Error::unsupported(
+                    "secret keys cannot be exported as pkcs8 or spki",
+                ))
+            }
         })
     }
 }
@@ -617,12 +742,31 @@ pub fn generate_key(
                 validate_aes_length(length_bits)?;
                 (ImportAlgorithm::AesGcm, length_bits)
             }
+            GenerateAlgorithm::EcdsaP256 | GenerateAlgorithm::Ed25519 => {
+                return Err(Error::invalid_access(
+                    "asymmetric algorithms return a key pair; use generate_key_pair",
+                ))
+            }
         };
         let mut material = vec![0; length_bits / 8];
         super::crypto::get_random_values(&mut material)
             .map_err(|error| Error::operation(error.to_string()))?;
         import_material(material, import, extractable, usages)
     }
+}
+
+pub fn generate_key_pair(
+    algorithm: GenerateAlgorithm,
+    extractable: bool,
+    usages: &[KeyUsage],
+) -> Result<CryptoKeyPair> {
+    #[cfg(not(feature = "crypto"))]
+    {
+        let _ = (algorithm, extractable, usages);
+        Err(Error::feature_unavailable())
+    }
+    #[cfg(feature = "crypto")]
+    asymmetric::generate_pair(algorithm, extractable, usages)
 }
 
 pub fn digest(hash: HashAlgorithm, data: &[u8]) -> Result<Vec<u8>> {
@@ -668,6 +812,26 @@ pub fn sign(key: &CryptoKey, data: &[u8]) -> Result<Vec<u8>> {
     }
 }
 
+pub fn sign_with_algorithm(
+    algorithm: SignatureAlgorithm,
+    key: &CryptoKey,
+    data: &[u8],
+) -> Result<Vec<u8>> {
+    #[cfg(not(feature = "crypto"))]
+    {
+        let _ = (algorithm, key, data);
+        Err(Error::feature_unavailable())
+    }
+    #[cfg(feature = "crypto")]
+    {
+        if algorithm == SignatureAlgorithm::Hmac {
+            sign(key, data)
+        } else {
+            asymmetric::sign(algorithm, key, data)
+        }
+    }
+}
+
 pub fn verify(key: &CryptoKey, signature: &[u8], data: &[u8]) -> Result<bool> {
     #[cfg(not(feature = "crypto"))]
     {
@@ -682,6 +846,27 @@ pub fn verify(key: &CryptoKey, signature: &[u8], data: &[u8]) -> Result<bool> {
         };
         let key = ring::hmac::Key::new(hmac_algorithm(hash), &key.material);
         Ok(ring::hmac::verify(&key, data, signature).is_ok())
+    }
+}
+
+pub fn verify_with_algorithm(
+    algorithm: SignatureAlgorithm,
+    key: &CryptoKey,
+    signature: &[u8],
+    data: &[u8],
+) -> Result<bool> {
+    #[cfg(not(feature = "crypto"))]
+    {
+        let _ = (algorithm, key, signature, data);
+        Err(Error::feature_unavailable())
+    }
+    #[cfg(feature = "crypto")]
+    {
+        if algorithm == SignatureAlgorithm::Hmac {
+            verify(key, signature, data)
+        } else {
+            asymmetric::verify(algorithm, key, signature, data)
+        }
     }
 }
 

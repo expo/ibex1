@@ -1,4 +1,4 @@
-//! Hardened-Hermes coverage for the symmetric `crypto.subtle` projection.
+//! Hardened-Hermes coverage for the `crypto.subtle` projection.
 #![cfg(feature = "hermes")]
 
 use ibex2::engine::hermes::{DynamicCode, Hermes};
@@ -136,6 +136,92 @@ fn hkdf_and_pbkdf2_derive_bits_and_keys() {
 
 #[cfg(feature = "crypto")]
 #[test]
+fn ecdsa_p256_key_pair_formats_and_all_hashes() {
+    let mut runtime = runtime();
+    run_async(
+        &mut runtime,
+        r#"
+        const pair = await crypto.subtle.generateKey(
+          {name: "ECDSA", namedCurve: "P-256"}, false, ["sign", "verify"]
+        );
+        assert(pair.publicKey.type === "public" && pair.publicKey.extractable);
+        assert(pair.privateKey.type === "private" && !pair.privateKey.extractable);
+        assert(pair.publicKey.algorithm.name === "ECDSA" && pair.publicKey.algorithm.namedCurve === "P-256");
+        assert(pair.publicKey.usages.join(",") === "verify" && pair.privateKey.usages.join(",") === "sign");
+        const data = new TextEncoder().encode("ibex ecdsa");
+        for (const hash of ["SHA-256", "SHA-384", "SHA-512"]) {
+          const signature = await crypto.subtle.sign({name: "ECDSA", hash}, pair.privateKey, data);
+          assert(new Uint8Array(signature).length === 64);
+          assert(await crypto.subtle.verify({name: "ECDSA", hash}, pair.publicKey, signature, data));
+          assert(!(await crypto.subtle.verify({name: "ECDSA", hash}, pair.publicKey, signature, new Uint8Array([1]))));
+        }
+        await rejects("InvalidAccessError", () => crypto.subtle.exportKey("pkcs8", pair.privateKey));
+
+        const exportedPair = await crypto.subtle.generateKey(
+          {name: "ECDSA", namedCurve: "P-256"}, true, ["sign", "verify"]
+        );
+        const raw = await crypto.subtle.exportKey("raw", exportedPair.publicKey);
+        const spki = await crypto.subtle.exportKey("spki", exportedPair.publicKey);
+        const pkcs8 = await crypto.subtle.exportKey("pkcs8", exportedPair.privateKey);
+        const publicJwk = await crypto.subtle.exportKey("jwk", exportedPair.publicKey);
+        const privateJwk = await crypto.subtle.exportKey("jwk", exportedPair.privateKey);
+        assert(new Uint8Array(raw)[0] === 4 && raw.byteLength === 65 && spki.byteLength === 91);
+        assert(pkcs8.byteLength === 138 && publicJwk.kty === "EC" && publicJwk.crv === "P-256");
+        assert(privateJwk.d && !publicJwk.d && privateJwk.alg === "ES256");
+        const importedPublic = await crypto.subtle.importKey(
+          "spki", spki, {name: "ECDSA", namedCurve: "P-256"}, true, ["verify"]
+        );
+        const importedPrivate = await crypto.subtle.importKey(
+          "jwk", privateJwk, {name: "ECDSA", namedCurve: "P-256"}, true, ["sign"]
+        );
+        const signature = await crypto.subtle.sign({name: "ECDSA", hash: "SHA-256"}, importedPrivate, data);
+        assert(await crypto.subtle.verify({name: "ECDSA", hash: "SHA-256"}, importedPublic, signature, data));
+        await rejects("DataError", () => crypto.subtle.importKey(
+          "raw", new Uint8Array(33).fill(2), {name: "ECDSA", namedCurve: "P-256"}, true, ["verify"]
+        ));
+        "#,
+    );
+}
+
+#[cfg(feature = "crypto")]
+#[test]
+fn ed25519_known_answer_and_format_round_trips() {
+    let mut runtime = runtime();
+    run_async(
+        &mut runtime,
+        r#"
+        const seed = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
+        const publicHex = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+        const expected = "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155" +
+          "5fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b";
+        function bytes(value) {
+          return new Uint8Array(value.match(/../g).map(x => parseInt(x, 16)));
+        }
+        const pkcs8 = new Uint8Array([48,46,2,1,0,48,5,6,3,43,101,112,4,34,4,32, ...bytes(seed)]);
+        const spki = new Uint8Array([48,42,48,5,6,3,43,101,112,3,33,0, ...bytes(publicHex)]);
+        const privateKey = await crypto.subtle.importKey("pkcs8", pkcs8, "Ed25519", true, ["sign"]);
+        const publicKey = await crypto.subtle.importKey("spki", spki, "Ed25519", true, ["verify"]);
+        const signature = await crypto.subtle.sign("Ed25519", privateKey, new Uint8Array());
+        assert(hex(signature) === expected);
+        assert(await crypto.subtle.verify("Ed25519", publicKey, signature, new Uint8Array()));
+        assert(hex(await crypto.subtle.exportKey("raw", publicKey)) === publicHex);
+        assert(hex(await crypto.subtle.exportKey("pkcs8", privateKey)) === hex(pkcs8));
+        assert(hex(await crypto.subtle.exportKey("spki", publicKey)) === hex(spki));
+        const jwk = await crypto.subtle.exportKey("jwk", privateKey);
+        assert(jwk.kty === "OKP" && jwk.crv === "Ed25519" && jwk.alg === "Ed25519" && jwk.d);
+        const imported = await crypto.subtle.importKey("jwk", jwk, "Ed25519", true, ["sign"]);
+        assert(hex(await crypto.subtle.sign("Ed25519", imported, new Uint8Array())) === expected);
+
+        const pair = await crypto.subtle.generateKey("Ed25519", false, ["sign", "verify"]);
+        assert(pair.publicKey.extractable && !pair.privateKey.extractable);
+        const roundTrip = await crypto.subtle.sign("Ed25519", pair.privateKey, new Uint8Array([1,2,3]));
+        assert(await crypto.subtle.verify("Ed25519", pair.publicKey, roundTrip, new Uint8Array([1,2,3])));
+        "#,
+    );
+}
+
+#[cfg(feature = "crypto")]
+#[test]
 fn out_of_scope_algorithms_and_formats_are_named_refusals() {
     let mut runtime = runtime();
     run_async(
@@ -145,8 +231,13 @@ fn out_of_scope_algorithms_and_formats_are_named_refusals() {
         for (const name of ["SHA-1", "MD5"]) {
           await rejects("NotSupportedError", () => crypto.subtle.digest(name, bytes));
         }
-        for (const name of ["RSA-PSS", "RSA-OAEP", "AES-CBC", "AES-CTR", "X25519", "ECDSA", "Ed25519"]) {
+        for (const name of ["RSA-PSS", "RSA-OAEP", "AES-CBC", "AES-CTR", "X25519", "ECDH"]) {
           await rejects("NotSupportedError", () => crypto.subtle.generateKey({name, length: 128}, true, ["encrypt"]));
+        }
+        for (const namedCurve of ["P-384", "P-521"]) {
+          await rejects("NotSupportedError", () => crypto.subtle.generateKey(
+            {name: "ECDSA", namedCurve}, true, ["sign"]
+          ));
         }
         await rejects("NotSupportedError", () => crypto.subtle.importKey("pkcs8", bytes, {name: "HMAC", hash: "SHA-256"}, true, ["sign"]));
         await rejects("NotSupportedError", () => crypto.subtle.importKey("spki", bytes, {name: "HMAC", hash: "SHA-256"}, true, ["verify"]));

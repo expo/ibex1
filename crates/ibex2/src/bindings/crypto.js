@@ -31,6 +31,7 @@
   const cryptoBrands = new WeakSet();
   const subtleBrands = new WeakSet();
   const keyHandles = new WeakMap();
+  const keyTypes = new WeakMap();
   const keyAlgorithms = new WeakMap();
   const keyExtractable = new WeakMap();
   const keyUsages = new WeakMap();
@@ -125,6 +126,12 @@
     }
     return result;
   }
+  function jwkKeyOps(value) {
+    let list;
+    try { list = arrayFrom(value); }
+    catch (_) { throw new TypeError("JWK key_ops must be a sequence"); }
+    return list.map(item => domString(item, "JWK key operation"));
+  }
   function optionalLength(algorithm) {
     if (algorithm === null || (typeof algorithm !== "object" && typeof algorithm !== "function")) return -1;
     return algorithm.length === undefined ? -1 : number(algorithm.length, "length");
@@ -147,7 +154,18 @@
       return {name, hash: "", length};
     }
     if (!generating && (name === "HKDF" || name === "PBKDF2")) {
-      return {name, hash: "", length: -1};
+      return {name, hash: "", length: -1, namedCurve: ""};
+    }
+    if (name === "ECDSA") {
+      if (algorithm === null || (typeof algorithm !== "object" && typeof algorithm !== "function")) {
+        throw new TypeError("ECDSA requires namedCurve");
+      }
+      const namedCurve = domString(algorithm.namedCurve, "namedCurve");
+      if (namedCurve !== "P-256") unsupported("named curve " + namedCurve + " is not supported");
+      return {name, hash: "", length: -1, namedCurve};
+    }
+    if (name === "ED25519") {
+      return {name, hash: "", length: -1, namedCurve: ""};
     }
     unsupported("key algorithm " + name + " is not supported");
   }
@@ -162,21 +180,27 @@
     if (normalized.name === "AES-GCM") {
       return freeze({name: "AES-GCM", length: normalized.length < 0 ? materialBits : normalized.length});
     }
+    if (normalized.name === "ECDSA") {
+      return freeze({name: "ECDSA", namedCurve: normalized.namedCurve});
+    }
+    if (normalized.name === "ED25519") return freeze({name: "Ed25519"});
     return freeze({name: normalized.name});
   }
   function keyRecord(value) {
     if (!keyHandles.has(value)) throw new TypeError("Expected a CryptoKey");
     return {
       handle: keyHandles.get(value),
+      type: keyTypes.get(value),
       algorithm: keyAlgorithms.get(value),
       extractable: keyExtractable.get(value),
       usages: keyUsages.get(value)
     };
   }
-  function makeKey(handle, algorithm, extractable, usages) {
+  function makeKey(handle, type, algorithm, extractable, usages) {
     const key = create(CryptoKey.prototype);
     native.own(handle, key);
     keyHandles.set(key, handle);
+    keyTypes.set(key, type);
     keyAlgorithms.set(key, algorithm);
     keyExtractable.set(key, extractable);
     keyUsages.set(key, freeze(usages.slice()));
@@ -184,10 +208,24 @@
   }
   function jwkAlg(algorithm) {
     if (algorithm.name === "HMAC") return "HS" + algorithm.hash.name.slice(4);
+    if (algorithm.name === "ECDSA") return "ES256";
+    if (algorithm.name === "Ed25519") return "Ed25519";
     return "A" + algorithm.length + "GCM";
   }
   function base64urlBits(value) {
     return Math.floor(value.length * 6 / 8) * 8;
+  }
+  function normalizeSignature(algorithm) {
+    const name = algorithmName(algorithm);
+    if (name === "HMAC") return {name, hash: ""};
+    if (name === "ECDSA") {
+      if (algorithm === null || (typeof algorithm !== "object" && typeof algorithm !== "function")) {
+        throw new TypeError("ECDSA requires a hash");
+      }
+      return {name, hash: hashName(algorithm.hash)};
+    }
+    if (name === "ED25519") return {name, hash: ""};
+    unsupported("signature algorithm " + name + " is not supported");
   }
   function normalizeDerivation(algorithm) {
     const name = algorithmName(algorithm);
@@ -229,7 +267,7 @@
 
   class CryptoKey {
     constructor() { throw new TypeError("Illegal constructor"); }
-    get type() { keyRecord(this); return "secret"; }
+    get type() { return keyRecord(this).type; }
     get extractable() { return keyRecord(this).extractable; }
     get algorithm() { return keyRecord(this).algorithm; }
     get usages() { return keyRecord(this).usages; }
@@ -252,42 +290,65 @@
       receiver(subtleBrands, this);
       return promised(() => {
         const format = domString(formatValue, "format").toLowerCase();
-        if (format !== "raw" && format !== "jwk") unsupported("key format " + format + " is not supported in L2a");
+        if (["raw", "jwk", "spki", "pkcs8"].indexOf(format) < 0) unsupported("key format " + format + " is not supported");
         const algorithm = normalizeKeyAlgorithm(algorithmValue, false);
         if (format === "jwk" && (algorithm.name === "HKDF" || algorithm.name === "PBKDF2")) {
           unsupported(algorithm.name + " accepts raw keys only");
         }
         const extractable = Boolean(extractableValue);
         const usages = usageList(usagesValue);
-        let material, kty, alg, use, keyOps, ext, bits;
-        if (format === "raw") {
+        let material, kty, alg, use, keyOps, ext, crv, x, y, d, bits;
+        if (format !== "jwk") {
           material = bufferSource(keyData, "keyData");
           bits = byteLength(material) * 8;
         } else {
           if (keyData === null || typeof keyData !== "object") throw new TypeError("JWK keyData must be an object");
-          material = domString(keyData.k, "JWK k");
+          material = keyData.k === undefined ? undefined : domString(keyData.k, "JWK k");
           kty = domString(keyData.kty, "JWK kty");
           alg = keyData.alg === undefined ? undefined : domString(keyData.alg, "JWK alg");
           use = keyData.use === undefined ? undefined : domString(keyData.use, "JWK use");
-          keyOps = keyData.key_ops === undefined ? undefined : usageList(keyData.key_ops).join(",");
+          keyOps = keyData.key_ops === undefined ? undefined : jwkKeyOps(keyData.key_ops).join(",");
           ext = keyData.ext === undefined ? -1 : (Boolean(keyData.ext) ? 1 : 0);
-          bits = base64urlBits(material);
+          crv = keyData.crv === undefined ? undefined : domString(keyData.crv, "JWK crv");
+          x = keyData.x === undefined ? undefined : domString(keyData.x, "JWK x");
+          y = keyData.y === undefined ? undefined : domString(keyData.y, "JWK y");
+          d = keyData.d === undefined ? undefined : domString(keyData.d, "JWK d");
+          bits = material === undefined ? 0 : base64urlBits(material);
         }
         const handle = native.importKey(
           format, material, algorithm.name, algorithm.hash, algorithm.length,
-          extractable, usages.join(","), kty, alg, use, keyOps, ext
+          extractable, usages.join(","), kty, alg, use, keyOps, ext,
+          crv, x, y, d, algorithm.namedCurve
         );
-        return makeKey(handle, publicAlgorithm(algorithm, bits), extractable, usages);
+        const type = algorithm.name === "HMAC" || algorithm.name === "AES-GCM" ||
+          algorithm.name === "HKDF" || algorithm.name === "PBKDF2"
+          ? "secret" : (format === "pkcs8" || (format === "jwk" && d !== undefined) ? "private" : "public");
+        return makeKey(handle, type, publicAlgorithm(algorithm, bits), extractable, usages);
       });
     }
     exportKey(formatValue, keyValue) {
       receiver(subtleBrands, this);
       return promised(() => {
         const format = domString(formatValue, "format").toLowerCase();
-        if (format !== "raw" && format !== "jwk") unsupported("key format " + format + " is not supported in L2a");
+        if (["raw", "jwk", "spki", "pkcs8"].indexOf(format) < 0) unsupported("key format " + format + " is not supported");
         const key = keyRecord(keyValue);
         const exported = native.exportKey(key.handle, format);
         if (format === "raw") return exported;
+        if (format === "spki" || format === "pkcs8") return exported;
+        if (key.algorithm.name === "ECDSA") {
+          const fields = exported.split(".");
+          const result = {kty: "EC", crv: "P-256", x: fields[0], y: fields[1],
+            alg: "ES256", key_ops: key.usages.slice(), ext: key.extractable};
+          if (key.type === "private") result.d = fields[2];
+          return result;
+        }
+        if (key.algorithm.name === "Ed25519") {
+          const fields = exported.split(".");
+          const result = {kty: "OKP", crv: "Ed25519", x: fields[0],
+            alg: "Ed25519", key_ops: key.usages.slice(), ext: key.extractable};
+          if (key.type === "private") result.d = fields[1];
+          return result;
+        }
         return {
           kty: "oct",
           k: exported,
@@ -304,26 +365,35 @@
         const extractable = Boolean(extractableValue);
         const usages = usageList(usagesValue);
         const handle = native.generateKey(
-          algorithm.name, algorithm.hash, algorithm.length, extractable, usages.join(",")
+          algorithm.name, algorithm.hash, algorithm.length, extractable, usages.join(","), algorithm.namedCurve
         );
+        if (algorithm.name === "ECDSA" || algorithm.name === "ED25519") {
+          const handles = handle.split(",");
+          const publicUsages = usages.indexOf("verify") < 0 ? [] : ["verify"];
+          const privateUsages = usages.indexOf("sign") < 0 ? [] : ["sign"];
+          return {
+            publicKey: makeKey(Number(handles[0]), "public", publicAlgorithm(algorithm, 0), true, publicUsages),
+            privateKey: makeKey(Number(handles[1]), "private", publicAlgorithm(algorithm, 0), extractable, privateUsages)
+          };
+        }
         const bits = algorithm.name === "HMAC" && algorithm.length < 0
           ? (algorithm.hash === "SHA-256" ? 512 : 1024) : algorithm.length;
-        return makeKey(handle, publicAlgorithm(algorithm, bits), extractable, usages);
+        return makeKey(handle, "secret", publicAlgorithm(algorithm, bits), extractable, usages);
       });
     }
     sign(algorithm, keyValue, data) {
       receiver(subtleBrands, this);
       return promised(() => {
-        if (algorithmName(algorithm) !== "HMAC") unsupported("only HMAC signing is supported in L2a");
-        return native.sign(keyRecord(keyValue).handle, bufferSource(data, "data"));
+        const normalized = normalizeSignature(algorithm);
+        return native.sign(keyRecord(keyValue).handle, normalized.name, normalized.hash, bufferSource(data, "data"));
       });
     }
     verify(algorithm, keyValue, signature, data) {
       receiver(subtleBrands, this);
       return promised(() => {
-        if (algorithmName(algorithm) !== "HMAC") unsupported("only HMAC verification is supported in L2a");
+        const normalized = normalizeSignature(algorithm);
         return native.verify(
-          keyRecord(keyValue).handle,
+          keyRecord(keyValue).handle, normalized.name, normalized.hash,
           bufferSource(signature, "signature"),
           bufferSource(data, "data")
         );
@@ -375,7 +445,7 @@
         );
         const bits = derived.name === "HMAC" && derived.length < 0
           ? (derived.hash === "SHA-256" ? 512 : 1024) : derived.length;
-        return makeKey(handle, publicAlgorithm(derived, bits), extractable, usages);
+        return makeKey(handle, "secret", publicAlgorithm(derived, bits), extractable, usages);
       });
     }
     wrapKey() {
