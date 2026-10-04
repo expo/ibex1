@@ -215,9 +215,15 @@ fn handshake(
     getrandom::getrandom(&mut nonce).map_err(failed)?;
     use base64::Engine as _;
     let key = base64::engine::general_purpose::STANDARD.encode(nonce);
+    let serialized_host = match url.host() {
+        Some(url::Host::Ipv6(address)) => format!("[{address}]"),
+        Some(url::Host::Ipv4(address)) => address.to_string(),
+        Some(url::Host::Domain(domain)) => domain.to_string(),
+        None => String::new(),
+    };
     let host = match url.port() {
-        Some(port) => format!("{}:{port}", url.host_str().unwrap_or_default()),
-        None => url.host_str().unwrap_or_default().to_string(),
+        Some(port) => format!("{serialized_host}:{port}"),
+        None => serialized_host,
     };
     let target = match url.query() {
         Some(q) => format!("{}?{q}", url.path()),
