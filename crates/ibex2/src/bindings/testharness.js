@@ -102,6 +102,12 @@
   global.assert_unreached = function (description) {
     fail("reached unreachable code", description);
   };
+  // WPT uses this to mark a permitted optional feature as unsupported. The
+  // Rust runner turns this failure into a named exclusion for its pass/fail
+  // accounting.
+  global.assert_implements_optional = function (actual, description) {
+    if (!actual) fail("optional feature not implemented", description);
+  };
   global.assert_class_string = function (object, className, description) {
     var got = Object.prototype.toString.call(object);
     if (got !== "[object " + className + "]") {
@@ -122,4 +128,19 @@
   global.__ibex2_reset_results = function () {
     results = [];
   };
+
+  // The ECDSA fixture clones plain records containing typed arrays while it
+  // constructs invalid-vector variants. This test-only clone is deliberately
+  // limited to that data shape; it is not the standard-library implementation.
+  if (typeof global.structuredClone === "undefined") {
+    global.structuredClone = function clone(value) {
+      if (value === null || typeof value !== "object") return value;
+      if (ArrayBuffer.isView(value)) return new value.constructor(value);
+      if (value instanceof ArrayBuffer) return value.slice(0);
+      if (Array.isArray(value)) return value.map(clone);
+      var result = {};
+      Object.keys(value).forEach(function (key) { result[key] = clone(value[key]); });
+      return result;
+    };
+  }
 })(globalThis);

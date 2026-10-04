@@ -230,6 +230,111 @@
       "sha256": "711dd4d6e756cfde94269ca5d753665311dbbc0de2a525e0d3fa75652669cce9",
       "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
       "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/sign_verify/signature.js",
+      "local": "third_party/wpt/WebCryptoAPI/sign_verify/signature.js",
+      "sha256": "67c901cdb7be4b4af1d5599f60b5f118b29793a37528b207cdf014d37abe8cf6",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/sign_verify/ecdsa_vectors.js",
+      "local": "third_party/wpt/WebCryptoAPI/sign_verify/ecdsa_vectors.js",
+      "sha256": "67e47c27b1aada50ceb62689b149bc7aa0dfa273f3dd122f91fd6eb5daa78426",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/sign_verify/ecdsa.js",
+      "local": "third_party/wpt/WebCryptoAPI/sign_verify/ecdsa.js",
+      "sha256": "c688814e87d92289d34ad374decc29f65434f1e14cf7e36222a107f94200e744",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/sign_verify/ecdsa.https.any.js",
+      "local": "third_party/wpt/WebCryptoAPI/sign_verify/ecdsa.https.any.js",
+      "sha256": "e69ac315ff8f73aba02b1c4a48d31d6a987423d543f577599083ed79a025aa46",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/sign_verify/eddsa_vectors.js",
+      "local": "third_party/wpt/WebCryptoAPI/sign_verify/eddsa_vectors.js",
+      "sha256": "74fa523933c1b6f461f98876eb864df20a703cc60c26be9ab7666da484671040",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/sign_verify/eddsa.js",
+      "local": "third_party/wpt/WebCryptoAPI/sign_verify/eddsa.js",
+      "sha256": "b0155826033feb10fef4504b7ec4019a2cd54a50087d0dd530dafb25a6babed1",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/sign_verify/eddsa_curve25519.https.any.js",
+      "local": "third_party/wpt/WebCryptoAPI/sign_verify/eddsa_curve25519.https.any.js",
+      "sha256": "19ed793dc775bed9fdb48d3ba68477153e32ec381cdfe2ae88fac7e8fe113cdb",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/util/ec_key_fixtures.js",
+      "local": "third_party/wpt/WebCryptoAPI/util/ec_key_fixtures.js",
+      "sha256": "af42b5b0ba57d0bdbc2919fedd57bb32b732f94392c60fbf9be70a12a0594cdc",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/util/okp_key_fixtures.js",
+      "local": "third_party/wpt/WebCryptoAPI/util/okp_key_fixtures.js",
+      "sha256": "f04882a29723aa50de3a68fb7e77e04029d3fea201e29cce914e0db96a7b3f0e",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/import_export/ec_importKey.https.any.js",
+      "local": "third_party/wpt/WebCryptoAPI/import_export/ec_importKey.https.any.js",
+      "sha256": "ba3c3212c139ba277f9fe2409d6598591722b6b5c0961dfb0745bf486a4f4c96",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/import_export/okp_importKey.js",
+      "local": "third_party/wpt/WebCryptoAPI/import_export/okp_importKey.js",
+      "sha256": "0e10fca264b0c85f10dd98f0e6e38faa7201f19d416ee8e15e63e63302dad009",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/import_export/okp_importKey_fixtures.js",
+      "local": "third_party/wpt/WebCryptoAPI/import_export/okp_importKey_fixtures.js",
+      "sha256": "ddad596bc2888870a6d168e7f064925045b245ae7e6ae45642b9db9c906015cd",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/import_export/okp_importKey_Ed25519.https.any.js",
+      "local": "third_party/wpt/WebCryptoAPI/import_export/okp_importKey_Ed25519.https.any.js",
+      "sha256": "29773689baff9f4edc5935b7a8494904cec40fa902cc6f53eecf0eb29c411928",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/generateKey/successes_ECDSA.https.any.js",
+      "local": "third_party/wpt/WebCryptoAPI/generateKey/successes_ECDSA.https.any.js",
+      "sha256": "b060d1cd59fdb34b9bc7cbc8dfef7343c387ccde6726c33483cb6ffee8c8701a",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/generateKey/successes_Ed25519.https.any.js",
+      "local": "third_party/wpt/WebCryptoAPI/generateKey/successes_Ed25519.https.any.js",
+      "sha256": "4c3e604dff898bb0e78dbdf1952c1cba81b20fcee628b22343b87407508a54ab",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
     }
   ]
 }

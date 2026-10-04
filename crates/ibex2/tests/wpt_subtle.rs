@@ -1,4 +1,4 @@
-//! Unmodified WPT WebCrypto fixtures for the symmetric L2a surface.
+//! Unmodified WPT WebCrypto fixtures for the L2 crypto surface.
 #![cfg(all(feature = "hermes", feature = "crypto"))]
 
 use ibex2::engine::hermes::{DynamicCode, Hermes};
@@ -90,6 +90,64 @@ const SUITES: &[Suite] = &[
             "WebCryptoAPI/generateKey/successes_AES-GCM.https.any.js",
         ],
     },
+    Suite {
+        name: "ecdsa",
+        scripts: &[
+            "WebCryptoAPI/util/helpers.js",
+            "WebCryptoAPI/sign_verify/ecdsa_vectors.js",
+            "WebCryptoAPI/sign_verify/signature.js",
+            "WebCryptoAPI/sign_verify/ecdsa.js",
+            "WebCryptoAPI/sign_verify/ecdsa.https.any.js",
+        ],
+    },
+    Suite {
+        name: "ed25519",
+        scripts: &[
+            "WebCryptoAPI/util/helpers.js",
+            "WebCryptoAPI/sign_verify/eddsa_vectors.js",
+            "WebCryptoAPI/sign_verify/signature.js",
+            "WebCryptoAPI/sign_verify/eddsa.js",
+            "WebCryptoAPI/sign_verify/eddsa_curve25519.https.any.js",
+        ],
+    },
+    Suite {
+        name: "ec-import-export",
+        scripts: &[
+            "WebCryptoAPI/util/helpers.js",
+            "WebCryptoAPI/util/ec_key_fixtures.js",
+            "WebCryptoAPI/import_export/ec_importKey.https.any.js",
+        ],
+    },
+    Suite {
+        name: "ed25519-import-export",
+        scripts: &[
+            "WebCryptoAPI/util/helpers.js",
+            "WebCryptoAPI/util/okp_key_fixtures.js",
+            "WebCryptoAPI/import_export/okp_importKey_fixtures.js",
+            "WebCryptoAPI/import_export/okp_importKey.js",
+            "WebCryptoAPI/import_export/okp_importKey_Ed25519.https.any.js",
+        ],
+    },
+    Suite {
+        name: "generate-ecdsa",
+        scripts: &[
+            "WebCryptoAPI/util/helpers.js",
+            "common/subset-tests.js",
+            "WebCryptoAPI/generateKey/algorithm_registry.js",
+            "WebCryptoAPI/generateKey/successes.js",
+            "WebCryptoAPI/generateKey/successes_ECDSA.https.any.js",
+        ],
+    },
+    Suite {
+        name: "generate-ed25519",
+        scripts: &[
+            "WebCryptoAPI/util/helpers.js",
+            "common/subset-tests.js",
+            "WebCryptoAPI/generateKey/algorithm_registry.js",
+            "WebCryptoAPI/generateKey/successes.js",
+            "WebCryptoAPI/generateKey/successes_Ed25519.https.any.js",
+        ],
+    },
 ];
 
 fn run_suite(suite: &Suite) -> Vec<serde_json::Value> {
@@ -118,12 +176,9 @@ fn excluded(suite: &str, name: &str) -> Option<&'static str> {
         return Some("Hermes does not implement ArrayBuffer.prototype.transfer");
     }
     if upper.contains("SHA-1") {
-        return Some("SHA-1 is explicitly outside L2a");
+        return Some("SHA-1 is explicitly outside L2");
     }
     match suite {
-        "hmac" if name.starts_with("generate wrong key step:") => {
-            Some("the fixture's wrong-key setup requires L2b ECDSA")
-        }
         "aes-gcm" if name.contains("192-bit key") => Some("ring does not expose AES-GCM-192"),
         "aes-gcm"
             if [
@@ -168,12 +223,41 @@ fn excluded(suite: &str, name: &str) -> Option<&'static str> {
         "generate-aes-gcm" if upper.contains("LENGTH: 192") => {
             Some("ring does not expose AES-GCM-192")
         }
+        "ecdsa" if upper.contains("P-384") || upper.contains("P-521") => {
+            Some("P-384 and P-521 are explicitly outside L2")
+        }
+        "ecdsa" if name.contains("wrong algorithm name") => {
+            Some("the fixture's wrong-key setup requires out-of-scope SHA-1")
+        }
+        "ecdsa" if name.contains("verification failure due to wrong hash") => {
+            Some("the fixture's alternate hash is out-of-scope SHA-1")
+        }
+        "ed25519" if name.contains("wrong algorithm name") => {
+            Some("the fixture's wrong-key setup requires out-of-scope SHA-1")
+        }
+        "ec-import-export" if upper.contains("{NAME: ECDH") => {
+            Some("ECDH is explicitly outside L2")
+        }
+        "ec-import-export"
+            if upper.contains("P-384")
+                || upper.contains("P-521")
+                || upper.contains("384 BITS")
+                || upper.contains("521 BITS") =>
+        {
+            Some("P-384 and P-521 are explicitly outside L2")
+        }
+        "ec-import-export" if name.contains("compressed") => {
+            Some("ring does not decompress SEC1 compressed points")
+        }
+        "generate-ecdsa" if upper.contains("P-384") || upper.contains("P-521") => {
+            Some("P-384 and P-521 are explicitly outside L2")
+        }
         _ => None,
     }
 }
 
 #[test]
-fn symmetric_webcrypto_wpt() {
+fn webcrypto_wpt() {
     let mut failures = Vec::new();
     let mut exclusions = Vec::new();
     let mut exclusion_reasons = BTreeMap::new();
@@ -215,10 +299,10 @@ fn symmetric_webcrypto_wpt() {
     for (reason, count) in exclusion_reasons {
         println!("excluded {count}: {reason}");
     }
-    assert_eq!(total, 14_137, "the pinned upstream test set changed");
+    assert_eq!(total, 14_933, "the pinned upstream test set changed");
     assert_eq!(
         exclusions.len(),
-        8_112,
+        8_660,
         "an exclusion changed; audit it before updating the count"
     );
     assert!(
