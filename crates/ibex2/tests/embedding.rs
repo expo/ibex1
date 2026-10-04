@@ -655,7 +655,7 @@ fn assert_failed_install_is_terminal(
     context: &Context,
     first: &[CompiledScript],
     expected_error: &str,
-) {
+) -> String {
     let valid: Vec<_> = ibex2::bindings::scripts(Groups::PURE)
         .unwrap()
         .into_iter()
@@ -700,6 +700,7 @@ fn assert_failed_install_is_terminal(
         "retry did not require runtime disposal: {retry_error}"
     );
     unsafe { storage_consumer_destroy(handle) };
+    error
 }
 
 #[test]
@@ -718,11 +719,11 @@ fn truncated_binding_bytecode_is_refused_and_spends_the_adapter() {
         bytes: bytes.as_ptr(),
         len: bytes.len(),
     };
-    assert_failed_install_is_terminal(&context, &scripts, "declared length");
+    let _ = assert_failed_install_is_terminal(&context, &scripts, "declared length");
 }
 
 #[test]
-fn spoofed_binding_header_is_refused_after_mutation_and_spends_the_runtime() {
+fn spoofed_binding_header_is_refused_in_preflight_and_spends_the_adapter() {
     let context = Context::new(GrantSet::none());
     let valid = include_bytes!(concat!(env!("OUT_DIR"), "/headers.hbc"));
     let mut bytes = [0; 36];
@@ -739,7 +740,12 @@ fn spoofed_binding_header_is_refused_after_mutation_and_spends_the_runtime() {
         bytes: bytes.as_ptr(),
         len: bytes.len(),
     };
-    assert_failed_install_is_terminal(&context, &scripts, "runtime must be discarded");
+    let error =
+        assert_failed_install_is_terminal(&context, &scripts, "truncated Hermes bytecode header");
+    assert!(
+        !error.contains("after mutating"),
+        "the fixed-header refusal happened after publication: {error}"
+    );
 }
 
 #[test]
@@ -759,7 +765,7 @@ fn wrong_binding_version_is_refused_and_spends_a_versioned_adapter() {
         bytes: bytes.as_ptr(),
         len: bytes.len(),
     };
-    assert_failed_install_is_terminal(&context, &scripts, "version does not match");
+    let _ = assert_failed_install_is_terminal(&context, &scripts, "version does not match");
 }
 
 #[test]

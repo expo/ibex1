@@ -1,6 +1,10 @@
 // Engine-independent JSI adapter; no Hermes ownership, loader or event loop.
 // @ref LLP 0067#3-the-check — captured authority, one Rust boundary
 #include "../../include/ibex2_jsi.h"
+#if __has_include(<hermes/BCGen/HBC/BytecodeFileFormat.h>)
+#include <hermes/BCGen/HBC/BytecodeFileFormat.h>
+#define IBEX2_HAS_HERMES_BYTECODE_FILE_FORMAT 1
+#endif
 #include <cstring>
 #include <unordered_map>
 #include <stdexcept>
@@ -446,6 +450,19 @@ std::vector<const char*> expected_scripts_impl(Groups groups) {
 constexpr uint8_t kHermesBytecodeMagic[] = {
     0xc6, 0x1f, 0xbc, 0x03, 0xc1, 0x03, 0x19, 0x1f};
 
+// The installed Hermes bundle exposes only public headers, not the internal
+// file-format header. Full source builds use sizeof directly; the fallback is
+// the selected pin's packed, cache-aligned BytecodeFileHeader size. Keep the
+// assertion so a source-header build makes a pin change fail loudly.
+#if defined(IBEX2_HAS_HERMES_BYTECODE_FILE_FORMAT)
+constexpr size_t kHermesBytecodeHeaderSize =
+    sizeof(::hermes::hbc::BytecodeFileHeader);
+static_assert(kHermesBytecodeHeaderSize == 128,
+              "update the installed-header BytecodeFileHeader size");
+#else
+constexpr size_t kHermesBytecodeHeaderSize = 128;
+#endif
+
 uint32_t bytecode_version(const CompiledScript& script) {
   return static_cast<uint32_t>(script.bytes[8]) |
       (static_cast<uint32_t>(script.bytes[9]) << 8) |
@@ -665,7 +682,7 @@ void Adapter::install(Groups groups, const Ibex2Bindings* bindings,
       if (scripts[i].name == nullptr || scripts[i].bytes == nullptr ||
           std::strcmp(scripts[i].name, expected[i]) != 0)
         throw std::invalid_argument("Ibex2 binding bytecode is not in scripts() order");
-      if (scripts[i].len < 36)
+      if (scripts[i].len < kHermesBytecodeHeaderSize)
         throw std::invalid_argument(
             "Ibex2 binding payload has a truncated Hermes bytecode header");
       if (std::memcmp(scripts[i].bytes, kHermesBytecodeMagic,
