@@ -299,6 +299,7 @@ void *ibex2_hermes_create(int enable_eval) {
                     .withEnableEval(enable_eval != 0)
                     .withMicrotaskQueue(true)
                     .withAsyncBreakCheckInEval(true)
+                    .withES6BlockScoping(true)
                     .build();
   // Fully qualified: `using namespace facebook` makes bare `hermes` ambiguous
   // between ::hermes (the VM namespace) and facebook::hermes (the JSI one).

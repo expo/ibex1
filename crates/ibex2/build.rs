@@ -196,7 +196,7 @@ fn main() {
         println!("cargo:rerun-if-changed={source}");
         let artifact = out_dir.join(format!("{name}.hbc"));
         let status = std::process::Command::new(&hermesc)
-            .args(["-emit-binary", "-O", "-out"])
+            .args(["-emit-binary", "-O", "-Xes6-block-scoping", "-out"])
             .arg(&artifact)
             .arg(&source)
             .status()

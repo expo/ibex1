@@ -199,15 +199,15 @@
     var once = !!(options && typeof options !== "boolean" && options.once);
     var passive = !!(options && typeof options !== "boolean" && options.passive);
     var signal = options && typeof options !== "boolean" ? options.signal : undefined;
-    if (callback == null) return;
-    if (typeof callback !== "function" && typeof callback !== "object") {
-      throw new TypeError("event listener must be a function or object");
-    }
-    if (signal !== undefined && signal !== null) {
-      if (typeof signal.addEventListener !== "function" || typeof signal.removeEventListener !== "function") {
+    if (signal !== undefined) {
+      if (typeof global.AbortSignal !== "function" || !(signal instanceof global.AbortSignal)) {
         throw new TypeError("signal is not an AbortSignal");
       }
       if (signal.aborted) return;
+    }
+    if (callback == null) return;
+    if (typeof callback !== "function" && typeof callback !== "object") {
+      throw new TypeError("event listener must be a function or object");
     }
     if (state.listeners.some(function (entry) {
       return !entry.removed && entry.type === type && entry.callback === callback && entry.capture === capture;
@@ -215,7 +215,7 @@
     var entry = { type: type, callback: callback, capture: capture, once: once,
       passive: passive, signal: null, abort: null, removed: false };
     state.listeners.push(entry);
-    if (signal !== undefined && signal !== null) {
+    if (signal !== undefined) {
       entry.signal = signal;
       entry.abort = function () { removeEntry(target, entry); };
       signal.addEventListener("abort", entry.abort, { once: true });

@@ -15,6 +15,20 @@ fn host_evaluation_works() {
 }
 
 #[test]
+fn source_evaluation_uses_es6_loop_scoping() {
+    let mut rt = Hermes::new(DynamicCode::Closed).expect("runtime");
+    assert_eq!(
+        rt.eval(
+            "var callbacks = []; \
+             for (let i = 0; i < 3; i++) callbacks.push(function () { return i; }); \
+             callbacks.map(function (callback) { return callback(); }).join('')"
+        )
+        .unwrap(),
+        "012"
+    );
+}
+
+#[test]
 fn a_javascript_throw_is_reported_not_swallowed() {
     let mut rt = Hermes::new(DynamicCode::Closed).expect("runtime");
     let err = rt.eval("throw new Error('boom')").unwrap_err();
@@ -267,7 +281,7 @@ fn abort_signal_uses_event_target_when_events_are_installed() {
             var seen = [];
             signal.addEventListener('abort', function (event) {
               seen.push(event instanceof Event, event.type, event.target === signal,
-                        event.currentTarget === signal, event.eventPhase);
+                        event.currentTarget === signal, event.eventPhase, event.isTrusted);
             }, { once: true });
             target.addEventListener('go', function () { seen.push('removed-failed'); }, { signal: signal });
             controller.abort('because');
@@ -282,8 +296,9 @@ fn abort_signal_uses_event_target_when_events_are_installed() {
         .unwrap();
     assert_eq!(
         observed,
-        "true|true|because|true|any-reason|true,abort,true,true,2"
+        "true|true|because|true|any-reason|true,abort,true,true,2,true"
     );
+    assert_eq!(rt.eval("new Event('abort').isTrusted").unwrap(), "false");
 }
 
 #[test]

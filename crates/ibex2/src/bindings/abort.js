@@ -50,7 +50,11 @@
       var state = own(current), stopped = false;
       state.hooks.splice(0).forEach(function (hook) { if (!hook.alive || hook.alive()) hook.callback(); });
       if (useEvents) {
-        current.dispatchEvent(new global.Event("abort"));
+        var event = new global.Event("abort");
+        // This event is fired by AbortSignal's abort algorithm, rather than
+        // constructed and dispatched by application code.
+        Object.defineProperty(event, "isTrusted", { value: true });
+        current.dispatchEvent(event);
         return;
       }
       var event = { type: "abort", target: current, currentTarget: current,

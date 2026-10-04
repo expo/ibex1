@@ -7,31 +7,79 @@
   "use strict";
 
   var results = [];
+  var pending = 0;
 
   function record(name, error) {
     results.push({ name: name, ok: !error, message: error ? String(error && error.message || error) : "" });
   }
 
+  function context(name, asynchronous) {
+    var finished = false;
+    var firstError = null;
+    function finish(error) {
+      if (finished) return;
+      finished = true;
+      if (asynchronous) pending--;
+      record(name, error || firstError);
+    }
+    var t = {
+      step_func: function (fn) {
+        return function () {
+          try { return fn.apply(this, arguments); }
+          catch (error) {
+            if (!firstError) firstError = error;
+            if (asynchronous) finish(error);
+          }
+        };
+      },
+      step_func_done: function (fn) {
+        return function () {
+          try { if (fn) fn.apply(this, arguments); finish(null); }
+          catch (error) { finish(error); }
+        };
+      },
+      step_timeout: function (fn, milliseconds) {
+        return setTimeout(t.step_func(fn), milliseconds);
+      },
+      unreached_func: function (description) {
+        return t.step_func(function () { fail("reached unreachable code", description); });
+      },
+      done: function () { finish(null); },
+      _error: function () { return firstError; }
+    };
+    return t;
+  }
+
   global.test = function (fn, name) {
+    var t = context(name, false);
     try {
-      fn();
-      record(name, null);
+      fn(t);
+      record(name, t._error());
     } catch (e) {
       record(name, e);
     }
   };
 
+  global.async_test = function (fn, name) {
+    pending++;
+    var t = context(name, true);
+    try { fn(t); } catch (e) { t.step_func_done(function () { throw e; })(); }
+    return t;
+  };
+
   global.promise_test = function (fn, name) {
+    pending++;
+    var t = context(name, true);
     try {
-      var p = fn();
+      var p = fn(t);
       if (p && typeof p.then === "function") {
-        p.then(function () { record(name, null); },
-               function (e) { record(name, e); });
+        p.then(function () { t.done(); },
+               t.step_func_done(function (e) { throw e; }));
       } else {
-        record(name, null);
+        t.done();
       }
     } catch (e) {
-      record(name, e);
+      t.step_func_done(function () { throw e; })();
     }
   };
 
@@ -80,6 +128,13 @@
     }
     fail("did not throw", description);
   };
+  global.assert_throws_exactly = function (expected, fn, description) {
+    try { fn(); } catch (e) {
+      if (e === expected) return;
+      fail("threw " + format(e) + " instead of the exact expected value", description);
+    }
+    fail("did not throw", description);
+  };
   global.assert_throws_dom = function (name, fn, description) {
     try { fn(); } catch (e) {
       if (e instanceof DOMException && e.name === name) return;
@@ -121,5 +176,7 @@
   };
   global.__ibex2_reset_results = function () {
     results = [];
+    pending = 0;
   };
+  global.__ibex2_pending_tests = function () { return pending; };
 })(globalThis);
