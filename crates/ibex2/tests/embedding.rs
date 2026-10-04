@@ -953,3 +953,20 @@ fn freezing_modified_intrinsics_does_not_satisfy_the_installation_contract() {
     assert!(error.contains("harden"), "{error}");
     assert!(!c.directory.join("data/db").exists());
 }
+
+#[test]
+fn rejection_tracker_replacements_are_part_of_the_integrity_baseline() {
+    let groups = Groups::PURE | Groups::CONSOLE | Groups::TIMERS | Groups::EVENTS | Groups::STORAGE;
+    let consumer = BareConsumer::new(groups);
+    assert_eq!(
+        consumer.eval("[typeof Promise._B, typeof Promise._C].join('|')"),
+        "function|function"
+    );
+    consumer.eval("Promise._B = function () {}; Promise._C = function () {};");
+    consumer.eval(include_str!("../src/bindings/harden.js"));
+
+    let error = consumer
+        .eval_result("sqlite.open('app:/data/db')")
+        .unwrap_err();
+    assert!(error.contains("harden"), "{error}");
+}

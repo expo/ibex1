@@ -1734,6 +1734,40 @@ fn hermes_rejection_tracker_dispatches_unhandled_and_handled_events() {
 }
 
 #[test]
+fn events_without_timers_expose_handlers_but_do_not_track_rejections() {
+    let mut rt = Hermes::new(DynamicCode::Closed).expect("runtime");
+    let context = crate::bindings::Context::new(crate::grant::GrantSet::none());
+    rt.install_runtime(
+        crate::bindings::Groups::PURE | crate::bindings::Groups::EVENTS,
+        &context,
+    )
+    .unwrap();
+    assert_eq!(
+        rt.eval(
+            r#"
+            globalThis.rejectionEvents = [];
+            onunhandledrejection = function () { rejectionEvents.push('unhandled'); };
+            onrejectionhandled = function () { rejectionEvents.push('handled'); };
+            globalThis.untrackedRejection = Promise.reject(new Error('not tracked'));
+            [
+              'onunhandledrejection' in globalThis,
+              'onrejectionhandled' in globalThis,
+              typeof setTimeout
+            ].join('|')
+            "#,
+        )
+        .unwrap(),
+        "true|true|undefined"
+    );
+    rt.drain_microtasks().unwrap();
+    assert_eq!(rt.eval("rejectionEvents.join(',')").unwrap(), "");
+    rt.eval("untrackedRejection.catch(function () {});")
+        .unwrap();
+    rt.drain_microtasks().unwrap();
+    assert_eq!(rt.eval("rejectionEvents.join(',')").unwrap(), "");
+}
+
+#[test]
 fn a_timeout_fires_after_its_delay_and_not_before() {
     let mut rt = timer_rt();
     rt.eval("globalThis.fired = false; setTimeout(() => { fired = true }, 20);")
