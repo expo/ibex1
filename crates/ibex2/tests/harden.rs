@@ -155,11 +155,12 @@ fn the_global_object_carries_exactly_the_allowed_names() {
         .collect();
     // The set to match is what the list allows beyond what the engine already
     // had (anything the engine provides natively is in the baseline).
-    let allowed: std::collections::BTreeSet<String> = ibex2::loader::ALLOWED_GLOBALS
-        .iter()
-        .map(|s| s.to_string())
-        .filter(|name| !baseline.contains(name))
-        .collect();
+    let allowed: std::collections::BTreeSet<String> =
+        ibex2::loader::allowed_globals(rt.installed_groups().expect("groups were installed"))
+            .into_iter()
+            .map(|s| s.to_string())
+            .filter(|name| !baseline.contains(name))
+            .collect();
     assert_eq!(
         added, allowed,
         "left: on the global object; right: ALLOWED_GLOBALS minus the engine's own"

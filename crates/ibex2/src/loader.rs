@@ -957,34 +957,55 @@ fn js_string_literal(text: &str) -> String {
     out
 }
 
-/// The global names a module may see. Anything outside this list on
-/// `globalThis` after boot is an R1 violation.
+/// The global names a module may see for one installed group set. Anything
+/// outside this list on `globalThis` after boot is an R1 violation.
 ///
 /// Capability-bearing names are deliberately absent: they arrive as parameters.
-pub const ALLOWED_GLOBALS: &[&str] = &[
-    // The lowering's helpers, referenced by name from lowered module code.
-    "__ibex2_default",
-    "__ibex2_dynamic_import",
-    "__ibex2_export_all",
-    // Called by the pump, from the engine side, once per due timer.
-    "__ibex2_fire_timer",
-    "console",
-    "setTimeout",
-    "setInterval",
-    "clearTimeout",
-    "clearInterval",
-    "performance",
-    "queueMicrotask",
-    "Headers",
-    "DOMException",
-    "QuotaExceededError",
-    "Crypto",
-    "AbortController",
-    "AbortSignal",
-    "crypto",
-    "URL",
-    "URLSearchParams",
-];
+// @ref LLP 0057.000#51-included-gated-or-a-crate — R5 follows the runtime's actual install groups
+pub fn allowed_globals(groups: crate::bindings::Groups) -> Vec<&'static str> {
+    // The lowering's helpers are runtime machinery, referenced by name from
+    // lowered module code rather than installed by door 2.
+    let mut result = vec![
+        "__ibex2_default",
+        "__ibex2_dynamic_import",
+        "__ibex2_export_all",
+    ];
+    if groups.contains(crate::bindings::Groups::PURE) {
+        result.extend([
+            "Headers",
+            "DOMException",
+            "QuotaExceededError",
+            "URL",
+            "URLSearchParams",
+            "TextEncoder",
+            "TextDecoder",
+            "atob",
+            "btoa",
+        ]);
+    }
+    if groups.contains(crate::bindings::Groups::CONSOLE) {
+        result.push("console");
+    }
+    if groups.contains(crate::bindings::Groups::TIMERS) {
+        // Called by the pump, from the engine side, once per due timer.
+        result.extend([
+            "__ibex2_fire_timer",
+            "setTimeout",
+            "setInterval",
+            "clearTimeout",
+            "clearInterval",
+            "performance",
+            "queueMicrotask",
+        ]);
+    }
+    if groups.contains(crate::bindings::Groups::ABORT) {
+        result.extend(["AbortController", "AbortSignal"]);
+    }
+    if groups.contains(crate::bindings::Groups::CRYPTO) {
+        result.extend(["Crypto", "crypto"]);
+    }
+    result
+}
 
 #[cfg(test)]
 mod tests {
@@ -1149,7 +1170,7 @@ mod tests {
         for capability in ["fetch", "fs", "sqlite"] {
             assert!(MODULE_PARAMETERS.contains(&capability));
             assert!(
-                !ALLOWED_GLOBALS.contains(&capability),
+                !allowed_globals(crate::bindings::Groups::DEFAULT).contains(&capability),
                 "{capability} must not be reachable from the global object (LLP 0067 R1)"
             );
         }

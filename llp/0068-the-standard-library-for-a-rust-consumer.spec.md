@@ -149,6 +149,9 @@ modifies no globals; `install` is the additive whole-surface door.
 prelude and then calls this same `Adapter::install`; the module loader asks the
 adapter's retained factories for per-module endowed values and removes the
 temporary capability globals before project code.
+`loader::allowed_globals(groups)` derives R5's allow-list from that runtime's
+recorded selection; it is no longer a second, fixed inventory that can drift
+from installation.
 
 Implemented 2026-09-07 (Charlie: make the bindings available in Rust and
 TypeScript; Codex). `ibex2::bindings::Context` supplies a separate Rust state

@@ -463,7 +463,8 @@ fn run(
         .global_names()
         .into_iter()
         .filter(|name| {
-            !baseline.contains(name) && !ibex2::loader::ALLOWED_GLOBALS.contains(&name.as_str())
+            !baseline.contains(name)
+                && !ibex2::loader::allowed_globals(groups).contains(&name.as_str())
         })
         .collect();
     if !unexpected.is_empty() {

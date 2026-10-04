@@ -150,11 +150,12 @@ fn no_capability_is_reachable_from_the_global_object() {
         .into_iter()
         .filter(|n| !baseline.contains(n))
         .collect();
-    let allowed: std::collections::BTreeSet<String> = ibex2::loader::ALLOWED_GLOBALS
-        .iter()
-        .map(|s| s.to_string())
-        .filter(|n| !baseline.contains(n))
-        .collect();
+    let allowed: std::collections::BTreeSet<String> =
+        ibex2::loader::allowed_globals(rt.installed_groups().expect("groups were installed"))
+            .into_iter()
+            .map(|s| s.to_string())
+            .filter(|n| !baseline.contains(n))
+            .collect();
     assert_eq!(
         added, allowed,
         "left: on globalThis; right: ALLOWED_GLOBALS (R1)"
