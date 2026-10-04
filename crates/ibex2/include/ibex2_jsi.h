@@ -8,8 +8,11 @@
 #include <string>
 #include <vector>
 
-// Opaque Rust-owned endowment handle. Only Context::bindings_ptr() produces a
-// live value; in particular, a grant pointer is not an install handle.
+// Opaque Rust-owned endowment handle. Context::bindings_ptr() produces a
+// borrowed handle; ibex2_bindings_adopt produces an adopted handle whose state
+// identity matches an owning runtime. Release every adopted handle with
+// ibex2_bindings_destroy; the Context retains and releases its borrowed handle.
+// In particular, a grant pointer is not an install handle.
 struct Ibex2Bindings;
 
 struct Ibex2AbiValue {

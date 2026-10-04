@@ -488,6 +488,21 @@ fn rust_and_cpp_group_validation_tables_agree() {
 }
 
 #[test]
+fn public_header_documents_every_bindings_handle_producer_and_releaser() {
+    let header = include_str!("../include/ibex2_jsi.h");
+    for name in [
+        "Context::bindings_ptr()",
+        "ibex2_bindings_adopt",
+        "ibex2_bindings_destroy",
+    ] {
+        assert!(
+            header.lines().take(20).any(|line| line.contains(name)),
+            "the Ibex2Bindings header comment omits {name}"
+        );
+    }
+}
+
+#[test]
 fn retained_pure_bindings_refuse_after_detach_and_context_drop() {
     let mut consumer = BareConsumer::new(Groups::PURE);
     assert_eq!(
