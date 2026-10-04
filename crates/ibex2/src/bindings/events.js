@@ -39,6 +39,12 @@
     for (var i = 0; i < keys.length; i++) record[keys[i]] = fields[keys[i]];
     return record;
   }
+  function privateList(items) {
+    var list = objectCreate(null);
+    list.length = 0;
+    if (items) for (var i = 0; i < items.length; i++) list[list.length++] = items[i];
+    return list;
+  }
   var eventStates = new WeakMapCtor();
   var targetStates = new WeakMapCtor();
   var brand = global.__ibex2_brand || function (value) { return value; };
@@ -85,7 +91,7 @@
       target: null,
       currentTarget: null,
       phase: 0,
-      path: [],
+      path: privateList(),
       trusted: false,
       timeStamp: performanceNow
         ? functionCall(performanceNow, performanceObject)
@@ -153,7 +159,7 @@
     state.target = null;
     state.currentTarget = null;
     state.phase = Event.NONE;
-    state.path = [];
+    state.path = privateList();
     state.trusted = false;
   };
 
@@ -230,7 +236,7 @@
 
   function EventTarget() {
     if (!new.target) throw new TypeError("EventTarget requires new");
-    weakMapSet(targetStates, this, privateRecord({ listeners: [] }));
+    weakMapSet(targetStates, this, privateRecord({ listeners: privateList() }));
     brand(this, "EventTarget");
   }
 
@@ -333,7 +339,7 @@
     state.target = target;
     state.currentTarget = target;
     state.phase = Event.AT_TARGET;
-    state.path = [target];
+    state.path = privateList([target]);
     try {
       invoke(target, event, true);
       // @ref LLP 0057.000#l3--events-abort-and-the-second-direction — at-target capture and bubble remain distinct propagation phases
@@ -342,7 +348,7 @@
     } finally {
       state.currentTarget = null;
       state.phase = Event.NONE;
-      state.path = [];
+      state.path = privateList();
       state.dispatching = false;
       state.stop = false;
       state.stopImmediate = false;
@@ -426,7 +432,7 @@
   }
 
   // @ref LLP 0057.000#l3--events-abort-and-the-second-direction — keep the engine global's prototype intact; only its private target record is new
-  weakMapSet(targetStates, global, privateRecord({ listeners: [] }));
+  weakMapSet(targetStates, global, privateRecord({ listeners: privateList() }));
   global.Event = Event;
   global.EventTarget = EventTarget;
   global.CustomEvent = CustomEvent;

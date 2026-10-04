@@ -745,6 +745,46 @@ fn borrowed_unhardened_runtime_inherited_setters_never_see_private_event_records
 }
 
 #[test]
+fn borrowed_unhardened_runtime_array_hooks_never_see_private_event_lists() {
+    let consumer = BareConsumer::new(Groups::PURE | Groups::EVENTS);
+    // The script itself avoids arrays: the hooks below would fire for its own
+    // pushes too. It records through a counter and a string.
+    assert_eq!(
+        consumer.eval(
+            r#"
+            var captures = 0;
+            var log = '';
+            for (var index = 0; index < 4; index++) {
+              Object.defineProperty(Array.prototype, String(index), {
+                configurable: true,
+                set: function (value) { captures++; },
+                get: function () { return undefined; }
+              });
+            }
+            var target = new EventTarget();
+            var first = function (e) { log += 'first:' + e.isTrusted + ','; };
+            var second = function (e) { log += 'second,'; };
+            target.addEventListener('x', first);
+            target.addEventListener('x', second);
+            Object.defineProperty(Array.prototype, 'constructor', {
+              configurable: true,
+              get: function () { captures++; return Array; }
+            });
+            var event = new Event('x');
+            target.dispatchEvent(event);
+            event.composedPath();
+            target.removeEventListener('x', first);
+            target.dispatchEvent(new Event('x'));
+            delete Array.prototype.constructor;
+            for (var j = 0; j < 4; j++) delete Array.prototype[String(j)];
+            captures + '|' + log + '|' + event.isTrusted;
+            "#,
+        ),
+        "0|first:false,second,second,|false"
+    );
+}
+
+#[test]
 fn borrowed_unhardened_runtime_cannot_recover_or_write_platform_brand_registry() {
     let consumer = BareConsumer::new(Groups::PURE);
     assert_eq!(
