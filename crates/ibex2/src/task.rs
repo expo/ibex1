@@ -55,14 +55,32 @@ pub enum HostTask {
 /// same process take each other's completions, and their task ids collide
 /// because each numbers its own tasks from 1. That is not a theoretical
 /// concern — it showed up the moment two runtimes existed at once.
-#[derive(Default)]
 pub struct CompletionQueue {
     ready: Mutex<VecDeque<HostTask>>,
     /// Lets an embedder block until there is something to pump instead of
     /// spinning. A runtime that polls in a loop burns a core to do nothing,
     /// which is the default failure mode of this design.
     signal: Condvar,
-    wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    wake: Mutex<WakeState>,
+    wake_drained: Condvar,
+}
+
+#[derive(Default)]
+struct WakeState {
+    callback: Option<Arc<dyn Fn() + Send + Sync>>,
+    active: usize,
+    closed: bool,
+}
+
+impl Default for CompletionQueue {
+    fn default() -> Self {
+        Self {
+            ready: Mutex::default(),
+            signal: Condvar::new(),
+            wake: Mutex::default(),
+            wake_drained: Condvar::new(),
+        }
+    }
 }
 
 impl std::fmt::Debug for CompletionQueue {
@@ -82,7 +100,25 @@ impl CompletionQueue {
     /// on the publishing thread, without queue locks; it must not enter JSI.
     /// A callback already in flight may finish after replacement.
     pub fn set_wake(&self, wake: Option<Arc<dyn Fn() + Send + Sync>>) {
-        *self.wake.lock().expect("completion wake poisoned") = wake;
+        let mut state = self.wake.lock().expect("completion wake poisoned");
+        if !state.closed {
+            state.callback = wake;
+        }
+    }
+
+    /// Permanently remove the owner callback and wait for a callback already
+    /// claimed by a publisher. Returning is the barrier: no later completion
+    /// can call into an executor whose owner has gone away.
+    fn close_wake(&self) {
+        let mut state = self.wake.lock().expect("completion wake poisoned");
+        state.closed = true;
+        state.callback = None;
+        while state.active != 0 {
+            state = self
+                .wake_drained
+                .wait(state)
+                .expect("completion wake poisoned");
+        }
     }
 
     /// Publish a settlement. Callable from any thread.
@@ -97,9 +133,27 @@ impl CompletionQueue {
             .expect("completion queue poisoned")
             .push_back(task);
         self.signal.notify_all();
-        let wake = self.wake.lock().expect("completion wake poisoned").clone();
+        let wake = {
+            let mut state = self.wake.lock().expect("completion wake poisoned");
+            if state.closed {
+                None
+            } else {
+                let wake = state.callback.clone();
+                state.active += usize::from(wake.is_some());
+                wake
+            }
+        };
         if let Some(wake) = wake {
-            wake();
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| wake()));
+            let mut state = self.wake.lock().expect("completion wake poisoned");
+            state.active -= 1;
+            if state.active == 0 {
+                self.wake_drained.notify_all();
+            }
+            drop(state);
+            if let Err(payload) = outcome {
+                std::panic::resume_unwind(payload);
+            }
         }
     }
 
@@ -160,6 +214,9 @@ pub struct RuntimeState {
     responses: Mutex<std::collections::HashMap<u64, Arc<StoredResponse>>>,
     controls: Mutex<std::collections::HashMap<u64, crate::stdlib::abort::AbortController>>,
     shutdown: std::sync::atomic::AtomicBool,
+    /// References held by workers keep storage alive but do not keep the
+    /// runtime open. Only Contexts and owning engine handles increment this.
+    owners: std::sync::atomic::AtomicUsize,
     /// Header lists JavaScript holds by handle, for the same reason responses
     /// are: a header list is not a primitive and §1.1 forbids serializing.
     headers: Mutex<std::collections::HashMap<u64, crate::stdlib::fetch::Headers>>,
@@ -230,6 +287,7 @@ impl RuntimeState {
             responses: Mutex::new(std::collections::HashMap::new()),
             controls: Mutex::new(std::collections::HashMap::new()),
             shutdown: std::sync::atomic::AtomicBool::new(false),
+            owners: std::sync::atomic::AtomicUsize::new(0),
             headers: Mutex::new(std::collections::HashMap::new()),
             timers: Mutex::new(crate::stdlib::timers::Timers::new()),
             started: std::time::Instant::now(),
@@ -394,9 +452,14 @@ impl RuntimeState {
     }
 
     pub fn shutdown(&self) {
+        if self
+            .shutdown
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return;
+        }
+        self.queue.close_wake();
         self.sqlite.shutdown();
-        self.shutdown
-            .store(true, std::sync::atomic::Ordering::Release);
         let controls = std::mem::take(&mut *self.controls.lock().unwrap());
         for control in controls.into_values() {
             control.abort();
@@ -404,6 +467,27 @@ impl RuntimeState {
         let responses = std::mem::take(&mut *self.responses.lock().unwrap());
         for response in responses.into_values() {
             response.control.abort();
+        }
+    }
+
+    pub(crate) fn is_shutdown(&self) -> bool {
+        self.shutdown.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn acquire_owner(&self) {
+        let previous = self
+            .owners
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        assert!(previous != usize::MAX, "runtime owner count overflow");
+    }
+
+    fn release_owner(&self) {
+        let previous = self
+            .owners
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        assert!(previous != 0, "runtime owner count underflow");
+        if previous == 1 {
+            self.shutdown();
         }
     }
 
@@ -657,8 +741,27 @@ impl RuntimeState {
 
 impl Drop for RuntimeState {
     fn drop(&mut self) {
-        self.queue.set_wake(None);
         self.shutdown();
+    }
+}
+
+/// A runtime owner. Worker Arcs deliberately do not contain one, so the last
+/// embedder owner initiates shutdown even while blocked work retains storage.
+// @ref LLP 0058.000.000#9-teardown-and-lifecycle — worker storage references do not postpone owner-initiated Closing
+pub(crate) struct OwnerLease {
+    state: Arc<RuntimeState>,
+}
+
+impl OwnerLease {
+    pub(crate) fn new(state: Arc<RuntimeState>) -> Self {
+        state.acquire_owner();
+        Self { state }
+    }
+}
+
+impl Drop for OwnerLease {
+    fn drop(&mut self) {
+        self.state.release_owner();
     }
 }
 
@@ -668,9 +771,9 @@ impl Drop for RuntimeState {
 /// The result must be released exactly once with `ibex2_queue_destroy`.
 #[no_mangle]
 pub extern "C" fn ibex2_queue_create() -> *const RuntimeState {
-    Arc::into_raw(Arc::new(RuntimeState::new(
-        crate::transport::default_transport(),
-    )))
+    let state = Arc::new(RuntimeState::new(crate::transport::default_transport()));
+    state.acquire_owner();
+    Arc::into_raw(state)
 }
 
 /// Retain an Arc-backed runtime state for an owning embedder.
@@ -680,6 +783,7 @@ pub extern "C" fn ibex2_queue_create() -> *const RuntimeState {
 #[no_mangle]
 pub unsafe extern "C" fn ibex2_queue_retain(queue: *const RuntimeState) -> *const RuntimeState {
     if !queue.is_null() {
+        (*queue).acquire_owner();
         Arc::increment_strong_count(queue);
     }
     queue
@@ -691,7 +795,7 @@ pub unsafe extern "C" fn ibex2_queue_retain(queue: *const RuntimeState) -> *cons
 pub unsafe extern "C" fn ibex2_queue_destroy(queue: *const RuntimeState) {
     if !queue.is_null() {
         let state = Arc::from_raw(queue);
-        state.shutdown();
+        state.release_owner();
         drop(state);
     }
 }

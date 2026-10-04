@@ -264,6 +264,7 @@ pub fn scripts(groups: Groups) -> Result<Vec<Script>, GroupError> {
 /// Each context has a separate completion queue and database handle space.
 pub struct Context {
     endowment: Arc<InstallEndowment>,
+    _owner: crate::task::OwnerLease,
 }
 
 const BINDINGS_MAGIC: u64 = 0x4942_4558_3242_4e44;
@@ -340,14 +341,18 @@ impl Context {
     /// together for the lifetime of the runtime state.
     // @ref LLP 0057.000#50-three-doors-one-implementation — the install door consumes Host::endow's Bindings
     pub fn from_bindings(bindings: &host::Bindings) -> Self {
+        let state = Arc::new(RuntimeState::from_bindings(bindings));
         let endowment = Arc::new(InstallEndowment {
             magic: BINDINGS_MAGIC,
-            state: Arc::new(RuntimeState::from_bindings(bindings)),
+            state: Arc::clone(&state),
             grants: bindings.grants(),
             bindings: bindings.clone(),
         });
         register_bindings(&endowment);
-        Self { endowment }
+        Self {
+            endowment,
+            _owner: crate::task::OwnerLease::new(state),
+        }
     }
 
     pub fn set_app_directories(

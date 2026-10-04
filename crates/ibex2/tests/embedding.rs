@@ -128,6 +128,9 @@ struct BareConsumer {
 
 impl BareConsumer {
     fn new(groups: Groups) -> Self {
+        Self::from_context(groups, Context::new(GrantSet::none()))
+    }
+    fn from_context(groups: Groups, context: Context) -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let directory = std::env::temp_dir().join(format!(
             "ibex2-groups-{}-{}",
@@ -135,7 +138,6 @@ impl BareConsumer {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&directory).unwrap();
-        let context = Context::new(GrantSet::none());
         let scripts: Vec<_> = ibex2::bindings::scripts(groups)
             .unwrap()
             .into_iter()
@@ -486,6 +488,88 @@ fn retained_pure_bindings_refuse_after_detach_and_context_drop() {
             "unexpected detached error for {source}: {error}"
         );
     }
+}
+
+#[test]
+fn dropping_the_last_context_owner_cancels_fetch_without_a_late_wake() {
+    use ibex2::host::Host;
+    use ibex2::stdlib::fetch::{Request, StreamingResponse, Transport};
+    use std::sync::{mpsc, Condvar, Mutex};
+
+    struct BlockingTransport {
+        entered: mpsc::Sender<()>,
+        cancelled: mpsc::Sender<()>,
+        returned: mpsc::Sender<()>,
+        release: Arc<(Mutex<bool>, Condvar)>,
+    }
+    impl Transport for BlockingTransport {
+        fn open(
+            &self,
+            _request: &Request,
+            signal: &ibex2::stdlib::abort::AbortSignal,
+        ) -> Result<StreamingResponse, ibex2::boundary::HostError> {
+            let cancelled = Arc::new((Mutex::new(false), Condvar::new()));
+            let notify = Arc::clone(&cancelled);
+            let _registration = signal.register(move || {
+                *notify.0.lock().unwrap() = true;
+                notify.1.notify_all();
+            });
+            self.entered.send(()).unwrap();
+            let mut was_cancelled = cancelled.0.lock().unwrap();
+            while !*was_cancelled {
+                was_cancelled = cancelled.1.wait(was_cancelled).unwrap();
+            }
+            self.cancelled.send(()).unwrap();
+            drop(was_cancelled);
+
+            // Keep the worker alive until after Context::drop returns. Its Arc
+            // must not count as an owner or preserve the wake callback.
+            let mut release = self.release.0.lock().unwrap();
+            while !*release {
+                release = self.release.1.wait(release).unwrap();
+            }
+            self.returned.send(()).unwrap();
+            signal.check()?;
+            unreachable!()
+        }
+    }
+
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (cancelled_tx, cancelled_rx) = mpsc::channel();
+    let (returned_tx, returned_rx) = mpsc::channel();
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let bindings = Host::with_transport(Box::new(BlockingTransport {
+        entered: entered_tx,
+        cancelled: cancelled_tx,
+        returned: returned_tx,
+        release: Arc::clone(&release),
+    }))
+    .endow(GrantSet::parse("net.fetch https://blocked.example\n").unwrap());
+    let context = Context::from_bindings(&bindings);
+    let (wake_tx, wake_rx) = mpsc::channel();
+    context.set_wake(Arc::new(move || {
+        let _ = wake_tx.send(());
+    }));
+    let groups = Groups::PURE | Groups::ABORT | Groups::FETCH;
+    let mut consumer = BareConsumer::from_context(groups, context);
+    consumer.eval("fetch('https://blocked.example/').catch(function () {})");
+    entered_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("fetch did not reach transport");
+
+    consumer.detach_and_drop_context();
+    cancelled_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("Context drop did not promptly cancel fetch");
+    *release.0.lock().unwrap() = true;
+    release.1.notify_all();
+    returned_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("cancelled transport did not return");
+    assert!(
+        wake_rx.recv_timeout(Duration::from_millis(200)).is_err(),
+        "a completion invoked the wake callback after Context drop"
+    );
 }
 
 #[test]

@@ -776,6 +776,9 @@ pub unsafe extern "C" fn ibex2_async_begin(
     let Some(state) = crate::task::clone_queue(state) else {
         return 1;
     };
+    if state.is_shutdown() {
+        return 1;
+    }
     let raw = if argv.is_null() || argc == 0 {
         &[][..]
     } else {
@@ -809,7 +812,9 @@ pub unsafe extern "C" fn ibex2_async_begin(
     state.task_started();
     let work = move || {
         let result = run_async(op, &owned, &state, &grants);
-        state.queue.complete(task_id, result);
+        if !state.is_shutdown() {
+            state.queue.complete(task_id, result);
+        }
         state.task_finished();
     };
     if op == AsyncOp::ReadBody {
