@@ -620,8 +620,9 @@ fn fetch_form_data_uses_rust_multipart_and_preserves_authored_content_type() {
     let (head, body) = server.join().unwrap();
     let content_type = header(&head, "content-type").unwrap();
     let boundary = content_type
-        .strip_prefix("multipart/form-data; boundary=")
-        .unwrap();
+        .strip_prefix("multipart/form-data; boundary=\"")
+        .and_then(|value| value.strip_suffix('"'))
+        .expect("the JavaScript FormData path must quote its boundary");
     let mut form = FormData::new();
     form.append_text("title", "hello\nworld");
     form.append_file("upload", vec![0, 1, 255], "x\"\n雪.bin", "application/test");

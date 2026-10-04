@@ -520,7 +520,7 @@
     }
     return {
       bytes: ReflectApply(encodeMultipart, undefined, args),
-      type: "multipart/form-data; boundary=" + boundary
+      type: 'multipart/form-data; boundary="' + boundary + '"'
     };
   }
 
