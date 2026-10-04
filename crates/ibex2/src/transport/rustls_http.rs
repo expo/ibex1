@@ -9,7 +9,9 @@ use crate::stdlib::fetch::{
 };
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpStream};
-use std::sync::{Arc, Mutex};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use ureq::unversioned::transport::{
     Buffers, ConnectionDetails, Connector, Either, LazyBuffers, NextTimeout,
@@ -41,52 +43,54 @@ struct Slot {
     context: Context,
 }
 struct Pool {
-    idle: Mutex<Vec<Slot>>,
-    config: ureq::config::Config,
+    plain_idle: Mutex<Vec<Slot>>,
+    tls_idle: Mutex<Vec<Slot>>,
+}
+impl Pool {
+    fn idle(&self, tls: bool) -> &Mutex<Vec<Slot>> {
+        if tls {
+            &self.tls_idle
+        } else {
+            &self.plain_idle
+        }
+    }
 }
 /// Idle agents retain their connection pools. Each in-flight response exclusively
 /// owns its agent, so a signal never becomes ambient state shared by requests.
 pub struct RustlsHttpTransport {
     pool: Arc<Pool>,
-    roots: Roots,
 }
 impl RustlsHttpTransport {
     pub fn new() -> Self {
-        let (tls, roots) = tls_config();
-        let config = ureq::Agent::config_builder()
-            .max_redirects(0)
-            .max_redirects_will_error(false)
-            .http_status_as_error(false)
-            .timeout_global(Some(Duration::from_secs(30)))
-            .timeout_connect(Some(Duration::from_secs(10)))
-            .timeout_recv_response(Some(Duration::from_secs(15)))
-            .timeout_recv_body(Some(Duration::from_secs(15)))
-            .tls_config(tls)
-            .build();
         Self {
             pool: Arc::new(Pool {
-                idle: Mutex::new(Vec::new()),
-                config,
+                plain_idle: Mutex::new(Vec::new()),
+                tls_idle: Mutex::new(Vec::new()),
             }),
-            roots,
         }
     }
     pub fn roots(&self) -> Roots {
-        self.roots
+        tls_config().1
     }
-    fn lease(&self, signal: &AbortSignal) -> Lease {
-        let slot = self.pool.idle.lock().unwrap().pop().unwrap_or_else(|| {
-            let context = Arc::new(Mutex::new(Current::default()));
-            let connector = ureq::unversioned::transport::ConnectProxyConnector::default()
-                .chain(CancellableConnector(context.clone()))
-                .chain(ureq::unversioned::transport::RustlsConnector::default());
-            let agent = ureq::Agent::with_parts(
-                self.pool.config.clone(),
-                connector,
-                Resolver(context.clone()),
-            );
-            Slot { agent, context }
-        });
+    fn lease(&self, signal: &AbortSignal, tls: bool) -> Lease {
+        let slot = self
+            .pool
+            .idle(tls)
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or_else(|| {
+                let context = Arc::new(Mutex::new(Current::default()));
+                let connector = ureq::unversioned::transport::ConnectProxyConnector::default()
+                    .chain(CancellableConnector(context.clone()))
+                    .chain(ureq::unversioned::transport::RustlsConnector::default());
+                let agent = ureq::Agent::with_parts(
+                    agent_config(tls),
+                    connector,
+                    Resolver(context.clone()),
+                );
+                Slot { agent, context }
+            });
         {
             let mut current = slot.context.lock().unwrap();
             current.generation = current.generation.wrapping_add(1);
@@ -95,6 +99,7 @@ impl RustlsHttpTransport {
         Lease {
             slot: Some(slot),
             pool: self.pool.clone(),
+            tls,
         }
     }
 }
@@ -103,9 +108,37 @@ impl Default for RustlsHttpTransport {
         Self::new()
     }
 }
-fn tls_config() -> (ureq::tls::TlsConfig, Roots) {
-    tls_config_from(rustls_native_certs::load_native_certs().unwrap_or_default())
+fn agent_config(tls: bool) -> ureq::config::Config {
+    let builder = ureq::Agent::config_builder()
+        .max_redirects(0)
+        .max_redirects_will_error(false)
+        .http_status_as_error(false)
+        .timeout_global(Some(Duration::from_secs(30)))
+        .timeout_connect(Some(Duration::from_secs(10)))
+        .timeout_recv_response(Some(Duration::from_secs(15)))
+        .timeout_recv_body(Some(Duration::from_secs(15)));
+    if tls {
+        builder.tls_config(tls_config().0.clone()).build()
+    } else {
+        builder.build()
+    }
 }
+
+// Every transport in the process shares the one trust-store read. Keeping the
+// config out of `new` also keeps constructing an unused host endowment cheap.
+// @ref LLP 0068#5-open-questions — native roots are loaded lazily and once per process
+fn tls_config() -> &'static (ureq::tls::TlsConfig, Roots) {
+    static TLS_CONFIG: OnceLock<(ureq::tls::TlsConfig, Roots)> = OnceLock::new();
+    TLS_CONFIG.get_or_init(|| {
+        #[cfg(test)]
+        NATIVE_CERT_LOADS.fetch_add(1, Ordering::SeqCst);
+        tls_config_from(rustls_native_certs::load_native_certs().unwrap_or_default())
+    })
+}
+
+#[cfg(test)]
+static NATIVE_CERT_LOADS: AtomicUsize = AtomicUsize::new(0);
+
 fn tls_config_from(
     certs: Vec<rustls::pki_types::CertificateDer<'static>>,
 ) -> (ureq::tls::TlsConfig, Roots) {
@@ -132,6 +165,7 @@ fn tls_config_from(
 struct Lease {
     slot: Option<Slot>,
     pool: Arc<Pool>,
+    tls: bool,
 }
 impl Drop for Lease {
     fn drop(&mut self) {
@@ -139,7 +173,7 @@ impl Drop for Lease {
         // Serialized with callbacks: a delayed callback from this lease cannot
         // shut down a connection after it has been handed to another request.
         slot.context.lock().unwrap().signal = None;
-        let mut idle = self.pool.idle.lock().unwrap();
+        let mut idle = self.pool.idle(self.tls).lock().unwrap();
         if idle.len() < 8 {
             idle.push(slot);
         }
@@ -389,7 +423,6 @@ impl Transport for RustlsHttpTransport {
         signal: &AbortSignal,
     ) -> Result<StreamingResponse, HostError> {
         signal.check()?;
-        let lease = self.lease(signal);
         let mut builder = ureq::http::Request::builder()
             .method(request.method.as_str())
             .uri(&request.url);
@@ -399,6 +432,10 @@ impl Transport for RustlsHttpTransport {
         let req = builder
             .body(request.body.as_deref().unwrap_or_default())
             .map_err(failed)?;
+        // Plain HTTP agents stay separate so creating or using one does not
+        // initialize the process TLS config. An HTTPS request initializes it
+        // before constructing the first TLS-capable agent.
+        let lease = self.lease(signal, req.uri().scheme_str() == Some("https"));
         let result = lease.slot.as_ref().unwrap().agent.run(req);
         signal.check()?;
         let response = result.map_err(failed)?;
@@ -439,9 +476,26 @@ impl Transport for RustlsHttpTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::MutexGuard;
+
+    fn tls_test_lock() -> MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock().unwrap()
+    }
+
+    #[test]
+    fn constructing_many_transports_does_not_load_native_certificates() {
+        let _guard = tls_test_lock();
+        let before = NATIVE_CERT_LOADS.load(Ordering::SeqCst);
+        let transports: Vec<_> = (0..1_000).map(|_| RustlsHttpTransport::new()).collect();
+        assert_eq!(NATIVE_CERT_LOADS.load(Ordering::SeqCst), before);
+        std::hint::black_box(transports);
+    }
+
     #[test]
     fn trust_uses_platform_certificates_and_falls_back_only_when_none_are_usable() {
-        let (_, roots) = tls_config();
+        let _guard = tls_test_lock();
+        let roots = tls_config().1;
         assert!(matches!(roots, Roots::System(n) if n > 0) || roots == Roots::CompiledIn);
         for certs in [vec![], vec![vec![0, 1, 2].into()]] {
             let (tls, roots) = tls_config_from(certs);

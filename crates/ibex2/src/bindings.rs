@@ -332,7 +332,13 @@ impl Context {
     /// Convenience for the platform-default host. Consumers that select a
     /// transport or store use [`Context::from_bindings`] instead.
     pub fn new(grants: GrantSet) -> Self {
-        let bindings = host::Host::new().endow(grants);
+        // An owning runtime adopts this endowment after constructing its own
+        // state. Preserve the default selection without eagerly constructing
+        // a platform transport that adoption would immediately supersede.
+        // @ref LLP 0068#3-no-engine-in-the-process — Context endowments are adopted without sharing runtime state
+        let bindings =
+            host::Host::with_transport(Box::new(crate::transport::LazyDefaultTransport::new()))
+                .endow(grants);
         Self::from_bindings(&bindings)
     }
 
