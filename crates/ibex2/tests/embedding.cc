@@ -28,7 +28,7 @@ char *copy(const std::string &s) {
 }
 }
 extern "C" {
-void *bindings_consumer_create(const void *queue, const void *grants,
+void *bindings_consumer_create(const void *queue, const void *bindings,
                                uint16_t groups,
                                const ibex2::jsi_adapter::CompiledScript *scripts,
                                size_t script_count, char **error) {
@@ -40,7 +40,7 @@ void *bindings_consumer_create(const void *queue, const void *grants,
     if (!c->runtime) return nullptr;
     c->adapter = std::make_unique<ibex2::jsi_adapter::Adapter>(
         *c->runtime, queue, bytecode_version());
-    c->adapter->install(groups, grants, scripts, script_count);
+    c->adapter->install(groups, bindings, scripts, script_count);
     return c.release();
   } catch (const std::exception &e) { *error = copy(e.what()); return nullptr; }
 }

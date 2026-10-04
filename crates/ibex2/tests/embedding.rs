@@ -25,7 +25,7 @@ struct CompiledScript {
 extern "C" {
     fn bindings_consumer_create(
         queue: *const c_void,
-        grants: *const c_void,
+        bindings: *const c_void,
         groups: u16,
         scripts: *const CompiledScript,
         script_count: usize,
@@ -135,7 +135,7 @@ impl BareConsumer {
         let handle = unsafe {
             bindings_consumer_create(
                 context.state_ptr(),
-                context.grants_ptr(),
+                context.bindings_ptr(),
                 groups.bits(),
                 scripts.as_ptr(),
                 scripts.len(),
@@ -381,9 +381,7 @@ fn fetch_group_does_not_install_timers_or_crypto() {
 fn retained_pure_bindings_refuse_after_detach_and_context_drop() {
     let mut consumer = BareConsumer::new(Groups::PURE);
     assert_eq!(
-        consumer.eval(
-            "globalThis.SavedHeaders = Headers; globalThis.SavedURL = URL; 'saved'"
-        ),
+        consumer.eval("globalThis.SavedHeaders = Headers; globalThis.SavedURL = URL; 'saved'"),
         "saved"
     );
     consumer.detach_and_drop_context();
@@ -416,7 +414,7 @@ fn grouped_install_refuses_source_bytes() {
     let handle = unsafe {
         bindings_consumer_create(
             context.state_ptr(),
-            context.grants_ptr(),
+            context.bindings_ptr(),
             Groups::PURE.bits(),
             scripts.as_ptr(),
             scripts.len(),

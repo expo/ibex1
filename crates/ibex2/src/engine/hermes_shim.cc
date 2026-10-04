@@ -37,6 +37,8 @@ extern "C" int ibex2_grants_env_at(const void *grants, size_t index,
                                    char **out_name, char **out_value);
 extern "C" void ibex2_string_free(char *value);
 extern "C" void ibex2_queue_destroy(const void *queue);
+extern "C" const void *ibex2_queue_retain(const void *queue);
+extern "C" const void *ibex2_bindings_state(const void *bindings);
 extern "C" void ibex2_grants_destroy(const void *grants);
 extern "C" void ibex2_end_drive(const void *queue);
 
@@ -51,6 +53,7 @@ struct Ibex2Runtime {
   // This runtime's own completion queue. Per-runtime so two runtimes in one
   // process cannot take each other's completions (task::Pump C5).
   const void *queue = nullptr;
+  uint32_t bytecode_version = 0;
   // Loaded modules, by resolved specifier. Held here rather than on the global
   // object: a module registry reachable from JavaScript would let any module
   // read any other's exports without requiring it (LLP 0062 R1).
@@ -291,9 +294,9 @@ void *ibex2_hermes_create(int enable_eval) {
   handle->queue = ibex2_queue_create();
   auto *root = jsi::castInterface<facebook::hermes::IHermesRootAPI>(
       facebook::hermes::makeHermesRootAPI());
+  handle->bytecode_version = root == nullptr ? 0 : root->getBytecodeVersion();
   handle->bindings = std::make_unique<Adapter>(
-      *handle->runtime, handle->queue,
-      root == nullptr ? 0 : root->getBytecodeVersion());
+      *handle->runtime, handle->queue, handle->bytecode_version);
   return handle;
 }
 
@@ -974,7 +977,7 @@ extern "C" {
 /// Runtime-only bootstrap consumes endowed capability globals before any
 /// module runs; their factories remain in Adapter for per-module authority.
 int ibex2_hermes_install_groups(void *handle, uint16_t groups,
-                                const void *grants,
+                                const void *endowment,
                                 const CompiledScript *scripts,
                                 size_t script_count, char **out_error) {
   auto *rt = static_cast<Ibex2Runtime *>(handle);
@@ -982,7 +985,21 @@ int ibex2_hermes_install_groups(void *handle, uint16_t groups,
     return 1;
   try {
     auto &runtime = *rt->runtime;
-    rt->bindings->install(groups, grants, scripts, script_count);
+    const void *state = ibex2_bindings_state(endowment);
+    if (state == nullptr)
+      throw std::invalid_argument("Ibex2 bindings require a live endowment");
+    if (state != rt->queue) {
+      rt->bindings->detach();
+      rt->bindings.reset();
+      const void *retained = ibex2_queue_retain(state);
+      if (retained == nullptr)
+        throw std::invalid_argument("Ibex2 bindings require runtime state");
+      ibex2_queue_destroy(rt->queue);
+      rt->queue = retained;
+      rt->bindings = std::make_unique<Adapter>(
+          runtime, rt->queue, rt->bytecode_version);
+    }
+    rt->bindings->install(groups, endowment, scripts, script_count);
     auto global = runtime.global();
     auto remove = [&](const char *name) {
       runtime.global().getPropertyAsObject(runtime, "Reflect")

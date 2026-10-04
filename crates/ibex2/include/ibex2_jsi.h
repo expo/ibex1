@@ -99,10 +99,12 @@ public:
   void accept_trusted_intrinsic_property(jsi::Object, const char* name);
   // Install exactly `groups`. `scripts` must be the compiled results of
   // bindings::scripts(groups), in that order, from the compiler belonging to
-  // this runtime's engine. Missing dependencies, wrong order, and a second
-  // install are refused. The call neither drives nor waits on the runtime.
+  // this runtime's engine. `bindings` is the opaque endowment made from
+  // Host::endow and must carry the same runtime state given to this adapter.
+  // Missing dependencies, wrong order, and a second install are refused. The
+  // call neither drives nor waits on the runtime.
   // @ref LLP 0057.000#50-three-doors-one-implementation — door 2 installs into a caller-owned runtime and returns
-  void install(Groups groups, const void* grants,
+  void install(Groups groups, const void* bindings,
                const CompiledScript* scripts, size_t script_count);
   jsi::Function async_binding(const char* name, uint32_t op, const void* grants);
   // Endowed values built from the factories retained by install().

@@ -11,6 +11,8 @@ extern "C" int ibex2_async_begin(const void*, const void*, uint32_t, const Ibex2
 extern "C" int ibex2_take_task(const void*, int*, unsigned long long*, Ibex2AbiValue*, int*);
 extern "C" const void* ibex2_grants_retain(const void*);
 extern "C" void ibex2_grants_destroy(const void*);
+extern "C" const void* ibex2_bindings_state(const void*);
+extern "C" const void* ibex2_bindings_grants(const void*);
 extern "C" void* ibex2_sqlite_owner_create(const void*, double, int);
 extern "C" void ibex2_sqlite_owner_destroy(void*);
 extern "C" void* ibex2_response_owner_create(const void*, double);
@@ -614,12 +616,18 @@ void remove_global(jsi::Runtime& rt, const jsi::Object& global,
 }
 } // namespace
 
-void Adapter::install(Groups groups, const void* grants,
+void Adapter::install(Groups groups, const void* bindings,
                       const CompiledScript* scripts, size_t script_count) {
   if (!runtime_) throw std::logic_error("Ibex2 bindings are detached");
   auto& rt = *runtime_;
   state_->require(rt);
   if (state_->installed) throw std::logic_error("Ibex2 bindings are already installed");
+  const void* endowed_state = ibex2_bindings_state(bindings);
+  const void* grants = ibex2_bindings_grants(bindings);
+  if (endowed_state == nullptr || grants == nullptr)
+    throw std::invalid_argument("Ibex2 bindings require a live endowment");
+  if (endowed_state != state_->queue)
+    throw std::invalid_argument("Ibex2 bindings do not belong to this runtime state");
   validate_groups(groups);
   auto expected = expected_scripts(groups);
   if (script_count != expected.size() || (script_count != 0 && scripts == nullptr))

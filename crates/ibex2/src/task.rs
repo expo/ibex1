@@ -187,7 +187,10 @@ pub struct RuntimeState {
     /// would exit before its response arrived.
     in_flight: std::sync::atomic::AtomicUsize,
     next_handle: std::sync::atomic::AtomicU64,
-    transport: Box<dyn crate::stdlib::fetch::Transport>,
+    /// The exact transport and stores selected by the host endowment. Keeping
+    /// the complete value here makes later binding families use those same
+    /// components instead of reconstructing platform defaults.
+    endowment: crate::host::Bindings,
 }
 
 struct StoredResponse {
@@ -198,14 +201,26 @@ struct StoredResponse {
 
 impl RuntimeState {
     pub fn new(transport: Box<dyn crate::stdlib::fetch::Transport>) -> Self {
-        Self {
+        let bindings =
+            crate::host::Host::with_transport(transport).endow(crate::grant::GrantSet::none());
+        Self::from_bindings(&bindings)
+    }
+
+    pub(crate) fn from_bindings(bindings: &crate::host::Bindings) -> Self {
+        let app_directories = std::sync::OnceLock::new();
+        if let Some(directories) = bindings.app_directories() {
+            app_directories
+                .set((*directories).clone())
+                .expect("new app-directories cell is empty");
+        }
+        let state = Self {
             queue: CompletionQueue::new(),
             #[cfg(all(feature = "hermes", target_os = "linux"))]
             intl: crate::stdlib::intl::Registry::new(),
             #[cfg(all(feature = "hermes", target_os = "linux"))]
             intl_datetime: crate::stdlib::intl_datetime::Registry::new(),
             sqlite: crate::sqlite_abi::Registry::default(),
-            app_directories: std::sync::OnceLock::new(),
+            app_directories,
             responses: Mutex::new(std::collections::HashMap::new()),
             controls: Mutex::new(std::collections::HashMap::new()),
             shutdown: std::sync::atomic::AtomicBool::new(false),
@@ -217,8 +232,15 @@ impl RuntimeState {
             driving: std::sync::atomic::AtomicBool::new(false),
             in_flight: std::sync::atomic::AtomicUsize::new(0),
             next_handle: std::sync::atomic::AtomicU64::new(1),
-            transport,
+            endowment: bindings.clone(),
+        };
+        if let Some(provider) = bindings.sqlite_provider() {
+            state
+                .sqlite
+                .set_provider(provider)
+                .expect("new SQLite registry has no provider");
         }
+        state
     }
 
     pub fn set_app_directories(
@@ -240,7 +262,7 @@ impl RuntimeState {
     }
 
     pub fn transport(&self) -> &dyn crate::stdlib::fetch::Transport {
-        self.transport.as_ref()
+        self.endowment.fetch.transport()
     }
 
     pub fn create_control(&self) -> u64 {
@@ -596,6 +618,13 @@ impl RuntimeState {
     }
 }
 
+impl Drop for RuntimeState {
+    fn drop(&mut self) {
+        self.queue.set_wake(None);
+        self.shutdown();
+    }
+}
+
 /// Create a queue and hand ownership to the caller as a raw pointer.
 ///
 /// # Safety
@@ -605,6 +634,18 @@ pub extern "C" fn ibex2_queue_create() -> *const RuntimeState {
     Arc::into_raw(Arc::new(RuntimeState::new(
         crate::transport::default_transport(),
     )))
+}
+
+/// Retain an Arc-backed runtime state for an owning embedder.
+///
+/// # Safety
+/// `queue` must be a live pointer returned by this crate.
+#[no_mangle]
+pub unsafe extern "C" fn ibex2_queue_retain(queue: *const RuntimeState) -> *const RuntimeState {
+    if !queue.is_null() {
+        Arc::increment_strong_count(queue);
+    }
+    queue
 }
 
 /// # Safety

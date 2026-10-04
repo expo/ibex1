@@ -659,6 +659,64 @@ fn fetch_rt(grant_spec: &str) -> Hermes {
 }
 
 #[test]
+fn javascript_fetch_uses_the_hosts_endowed_transport() {
+    struct RecordingTransport(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+    impl crate::stdlib::fetch::Transport for RecordingTransport {
+        fn open(
+            &self,
+            request: &crate::stdlib::fetch::Request,
+            signal: &crate::stdlib::abort::AbortSignal,
+        ) -> Result<crate::stdlib::fetch::StreamingResponse, crate::boundary::HostError> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(crate::stdlib::fetch::Response {
+                status: 200,
+                status_text: "OK".into(),
+                headers: crate::stdlib::fetch::Headers::new(),
+                body: b"endowed transport".to_vec(),
+                url: request.url.clone(),
+                redirected: false,
+            }
+            .into_stream(request.body_limit(), signal.clone()))
+        }
+    }
+
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let grants = crate::grant::GrantSet::parse("net.fetch https://endowed.example\n").unwrap();
+    let bindings = crate::host::Host::with_transport(Box::new(RecordingTransport(
+        std::sync::Arc::clone(&calls),
+    )))
+    .endow(grants);
+    let context = crate::bindings::Context::from_bindings(&bindings);
+    let mut rt = Hermes::new(DynamicCode::Closed).unwrap();
+    rt.install_runtime(crate::bindings::Groups::DEFAULT, &context)
+        .unwrap();
+
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ibex2-endowed-fetch-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join("index.js"),
+        "fetch('https://endowed.example/request').then(r => r.text()).then(value => { globalThis.endowedResult = value; });",
+    )
+    .unwrap();
+    rt.set_loader(
+        crate::loader::Root::Declared(directory.clone()),
+        crate::loader::ModuleGrants::parse("[*]\nnet.fetch https://endowed.example\n").unwrap(),
+    )
+    .unwrap();
+    rt.run_entry("./index.js").unwrap();
+    rt.run_to_quiescence(std::time::Duration::from_secs(5));
+    std::fs::remove_dir_all(directory).unwrap();
+
+    assert_eq!(rt.eval("endowedResult").unwrap(), "endowed transport");
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
 fn fetch_reaches_a_real_server_and_returns_a_response_handle() {
     let server = TestServer::start("hello from the server");
     let mut rt = fetch_rt(&format!("net.fetch {}", server.origin()));

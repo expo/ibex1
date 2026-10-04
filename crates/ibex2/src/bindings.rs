@@ -257,17 +257,32 @@ pub fn scripts(groups: Groups) -> Result<Vec<Script>, GroupError> {
 /// configure before installation, and detach the adapter before dropping this.
 /// Each context has a separate completion queue and database handle space.
 pub struct Context {
+    endowment: Arc<InstallEndowment>,
+}
+
+struct InstallEndowment {
     state: Arc<RuntimeState>,
     grants: Arc<GrantSet>,
 }
 
 impl Context {
-    /// The host supplies already-admitted grants; never trust app exports to
-    /// authorize themselves. Empty grants install capabilities that refuse.
+    /// Convenience for the platform-default host. Consumers that select a
+    /// transport or store use [`Context::from_bindings`] instead.
     pub fn new(grants: GrantSet) -> Self {
+        let bindings = crate::host::Host::new().endow(grants);
+        Self::from_bindings(&bindings)
+    }
+
+    /// Build the runtime endowment from the exact bindings a host returned.
+    /// The transport, stores, mounts, provider, and grants are retained
+    /// together for the lifetime of the runtime state.
+    // @ref LLP 0057.000#50-three-doors-one-implementation — the install door consumes Host::endow's Bindings
+    pub fn from_bindings(bindings: &crate::host::Bindings) -> Self {
         Self {
-            state: Arc::new(RuntimeState::new(crate::transport::default_transport())),
-            grants: Arc::new(grants),
+            endowment: Arc::new(InstallEndowment {
+                state: Arc::new(RuntimeState::from_bindings(bindings)),
+                grants: bindings.grants(),
+            }),
         }
     }
 
@@ -275,49 +290,75 @@ impl Context {
         &self,
         directories: crate::stdlib::app_fs::AppDirectories,
     ) -> Result<(), crate::boundary::HostError> {
-        self.state.set_app_directories(directories)
+        self.endowment.state.set_app_directories(directories)
     }
 
     pub fn set_sqlite_provider(
         &self,
         provider: Arc<dyn crate::stdlib::sqlite::Provider>,
     ) -> Result<(), crate::boundary::HostError> {
-        self.state.set_sqlite_provider(provider)
+        self.endowment.state.set_sqlite_provider(provider)
     }
 
     /// Worker-safe notification that schedules the embedder's loop; never
     /// execute JS in this callback. Install before starting work.
     pub fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
-        self.state.queue.set_wake(Some(wake));
+        self.endowment.state.queue.set_wake(Some(wake));
     }
 
     /// A blocking executor can wait instead of installing a wake callback.
     pub fn wait(&self, timeout: Duration) -> bool {
-        self.state.queue.wait(timeout)
+        self.endowment.state.queue.wait(timeout)
     }
 
     pub fn is_idle(&self) -> bool {
-        self.state.is_idle()
+        self.endowment.state.is_idle()
     }
 
     /// Borrowed Arc-backed pointer for the JSI adapter. The context must
     /// outlive the adapter's detach; the adapter never releases this pointer.
     pub fn state_ptr(&self) -> *const c_void {
-        Arc::as_ptr(&self.state).cast()
+        Arc::as_ptr(&self.endowment.state).cast()
     }
 
     /// Borrowed Arc-backed grants. Adapter-created functions retain their
     /// own references, so copied capabilities keep the installer's authority.
     pub fn grants_ptr(&self) -> *const c_void {
-        Arc::as_ptr(&self.grants).cast()
+        Arc::as_ptr(&self.endowment.grants).cast()
+    }
+
+    /// Opaque install input consumed by the engine-independent adapter.
+    pub fn bindings_ptr(&self) -> *const c_void {
+        Arc::as_ptr(&self.endowment).cast()
     }
 }
 
-impl Drop for Context {
-    fn drop(&mut self) {
-        self.state.queue.set_wake(None);
-        self.state.shutdown();
-    }
+/// Return the runtime state carried by an install endowment.
+///
+/// # Safety
+/// `bindings` must be a live pointer returned by [`Context::bindings_ptr`].
+#[no_mangle]
+pub unsafe extern "C" fn ibex2_bindings_state(bindings: *const c_void) -> *const c_void {
+    bindings
+        .cast::<InstallEndowment>()
+        .as_ref()
+        .map_or(std::ptr::null(), |endowment| {
+            Arc::as_ptr(&endowment.state).cast()
+        })
+}
+
+/// Return the grant set carried by an install endowment.
+///
+/// # Safety
+/// `bindings` must be a live pointer returned by [`Context::bindings_ptr`].
+#[no_mangle]
+pub unsafe extern "C" fn ibex2_bindings_grants(bindings: *const c_void) -> *const c_void {
+    bindings
+        .cast::<InstallEndowment>()
+        .as_ref()
+        .map_or(std::ptr::null(), |endowment| {
+            Arc::as_ptr(&endowment.grants).cast()
+        })
 }
 
 #[cfg(test)]

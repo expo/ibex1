@@ -40,7 +40,7 @@ extern "C" {
     fn ibex2_hermes_install_groups(
         handle: *mut c_void,
         groups: u16,
-        grants: *const c_void,
+        bindings: *const c_void,
         scripts: *const CompiledScript,
         script_count: usize,
         out_error: *mut *mut c_char,
@@ -332,12 +332,12 @@ impl Hermes {
             .collect();
         let mut out: *mut c_char = std::ptr::null_mut();
         // SAFETY: the runtime is live; every byte/name span is static and the
-        // context's Arc-backed grant pointer is retained by endowed bindings.
+        // context's Arc-backed endowment supplies the state and authority.
         let status = unsafe {
             ibex2_hermes_install_groups(
                 self.handle,
                 groups.bits(),
-                context.grants_ptr(),
+                context.bindings_ptr(),
                 compiled.as_ptr(),
                 compiled.len(),
                 &mut out,
