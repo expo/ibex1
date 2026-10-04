@@ -992,15 +992,25 @@ fn fetch_resolves_to_a_response_object() {
 /// are covered. And a grant on a directory that is itself a symlink still
 /// works, because the grant's prefix is realized the same way.
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows symlink fixture requires Developer Mode or SeCreateSymbolicLinkPrivilege; run with --ignored when available"
+)]
 fn a_symlink_inside_a_granted_prefix_does_not_reach_outside_it() {
     let p = Project::new("fs-symlink");
     let allowed = p.0.join("allowed");
     std::fs::create_dir_all(&allowed).unwrap();
     std::fs::write(p.0.join("outside.txt"), "OUTSIDE").unwrap();
     std::fs::write(allowed.join("inside.txt"), "INSIDE").unwrap();
+    #[cfg(unix)]
     std::os::unix::fs::symlink(p.0.join("outside.txt"), allowed.join("link.txt")).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(p.0.join("outside.txt"), allowed.join("link.txt")).unwrap();
     // A grant spelt through a symlinked directory: `linkdir` -> `allowed`.
+    #[cfg(unix)]
     std::os::unix::fs::symlink(&allowed, p.0.join("linkdir")).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_dir(&allowed, p.0.join("linkdir")).unwrap();
     p.file(
         "index.js",
         &format!(

@@ -359,6 +359,23 @@ reopening, transaction rollback, concurrent connections and preexisting reparse
 sidecar refusal. The earlier storage-success exclusions are removed. Exact's
 calendar persistence consumer is checked when this revision is vendored there.
 
+Integration-fixture follow-up, 2026-10-04: the three additional loader and
+package-grant symlink fixtures now compile against the actual Windows file or
+directory symlink API, preserving their assertions. They are explicitly ignored
+on Windows unless selected with `--ignored`: this machine's current token lacks
+Developer Mode/`SeCreateSymbolicLinkPrivilege`. Explicit file and directory runs
+both fail at link creation with Windows error 1314, before reaching the authority
+assertions; this is not a passing symlink-authority qualification. Hard links and
+junctions are not substituted for these fixtures. Privilege availability also
+does not establish native absolute-grant support, which remains refused above.
+
+Strict `ibex2 --features hermes --all-targets` Clippy now compiles on Windows.
+The broader loader/resolution runtime checks remain incomplete: native absolute
+grant fixtures encounter that deliberate refusal, granted public HTTPS requests
+return Winsock error 10022, and the `/etc/passwd` absolute-specifier fixture names
+no Windows file. These failures are retained for follow-up rather than broad
+test exclusions or widened native-path authority.
+
 ## 5. Open questions
 
 **OQ1 — The crate boundary.** *Resolved the same day:* the loader — Oxc's
