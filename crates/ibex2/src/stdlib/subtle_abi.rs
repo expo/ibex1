@@ -307,7 +307,18 @@ pub(crate) fn dispatch(
                         let d = optional_string(args, 15);
                         #[cfg(feature = "crypto")]
                         subtle::preflight_jwk_fields(
-                            algorithm, kty, k, crv, x, y, d, alg, key_use, key_ops,
+                            algorithm,
+                            subtle::JwkFieldRefs {
+                                kty,
+                                k,
+                                crv,
+                                x,
+                                y,
+                                d,
+                                alg,
+                                key_use,
+                                key_ops,
+                            },
                         )
                         .map_err(failed)?;
                         let jwk = JsonWebKey {

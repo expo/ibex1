@@ -626,18 +626,34 @@ const MAX_JWK_KEY_OPS_BYTES: usize = 128;
 /// Bound borrowed JWK members before the ABI constructs owned strings. The
 /// decoder performs exact semantic checks after this allocation preflight.
 #[cfg(feature = "crypto")]
+pub(crate) struct JwkFieldRefs<'a> {
+    pub(crate) kty: &'a str,
+    pub(crate) k: Option<&'a str>,
+    pub(crate) crv: Option<&'a str>,
+    pub(crate) x: Option<&'a str>,
+    pub(crate) y: Option<&'a str>,
+    pub(crate) d: Option<&'a str>,
+    pub(crate) alg: Option<&'a str>,
+    pub(crate) key_use: Option<&'a str>,
+    pub(crate) key_ops: Option<&'a str>,
+}
+
+#[cfg(feature = "crypto")]
 pub(crate) fn preflight_jwk_fields(
     algorithm: ImportAlgorithm,
-    kty: &str,
-    k: Option<&str>,
-    crv: Option<&str>,
-    x: Option<&str>,
-    y: Option<&str>,
-    d: Option<&str>,
-    alg: Option<&str>,
-    key_use: Option<&str>,
-    key_ops: Option<&str>,
+    fields: JwkFieldRefs<'_>,
 ) -> Result<()> {
+    let JwkFieldRefs {
+        kty,
+        k,
+        crv,
+        x,
+        y,
+        d,
+        alg,
+        key_use,
+        key_ops,
+    } = fields;
     for (label, value) in [
         ("kty", Some(kty)),
         ("crv", crv),

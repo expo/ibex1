@@ -6,7 +6,7 @@ use ring::signature::KeyPair as _;
 use super::{
     der, preflight_jwk_fields, validate_usages, validate_usages_borrowed, CryptoKey, CryptoKeyPair,
     Error, ExportedKey, GenerateAlgorithm, HashAlgorithm, ImportAlgorithm, JsonWebKey,
-    KeyAlgorithm, KeyFormat, KeyType, KeyUsage, Result,
+    JwkFieldRefs, KeyAlgorithm, KeyFormat, KeyType, KeyUsage, Result,
 };
 
 const MAX_P256_PKCS8_BYTES: usize = 160;
@@ -339,15 +339,17 @@ pub(super) fn import_jwk(
     };
     preflight_jwk_fields(
         import_algorithm,
-        &jwk.kty,
-        jwk.k.as_deref(),
-        jwk.crv.as_deref(),
-        jwk.x.as_deref(),
-        jwk.y.as_deref(),
-        jwk.d.as_deref(),
-        jwk.alg.as_deref(),
-        jwk.key_use.as_deref(),
-        None,
+        JwkFieldRefs {
+            kty: &jwk.kty,
+            k: jwk.k.as_deref(),
+            crv: jwk.crv.as_deref(),
+            x: jwk.x.as_deref(),
+            y: jwk.y.as_deref(),
+            d: jwk.d.as_deref(),
+            alg: jwk.alg.as_deref(),
+            key_use: jwk.key_use.as_deref(),
+            key_ops: None,
+        },
     )?;
     if jwk.key_ops.as_ref().is_some_and(|ops| {
         match ops.iter().try_fold(0usize, |total, op| {
