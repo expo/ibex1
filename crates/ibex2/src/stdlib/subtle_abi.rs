@@ -62,19 +62,6 @@ fn unsigned_long(args: &[HostArg<'_>], index: usize, label: &str) -> Result<u32,
     unsigned_range(args, index, label, u32::MAX)
 }
 
-fn webidl_unsigned_long(args: &[HostArg<'_>], index: usize, label: &str) -> Result<u32, HostError> {
-    match args.get(index) {
-        Some(HostArg::Number(value)) => {
-            if !value.is_finite() || *value == 0.0 {
-                return Ok(0);
-            }
-            Ok(value.trunc().rem_euclid(4_294_967_296.0) as u32)
-        }
-        Some(HostArg::Undefined) | None => Ok(0),
-        _ => Err(invalid(format!("expected {label}"))),
-    }
-}
-
 fn optional_unsigned_long(
     args: &[HostArg<'_>],
     index: usize,
@@ -92,8 +79,8 @@ fn nullable_unsigned_long(
     label: &str,
 ) -> Result<Option<u32>, HostError> {
     match args.get(index) {
-        Some(HostArg::Null) => Ok(None),
-        _ => webidl_unsigned_long(args, index, label).map(Some),
+        Some(HostArg::Null | HostArg::Undefined) | None => Ok(None),
+        _ => unsigned_long(args, index, label).map(Some),
     }
 }
 
@@ -485,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    fn nullable_unsigned_long_uses_ordinary_webidl_conversion() {
+    fn nullable_unsigned_long_uses_enforce_range_conversion() {
         assert_eq!(
             nullable_unsigned_long(&[HostArg::Null], 0, "value").unwrap(),
             None
@@ -494,19 +481,19 @@ mod tests {
             nullable_unsigned_long(&[HostArg::Number(0.0)], 0, "value").unwrap(),
             Some(0)
         );
-        for value in [f64::NAN, f64::INFINITY, 4_294_967_296.0] {
-            assert_eq!(
-                nullable_unsigned_long(&[HostArg::Number(value)], 0, "value").unwrap(),
-                Some(0)
-            );
-        }
         assert_eq!(
             nullable_unsigned_long(&[HostArg::Undefined], 0, "value").unwrap(),
-            Some(0)
+            None
         );
-        assert_eq!(
-            nullable_unsigned_long(&[HostArg::Number(-1.0)], 0, "value").unwrap(),
-            Some(u32::MAX)
-        );
+        assert_eq!(nullable_unsigned_long(&[], 0, "value").unwrap(), None);
+        for value in [
+            -1.0,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            4_294_967_296.0,
+        ] {
+            assert!(nullable_unsigned_long(&[HostArg::Number(value)], 0, "value").is_err());
+        }
     }
 }

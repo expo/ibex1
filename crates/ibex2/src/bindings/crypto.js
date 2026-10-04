@@ -96,18 +96,8 @@
   function unsignedLong(value, label) {
     return enforceRange(value, label, 4294967295);
   }
-  function webIdlUnsignedLong(value, label) {
-    if (typeof value === "bigint" || typeof value === "symbol") {
-      throw new TypeError(label + " must be a number");
-    }
-    const number = Number(value);
-    if (!Number.isFinite(number) || number === 0) return 0;
-    const integer = Math.trunc(number);
-    const modulo = integer % 4294967296;
-    return modulo < 0 ? modulo + 4294967296 : modulo;
-  }
   function nullableUnsignedLong(value, label) {
-    return value === null ? null : webIdlUnsignedLong(value, label);
+    return value === null || value === undefined ? null : unsignedLong(value, label);
   }
   function unsignedShort(value, label) {
     return enforceRange(value, label, 65535);
