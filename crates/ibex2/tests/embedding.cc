@@ -144,6 +144,16 @@ int storage_consumer_step(void *h, bool deliver, char **out) {
     return 0;
   } catch (const std::exception &e) { *out = copy(e.what()); return -1; }
 }
+unsigned long long storage_consumer_subscribe(void *h, const char *callback_name) {
+  auto *c = static_cast<Consumer *>(h);
+  try {
+    auto callback = c->runtime->global().getPropertyAsFunction(
+        *c->runtime, callback_name);
+    return c->adapter->subscribe(std::move(callback));
+  } catch (...) {
+    return 0;
+  }
+}
 void storage_consumer_detach(void *h) { static_cast<Consumer *>(h)->adapter.reset(); }
 void storage_consumer_destroy(void *h) { delete static_cast<Consumer *>(h); }
 void storage_consumer_free(char *s) { std::free(s); }

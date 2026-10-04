@@ -58,9 +58,11 @@ extern "C" {
         out: *mut *mut c_char,
     ) -> i32;
     fn storage_consumer_step(h: *mut c_void, deliver: bool, out: *mut *mut c_char) -> i32;
+    fn storage_consumer_subscribe(h: *mut c_void, callback_name: *const c_char) -> u64;
     fn storage_consumer_detach(h: *mut c_void);
     fn storage_consumer_destroy(h: *mut c_void);
     fn storage_consumer_free(s: *mut c_char);
+    fn ibex2_test_publish_event(state: *const c_void, subscription: u64) -> i32;
 }
 
 fn compiled_script(name: &str) -> CompiledScript {
@@ -210,6 +212,13 @@ impl BareConsumer {
     fn detach_and_drop_context(&mut self) {
         unsafe { storage_consumer_detach(self.handle) };
         drop(self.context.take());
+    }
+
+    fn step(&self, deliver: bool) -> i32 {
+        let mut out = std::ptr::null_mut();
+        let result = unsafe { storage_consumer_step(self.handle, deliver, &mut out) };
+        assert!(result >= 0, "{}", take(out));
+        result
     }
 }
 
@@ -523,6 +532,37 @@ fn retained_pure_bindings_refuse_after_detach_and_context_drop() {
             "unexpected detached error for {source}: {error}"
         );
     }
+}
+
+#[test]
+fn borrowed_runtime_context_shutdown_cancels_queued_events_before_delivery() {
+    // Declared before the consumer so panic unwinding always destroys the
+    // adapter before releasing this non-owner storage reference.
+    let state_keepalive: Arc<ibex2::task::RuntimeState>;
+    let mut consumer = BareConsumer::new(Groups::PURE | Groups::EVENTS);
+    consumer.eval(
+        "globalThis.eventCalls = 0; globalThis.eventCallback = function () { eventCalls++; };",
+    );
+    let callback = std::ffi::CString::new("eventCallback").unwrap();
+    let subscription = unsafe { storage_consumer_subscribe(consumer.handle, callback.as_ptr()) };
+    assert_ne!(subscription, 0);
+
+    let state = consumer.context.as_ref().unwrap().state_ptr();
+    let state_ptr = state.cast::<ibex2::task::RuntimeState>();
+    // Model a worker storage reference: it keeps the allocation valid but is
+    // deliberately not an owner lease, so Context drop still starts shutdown.
+    unsafe {
+        Arc::increment_strong_count(state_ptr);
+        state_keepalive = Arc::from_raw(state_ptr);
+    }
+    assert_eq!(unsafe { ibex2_test_publish_event(state, subscription) }, 1);
+
+    drop(consumer.context.take());
+
+    assert_eq!(consumer.step(true), 0);
+    assert_eq!(consumer.eval("String(eventCalls)"), "0");
+    consumer.detach_and_drop_context();
+    drop(state_keepalive);
 }
 
 #[test]

@@ -1215,7 +1215,7 @@ pub unsafe extern "C" fn ibex2_take_task(
     let Some(state) = crate::task::clone_queue(state) else {
         return 0;
     };
-    let Some(task) = state.queue.take() else {
+    let Some(task) = state.take_task() else {
         return 0;
     };
     match task {

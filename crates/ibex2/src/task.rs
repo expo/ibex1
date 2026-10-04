@@ -312,6 +312,15 @@ impl CompletionQueue {
             });
     }
 
+    /// Drop every unreserved event while preserving settlements and timers.
+    fn cancel_all_events(&self) {
+        self.ready
+            .lock()
+            .expect("completion queue poisoned")
+            .tasks
+            .retain(|admitted| !matches!(admitted.task, HostTask::Event { .. }));
+    }
+
     pub fn len(&self) -> usize {
         self.ready
             .lock()
@@ -627,10 +636,13 @@ impl RuntimeState {
         for response in responses.into_values() {
             response.control.abort();
         }
-        self.subscriptions
+        // @ref LLP 0058.000.000#9-teardown-and-lifecycle — shutdown removes callback identities and their unreserved event tasks as one locked transition
+        let mut subscriptions = self
+            .subscriptions
             .lock()
-            .expect("event subscriptions poisoned")
-            .clear();
+            .expect("event subscriptions poisoned");
+        subscriptions.clear();
+        self.queue.cancel_all_events();
     }
 
     pub(crate) fn is_shutdown(&self) -> bool {
@@ -790,21 +802,28 @@ impl RuntimeState {
 
     /// Register one callback slot for a caller-owned runtime. The JSI adapter
     /// owns the returned handle and its JavaScript callback root together.
-    pub(crate) fn subscribe_event(self: &Arc<Self>) -> (u64, crate::stdlib::events::Subscription) {
+    pub(crate) fn subscribe_event(
+        self: &Arc<Self>,
+    ) -> Option<(u64, crate::stdlib::events::Subscription)> {
         let id = self
             .next_handle
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.subscriptions
+        let mut subscriptions = self
+            .subscriptions
             .lock()
-            .expect("event subscriptions poisoned")
-            .insert(id, ());
+            .expect("event subscriptions poisoned");
+        if self.is_shutdown() {
+            return None;
+        }
+        subscriptions.insert(id, ());
+        drop(subscriptions);
         let state: Weak<Self> = Arc::downgrade(self);
         let subscription = crate::stdlib::events::Subscription::new(move || {
             if let Some(state) = state.upgrade() {
                 state.unsubscribe_event(id);
             }
         });
-        (id, subscription)
+        Some((id, subscription))
     }
 
     fn unsubscribe_event(&self, id: u64) {
@@ -842,6 +861,26 @@ impl RuntimeState {
             self.queue.notify_admission();
         }
         admitted
+    }
+
+    /// Reserve the next live task. An unsubscribe may remove the registry
+    /// identity after an event was inserted but before its queue cancellation
+    /// acquires the FIFO lock; that stale event is discarded here.
+    pub(crate) fn take_task(&self) -> Option<HostTask> {
+        loop {
+            let task = self.queue.take()?;
+            let HostTask::Event { subscription, .. } = &task else {
+                return Some(task);
+            };
+            if self
+                .subscriptions
+                .lock()
+                .expect("event subscriptions poisoned")
+                .contains_key(subscription)
+            {
+                return Some(task);
+            }
+        }
     }
 }
 
@@ -1050,7 +1089,9 @@ pub unsafe extern "C" fn ibex2_subscription_create(
     if state.is_shutdown() {
         return std::ptr::null_mut();
     }
-    let (id, subscription) = state.subscribe_event();
+    let Some((id, subscription)) = state.subscribe_event() else {
+        return std::ptr::null_mut();
+    };
     *out_id = id;
     Box::into_raw(Box::new(Ibex2Subscription { subscription }))
 }
@@ -1065,6 +1106,23 @@ pub unsafe extern "C" fn ibex2_subscription_destroy(subscription: *mut Ibex2Subs
     if !subscription.is_null() {
         drop(Box::from_raw(subscription));
     }
+}
+
+/// Test-source seam used by the engine fixtures; production event sources call
+/// `RuntimeState::publish_event` from their Rust binding.
+///
+/// # Safety
+/// `state` must remain a live runtime-state pointer for this call.
+#[cfg(feature = "hermes")]
+#[no_mangle]
+pub unsafe extern "C" fn ibex2_test_publish_event(
+    state: *const RuntimeState,
+    subscription: u64,
+) -> std::ffi::c_int {
+    let Some(state) = clone_queue(state) else {
+        return 0;
+    };
+    std::ffi::c_int::from(state.publish_event(subscription, HostValue::Undefined))
 }
 
 struct ResponseOwner {
@@ -1275,7 +1333,7 @@ mod tests {
         let state = Arc::new(RuntimeState::new(Box::new(
             crate::transport::dev_tcp::DevTcpTransport::new(),
         )));
-        let (subscription_id, subscription) = state.subscribe_event();
+        let (subscription_id, subscription) = state.subscribe_event().unwrap();
 
         state.queue.admit(HostTask::Timer { handle: 7 });
         state
@@ -1310,7 +1368,7 @@ mod tests {
         let state = Arc::new(RuntimeState::new(Box::new(
             crate::transport::dev_tcp::DevTcpTransport::new(),
         )));
-        let (subscription_id, subscription) = state.subscribe_event();
+        let (subscription_id, subscription) = state.subscribe_event().unwrap();
         assert!(state.publish_event(subscription_id, HostValue::Str("queued".into())));
         assert_eq!(state.queue.len(), 1);
 
@@ -1320,11 +1378,39 @@ mod tests {
     }
 
     #[test]
+    fn shutdown_cancels_queued_events_and_refuses_new_subscriptions() {
+        let state = Arc::new(RuntimeState::new(Box::new(
+            crate::transport::dev_tcp::DevTcpTransport::new(),
+        )));
+        let (subscription_id, subscription) = state.subscribe_event().unwrap();
+        assert!(state.publish_event(subscription_id, HostValue::Str("queued".into())));
+
+        state.shutdown();
+
+        assert!(state.queue.take().is_none());
+        assert!(!state.publish_event(subscription_id, HostValue::Undefined));
+        assert!(state.subscribe_event().is_none());
+        drop(subscription);
+    }
+
+    #[test]
+    fn task_reservation_skips_an_event_whose_subscription_is_gone() {
+        let state = Arc::new(RuntimeState::new(Box::new(
+            crate::transport::dev_tcp::DevTcpTransport::new(),
+        )));
+        let (subscription_id, _subscription) = state.subscribe_event().unwrap();
+        assert!(state.publish_event(subscription_id, HostValue::Str("stale".into())));
+        state.subscriptions.lock().unwrap().remove(&subscription_id);
+
+        assert!(state.take_task().is_none());
+    }
+
+    #[test]
     fn event_wake_can_unsubscribe_without_deadlocking_publication() {
         let state = Arc::new(RuntimeState::new(Box::new(
             crate::transport::dev_tcp::DevTcpTransport::new(),
         )));
-        let (subscription_id, subscription) = state.subscribe_event();
+        let (subscription_id, subscription) = state.subscribe_event().unwrap();
         state
             .queue
             .set_wake(Some(Arc::new(move || subscription.unsubscribe())));
@@ -1355,7 +1441,7 @@ mod tests {
         let state = Arc::new(RuntimeState::new(Box::new(
             crate::transport::dev_tcp::DevTcpTransport::new(),
         )));
-        let (subscription_id, subscription) = state.subscribe_event();
+        let (subscription_id, subscription) = state.subscribe_event().unwrap();
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let callback_calls = Arc::clone(&calls);
         let callback_state = Arc::downgrade(&state);
