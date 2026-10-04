@@ -449,6 +449,33 @@ fn fetch_request_blob_and_response_blob_use_content_types_and_bytes() {
 }
 
 #[test]
+fn response_blob_uses_fetch_mime_type_extraction() {
+    for (name, header_value, expected_type) in [
+        ("invalid", "not a mime", ""),
+        (
+            "parameterized",
+            "TEXT/PLAIN; Charset=UTF-8; title=\"A B\"",
+            "text/plain;charset=utf-8;title=\"a b\"",
+        ),
+    ] {
+        let (origin, server) = capture(header_value, b"response");
+        let output = run_fetch_module(
+            &format!("response-blob-mime-{name}"),
+            &origin,
+            &format!(
+                "fetch('{origin}/mime').then(r => r.blob()).then(async b => console.log(JSON.stringify([b.type, await b.text()])));"
+            ),
+        );
+        assert_eq!(
+            output,
+            [serde_json::to_string(&serde_json::json!([expected_type, "response"])).unwrap()],
+            "{name}"
+        );
+        server.join().unwrap();
+    }
+}
+
+#[test]
 fn request_rejects_get_and_head_bodies() {
     let output = run_fetch_module(
         "request-get-head-body",

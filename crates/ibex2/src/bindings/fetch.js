@@ -167,10 +167,90 @@
   Response.prototype.arrayBuffer = function () { return consume(this); };
   Response.prototype.text = function () { return consume(this).then(function (bytes) { return decode(bytes); }); };
   Response.prototype.json = function () { return this.text().then(function (text) { return JSON.parse(text); }); };
+  function httpWhitespace(code) {
+    return code === 0x09 || code === 0x0a || code === 0x0d || code === 0x20;
+  }
+  function tokenCode(code) {
+    return code >= 0x30 && code <= 0x39 || code >= 0x41 && code <= 0x5a ||
+      code >= 0x61 && code <= 0x7a || "!#$%&'*+-.^_`|~".indexOf(String.fromCharCode(code)) >= 0;
+  }
+  function token(value) {
+    if (!value) return false;
+    for (var i = 0; i < value.length; i++) if (!tokenCode(value.charCodeAt(i))) return false;
+    return true;
+  }
+  function trimHttp(value) {
+    var first = 0, last = value.length;
+    while (first < last && httpWhitespace(value.charCodeAt(first))) first++;
+    while (last > first && httpWhitespace(value.charCodeAt(last - 1))) last--;
+    return value.slice(first, last);
+  }
+  function quotedValueCode(code) {
+    return code === 0x09 || code >= 0x20 && code <= 0x7e || code >= 0x80 && code <= 0xff;
+  }
+  function serializeMimeParameter(value) {
+    if (token(value)) return value;
+    var result = '"';
+    for (var i = 0; i < value.length; i++) {
+      var character = value[i];
+      if (character === '"' || character === "\\") result += "\\";
+      result += character;
+    }
+    return result + '"';
+  }
+  // Fetch's MIME-type extraction uses the MIME Sniffing parser and serializer;
+  // an invalid Content-Type does not become an arbitrary Blob type string.
+  // @ref LLP 0059.000#35-fetch--delegating-capability-bearing — Response.blob uses Fetch MIME extraction
+  function extractMimeType(input) {
+    if (input === null) return "";
+    input = String(input);
+    var semicolon = input.indexOf(";");
+    var essence = trimHttp(semicolon < 0 ? input : input.slice(0, semicolon));
+    var slash = essence.indexOf("/");
+    if (slash <= 0 || slash !== essence.lastIndexOf("/")) return "";
+    var type = essence.slice(0, slash), subtype = essence.slice(slash + 1);
+    if (!token(type) || !token(subtype)) return "";
+    var result = type.toLowerCase() + "/" + subtype.toLowerCase();
+    var names = Object.create(null), position = semicolon < 0 ? input.length : semicolon;
+    while (position < input.length) {
+      if (input[position] === ";") position++;
+      while (position < input.length && httpWhitespace(input.charCodeAt(position))) position++;
+      var nameStart = position;
+      while (position < input.length && input[position] !== ";" && input[position] !== "=") position++;
+      var name = input.slice(nameStart, position).toLowerCase();
+      if (position >= input.length || input[position] === ";") continue;
+      position++;
+      while (position < input.length && httpWhitespace(input.charCodeAt(position))) position++;
+      var value = "", valid = true;
+      if (input[position] === '"') {
+        position++;
+        var closed = false;
+        while (position < input.length) {
+          var character = input[position++];
+          if (character === '"') { closed = true; break; }
+          if (character === "\\" && position < input.length) character = input[position++];
+          if (!quotedValueCode(character.charCodeAt(0))) valid = false;
+          value += character;
+        }
+        if (!closed) valid = false;
+        while (position < input.length && input[position] !== ";") position++;
+      } else {
+        var valueStart = position;
+        while (position < input.length && input[position] !== ";") position++;
+        value = trimHttp(input.slice(valueStart, position));
+        if (!token(value)) valid = false;
+      }
+      if (valid && token(name) && names[name] === undefined) {
+        names[name] = true;
+        result += ";" + name + "=" + serializeMimeParameter(value);
+      }
+    }
+    return result;
+  }
   if (blobHelpers) {
     Response.prototype.blob = function () {
       var state = own(responses, this, "Response");
-      var type = state.headers.get("content-type") || "";
+      var type = extractMimeType(state.headers.get("content-type"));
       return consume(this).then(function (bytes) { return blobHelpers.responseBlob(bytes, type); });
     };
     Response.prototype.formData = function () {
