@@ -49,13 +49,14 @@ fn rust_form_data_reaches_fetch_as_the_exact_multipart_body() {
     form.append_text("field", "hello");
     form.append_file("file", b"a\0b".to_vec(), "snow-雪.bin", "application/test");
     let expected_form = form.clone();
-    let request = Request::get(&format!("http://127.0.0.1:{port}/upload")).with_body(form);
+    let mut request = Request::get(&format!("http://127.0.0.1:{port}/upload")).with_body(form);
+    request.method = "POST".into();
     let grants = GrantSet::none().with(Grant::Fetch(Origin::new("http", "127.0.0.1", port)));
     let bindings = Host::with_transport(Box::new(DevTcpTransport::new())).endow(grants);
     assert_eq!(bindings.fetch.send(request).unwrap().text(), "ok");
 
     let (head, boundary, body) = server.join().unwrap();
-    assert!(head.starts_with("GET /upload HTTP/1.1\r\n"));
+    assert!(head.starts_with("POST /upload HTTP/1.1\r\n"));
     let expected = EncodedMultipart::with_boundary(&expected_form, boundary).unwrap();
     assert_eq!(body, expected.as_bytes());
 }

@@ -46,6 +46,7 @@ impl Groups {
     pub const SECRETS: Self = Self(1 << 8);
     pub const KV: Self = Self(1 << 9);
     pub const INTL: Self = Self(1 << 10);
+    pub const BLOB: Self = Self(1 << 11);
 
     const PORTABLE_ALL: Self = Self(
         Self::PURE.0
@@ -57,8 +58,10 @@ impl Groups {
             | Self::STORAGE.0
             | Self::ENV.0
             | Self::SECRETS.0
-            | Self::KV.0,
+            | Self::KV.0
+            | Self::BLOB.0,
     );
+    const PORTABLE_DEFAULT: Self = Self(Self::PORTABLE_ALL.0 & !Self::BLOB.0);
 
     /// The groups Ibex's runtime installs today.
     #[cfg(target_os = "linux")]
@@ -67,9 +70,13 @@ impl Groups {
     #[cfg(not(target_os = "linux"))]
     pub const ALL: Self = Self::PORTABLE_ALL;
 
-    /// The ordinary runtime profile. Kept distinct so a later family can be
-    /// linked by default without silently entering every runtime's globals.
-    pub const DEFAULT: Self = Self::ALL;
+    /// The ordinary runtime profile. BLOB is linked but stays explicit: its
+    /// measured floor cost exceeds LLP 0057.000 D5's 50 µs threshold.
+    #[cfg(target_os = "linux")]
+    pub const DEFAULT: Self = Self(Self::PORTABLE_DEFAULT.0 | Self::INTL.0);
+    /// The ordinary runtime profile. See the Linux definition above.
+    #[cfg(not(target_os = "linux"))]
+    pub const DEFAULT: Self = Self::PORTABLE_DEFAULT;
 
     pub const fn empty() -> Self {
         Self(0)
@@ -87,6 +94,12 @@ impl Groups {
         self.0 & other.0 != 0
     }
 
+    /// Remove an install group without changing any of the groups that remain.
+    /// The resulting set is still checked by [`Self::validate`] at install.
+    pub const fn without(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+
     /// Refuse a selection that omits something its installed JavaScript uses.
     pub fn validate(self) -> Result<(), GroupError> {
         let requirements = [
@@ -94,6 +107,7 @@ impl Groups {
             (Self::ABORT, Self::PURE),
             (Self::CRYPTO, Self::PURE),
             (Self::FETCH, Self(Self::PURE.0 | Self::ABORT.0)),
+            (Self::BLOB, Self::PURE),
         ];
         for (group, required) in requirements {
             if self.contains(group) && !self.contains(required) {
@@ -114,7 +128,7 @@ impl Groups {
     }
 
     fn names(self) -> impl Iterator<Item = &'static str> {
-        const NAMES: [(Groups, &str); 11] = [
+        const NAMES: [(Groups, &str); 12] = [
             (Groups::PURE, "PURE"),
             (Groups::CONSOLE, "CONSOLE"),
             (Groups::TIMERS, "TIMERS"),
@@ -126,6 +140,7 @@ impl Groups {
             (Groups::SECRETS, "SECRETS"),
             (Groups::KV, "KV"),
             (Groups::INTL, "INTL"),
+            (Groups::BLOB, "BLOB"),
         ];
         NAMES
             .into_iter()
@@ -207,6 +222,7 @@ pub fn scripts(groups: Groups) -> Result<Vec<Script>, GroupError> {
         "crypto" => concat!(env!("CARGO_MANIFEST_DIR"), "/src/bindings/crypto.js"),
         "abort" => concat!(env!("CARGO_MANIFEST_DIR"), "/src/bindings/abort.js"),
         "fetch" => concat!(env!("CARGO_MANIFEST_DIR"), "/src/bindings/fetch.js"),
+        "blob" => concat!(env!("CARGO_MANIFEST_DIR"), "/src/bindings/blob.js"),
         "sqlite" => SQLITE_SOURCE,
         #[cfg(target_os = "linux")]
         "intl_number_format" => {
@@ -243,6 +259,9 @@ pub fn scripts(groups: Groups) -> Result<Vec<Script>, GroupError> {
     }
     if groups.contains(Groups::ABORT) {
         push("abort");
+    }
+    if groups.contains(Groups::BLOB) {
+        push("blob");
     }
     #[cfg(target_os = "linux")]
     if groups.contains(Groups::INTL) {
@@ -493,6 +512,10 @@ mod tests {
         let error = (Groups::PURE | Groups::FETCH).validate().unwrap_err();
         assert_eq!(error.group, Groups::FETCH);
         assert_eq!(error.missing, Groups::ABORT);
+
+        let error = Groups::BLOB.validate().unwrap_err();
+        assert_eq!(error.group, Groups::BLOB);
+        assert_eq!(error.missing, Groups::PURE);
     }
 
     #[test]

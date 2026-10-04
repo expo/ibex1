@@ -354,6 +354,7 @@ struct Adapter::State {
   uint32_t bytecode_version;
   std::shared_ptr<Lifetime> lifetime;
   jsi::Value fetch_factory;
+  jsi::Value blob_helpers;
   jsi::Value sqlite_factory;
   std::unique_ptr<Integrity> integrity;
   State(jsi::Runtime& rt, const void* value, uint32_t version,
@@ -390,6 +391,7 @@ void Adapter::detach() {
   state_->lifetime->detach();
   state_->pending.clear();
   state_->fetch_factory = jsi::Value::undefined();
+  state_->blob_helpers = jsi::Value::undefined();
   state_->sqlite_factory = jsi::Value::undefined();
   state_->integrity.reset();
   state_->queue = nullptr;
@@ -401,7 +403,7 @@ void freeze(jsi::Runtime&, const jsi::Object&);
 
 constexpr Groups kKnownGroups = GROUP_PURE | GROUP_CONSOLE | GROUP_TIMERS |
     GROUP_ABORT | GROUP_CRYPTO | GROUP_FETCH | GROUP_STORAGE | GROUP_ENV |
-    GROUP_SECRETS | GROUP_KV | GROUP_INTL;
+    GROUP_SECRETS | GROUP_KV | GROUP_INTL | GROUP_BLOB;
 
 bool has(Groups groups, Groups group) { return (groups & group) == group; }
 
@@ -414,6 +416,7 @@ void validate_groups_impl(Groups groups) {
       {GROUP_ABORT, GROUP_PURE},
       {GROUP_CRYPTO, GROUP_PURE},
       {GROUP_FETCH, GROUP_PURE | GROUP_ABORT},
+      {GROUP_BLOB, GROUP_PURE},
   };
   for (const auto& requirement : requirements) {
     if (has(groups, requirement.group) && !has(groups, requirement.required))
@@ -435,6 +438,7 @@ std::vector<const char*> expected_scripts_impl(Groups groups) {
   }
   if (has(groups, GROUP_CRYPTO)) result.push_back("crypto");
   if (has(groups, GROUP_ABORT)) result.push_back("abort");
+  if (has(groups, GROUP_BLOB)) result.push_back("blob");
 #if defined(IBEX2_JSI_HAS_INTL)
   if (has(groups, GROUP_INTL)) {
     result.push_back("intl_number_format");
@@ -563,6 +567,13 @@ void install_crypto(jsi::Runtime& rt,
   auto global = rt.global();
   set_group_binding(rt, global, "__ibex2_random_uuid", 70, lifetime);
   set_group_binding(rt, global, "__ibex2_get_random_values", 71, lifetime);
+}
+
+void install_blob(jsi::Runtime& rt,
+                  const std::shared_ptr<Lifetime>& lifetime) {
+  auto global = rt.global();
+  set_group_binding(rt, global, "__ibex2_multipart_boundary", 73, lifetime);
+  set_group_binding(rt, global, "__ibex2_multipart_encode", 74, lifetime);
 }
 
 void install_fetch(jsi::Runtime& rt, Adapter& adapter,
@@ -704,6 +715,7 @@ void Adapter::install(Groups groups, const Ibex2Bindings* bindings,
     if (has(groups, GROUP_PURE)) install_pure(rt, state_->lifetime);
     if (has(groups, GROUP_TIMERS)) install_timers(rt, state_->lifetime);
     if (has(groups, GROUP_CRYPTO)) install_crypto(rt, state_->lifetime);
+    if (has(groups, GROUP_BLOB)) install_blob(rt, state_->lifetime);
     if (has(groups, GROUP_FETCH)) install_fetch(rt, *this, state_->lifetime);
 #if defined(IBEX2_JSI_HAS_INTL)
     if (has(groups, GROUP_INTL)) {
@@ -714,8 +726,18 @@ void Adapter::install(Groups groups, const Ibex2Bindings* bindings,
 
     for (size_t i = 0; i < script_count; ++i) {
       const auto& script = scripts[i];
+      if (std::strcmp(script.name, "fetch") == 0 &&
+          state_->blob_helpers.isObject())
+        rt.global().setProperty(rt, "__ibex2_blob_helpers",
+                                state_->blob_helpers);
       auto buffer = std::make_shared<CompiledBytes>(script.bytes, script.len);
       auto value = rt.evaluateJavaScript(buffer, std::string(script.name) + ".js");
+      if (std::strcmp(script.name, "blob") == 0) {
+        if (!value.isObject())
+          throw jsi::JSError(rt, "Blob binding did not evaluate to helpers");
+        state_->blob_helpers = jsi::Value(rt, value);
+        continue;
+      }
       if (std::strcmp(script.name, "fetch") == 0) {
         if (!value.isObject() || !value.getObject(rt).isFunction(rt))
           throw jsi::JSError(rt, "fetch binding did not evaluate to a factory");

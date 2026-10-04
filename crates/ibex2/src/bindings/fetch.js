@@ -7,13 +7,18 @@
   var control = global.__ibex2_fetch_control;
   var retain = global.__ibex2_response_own;
   var abort = global.__ibex2_abort;
+  var blobHelpers = global.__ibex2_blob_helpers;
   var decode = global.__ibex2_text_decode;
+  var encode = global.__ibex2_text_encode;
   var Headers = global.Headers;
+  var URLSearchParams = global.URLSearchParams;
+  var DOMException = global.DOMException;
   var freeHeaders = global.__ibex2_headers_free;
   ["__ibex2_response_field", "__ibex2_response_read", "__ibex2_response_own", "__ibex2_fetch_control", "__ibex2_abort",
-   "__ibex2_headers_free", "__ibex2_text_encode", "__ibex2_text_decode", "__ibex2_text_encode_into"]
+   "__ibex2_headers_free", "__ibex2_text_encode", "__ibex2_text_decode", "__ibex2_text_encode_into",
+   "__ibex2_blob_helpers"]
     .forEach(function (name) { delete global[name]; });
-  var responses = new WeakMap(), streams = new WeakMap(), readers = new WeakMap();
+  var responses = new WeakMap(), streams = new WeakMap(), readers = new WeakMap(), requests = new WeakMap();
   function own(map, object, name) {
     var state = map.get(object);
     if (!state) throw new TypeError("not a " + name);
@@ -162,8 +167,56 @@
   Response.prototype.arrayBuffer = function () { return consume(this); };
   Response.prototype.text = function () { return consume(this).then(function (bytes) { return decode(bytes); }); };
   Response.prototype.json = function () { return this.text().then(function (text) { return JSON.parse(text); }); };
+  if (blobHelpers) {
+    Response.prototype.blob = function () {
+      var state = own(responses, this, "Response");
+      var type = state.headers.get("content-type") || "";
+      return consume(this).then(function (bytes) { return blobHelpers.responseBlob(bytes, type); });
+    };
+    Response.prototype.formData = function () {
+      return Promise.reject(new DOMException("Response.formData() parsing is not supported", "NotSupportedError"));
+    };
+  }
   Object.defineProperty(Response.prototype, Symbol.toStringTag, { value: "Response" });
-  [Response, ResponseBody, ResponseBodyReader].forEach(function (type) { Object.freeze(type.prototype); Object.freeze(type); });
+  function convertBody(body, headers) {
+    if (body === undefined || body === null) return undefined;
+    if (blobHelpers) {
+      // @ref LLP 0059.000#35-fetch--delegating-capability-bearing — authored Content-Type wins for Blob and FormData bodies
+      var extracted = blobHelpers.extractBody(body);
+      if (extracted) {
+        if (extracted.type && !headers.has("content-type")) headers.set("Content-Type", extracted.type);
+        return extracted.bytes;
+      }
+    }
+    if (body instanceof URLSearchParams) {
+      if (!headers.has("content-type")) {
+        headers.set("Content-Type", "application/x-www-form-urlencoded;charset=UTF-8");
+      }
+      return encode(String(body));
+    }
+    if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) return body;
+    return encode(String(body));
+  }
+  function Request(input, init) {
+    if (!(this instanceof Request)) throw new TypeError("Request must be constructed with new");
+    if (arguments.length === 0) throw new TypeError("Request expects a URL");
+    init = init || {};
+    var inherited = requests.get(input);
+    var url = inherited ? inherited.url : String(input);
+    var method = init.method === undefined ? (inherited ? inherited.method : "GET") : String(init.method);
+    var redirect = init.redirect === undefined ? (inherited ? inherited.redirect : "follow") : String(init.redirect);
+    var signal = init.signal === undefined ? (inherited ? inherited.signal : undefined) : init.signal;
+    var headers = new Headers(init.headers === undefined && inherited ? inherited.headers : init.headers);
+    var body = init.body === undefined && inherited ? inherited.body : convertBody(init.body, headers);
+    requests.set(this, { url: url, method: method, redirect: redirect, signal: signal, headers: headers, body: body });
+  }
+  ["url", "method", "redirect", "signal", "headers"].forEach(function (name) {
+    Object.defineProperty(Request.prototype, name, { get: function () { return own(requests, this, "Request")[name]; }, enumerable: true });
+  });
+  Object.defineProperty(Request.prototype, Symbol.toStringTag, { value: "Request" });
+  global.Request = Request;
+  global.Response = Response;
+  [Request, Response, ResponseBody, ResponseBodyReader].forEach(function (type) { Object.freeze(type.prototype); Object.freeze(type); });
   return function makeFetch(raw) {
     return function fetch(input, init) {
       var headers, token, unsubscribe = function () {}, released = false;
@@ -175,13 +228,11 @@
       }
       try {
         if (arguments.length === 0) throw new TypeError("fetch expects a URL");
-        init = init || {};
-        var signal = init.signal;
+        var request = new Request(input, init);
+        var state = requests.get(request), signal = state.signal;
         if (signal != null && abort.own(signal).aborted) return Promise.reject(abort.own(signal).reason);
-        var url = String(input), method = init.method === undefined ? "" : String(init.method), body = init.body;
-        if (typeof body === "string") body = new TextEncoder().encode(body);
-        var redirect = init.redirect === undefined ? "follow" : String(init.redirect);
-        headers = new Headers(init.headers);
+        var url = state.url, method = state.method, body = state.body, redirect = state.redirect;
+        headers = new Headers(state.headers);
         token = control(0);
         if (signal != null) unsubscribe = abort.subscribe(signal, function () { control(1, token); });
         return raw(url, method, body, redirect, headers._handle, token).then(function (handle) {

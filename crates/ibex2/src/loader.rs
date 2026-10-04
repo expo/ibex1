@@ -957,9 +957,10 @@ fn js_string_literal(text: &str) -> String {
     out
 }
 
-/// The explicit snapshot of names the ordinary runtime adds to the engine.
+/// The explicit snapshot of names every install group can add to the engine.
 /// Capability-bearing names are deliberately absent: they arrive as module
 /// parameters. Keep this as the one inventory; per-group views partition it.
+/// The historical name predates optional default-off groups such as BLOB.
 pub const DEFAULT_ADDED_GLOBALS: &[&str] = &[
     "__ibex2_default",
     "__ibex2_dynamic_import",
@@ -981,6 +982,11 @@ pub const DEFAULT_ADDED_GLOBALS: &[&str] = &[
     "crypto",
     "URL",
     "URLSearchParams",
+    "Blob",
+    "File",
+    "FormData",
+    "Request",
+    "Response",
 ];
 
 const GLOBAL_PARTITION: &[(Option<crate::bindings::Groups>, &[usize])] = &[
@@ -993,6 +999,8 @@ const GLOBAL_PARTITION: &[(Option<crate::bindings::Groups>, &[usize])] = &[
     (Some(crate::bindings::Groups::PURE), &[11, 12, 13, 18, 19]),
     (Some(crate::bindings::Groups::CRYPTO), &[14, 17]),
     (Some(crate::bindings::Groups::ABORT), &[15, 16]),
+    (Some(crate::bindings::Groups::BLOB), &[20, 21, 22]),
+    (Some(crate::bindings::Groups::FETCH), &[23, 24]),
 ];
 
 /// The global names a module may see for one installed group set. Anything
@@ -1185,7 +1193,7 @@ mod tests {
     }
 
     #[test]
-    fn group_partition_covers_the_default_global_snapshot_exactly() {
+    fn group_partition_covers_the_installable_global_snapshot_exactly() {
         let mut coverage = vec![0usize; DEFAULT_ADDED_GLOBALS.len()];
         for (_, members) in GLOBAL_PARTITION {
             for &index in *members {
@@ -1201,9 +1209,13 @@ mod tests {
             "each snapshot name must belong to exactly one partition: {coverage:?}"
         );
         assert_eq!(
-            allowed_globals(crate::bindings::Groups::DEFAULT),
+            allowed_globals(crate::bindings::Groups::ALL),
             DEFAULT_ADDED_GLOBALS
         );
+        let default = allowed_globals(crate::bindings::Groups::DEFAULT);
+        for name in ["Blob", "File", "FormData"] {
+            assert!(!default.contains(&name), "BLOB is measured default-off");
+        }
     }
 
     #[test]

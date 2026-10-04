@@ -181,6 +181,7 @@ fn main() {
         "domexception",
         "crypto",
         "abort",
+        "blob",
         "fetch",
         "sqlite",
         "harden",

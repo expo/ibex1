@@ -159,6 +159,10 @@ fn compiled_binding(name: &str) -> CompiledScript {
             b"abort\0",
             include_bytes!(concat!(env!("OUT_DIR"), "/abort.hbc")),
         ),
+        "blob" => (
+            b"blob\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/blob.hbc")),
+        ),
         "fetch" => (
             b"fetch\0",
             include_bytes!(concat!(env!("OUT_DIR"), "/fetch.hbc")),
