@@ -162,6 +162,26 @@ fn no_capability_is_reachable_from_the_global_object() {
     );
 }
 
+#[test]
+fn empty_groups_do_not_project_fetch_or_environment_into_modules() {
+    let p = Project::new("empty-groups");
+    p.file(
+        "index.js",
+        "globalThis.emptyGroupTypes = [typeof fetch, typeof process].join(',');",
+    );
+    let mut rt = Hermes::new(DynamicCode::Closed).expect("runtime");
+    let context = ibex2::bindings::Context::new(ibex2::grant::GrantSet::none());
+    rt.install_runtime(ibex2::bindings::Groups::empty(), &context)
+        .expect("empty grouped runtime");
+    rt.set_loader(
+        Root::Declared(p.0.clone()),
+        ModuleGrants::parse("[*]\nnet.fetch https://example.com\nenv.read PATH\n").unwrap(),
+    )
+    .expect("loader");
+    rt.run_entry("./index.js").expect("entry");
+    assert_eq!(rt.eval("emptyGroupTypes").unwrap(), "undefined,undefined");
+}
+
 /// LLP 0067 R2: a module's `fetch` is its own, so one cannot use another's.
 #[test]
 fn a_module_cannot_borrow_another_modules_binding_by_name() {

@@ -64,7 +64,9 @@ fn a_host_function_is_reachable_from_javascript() {
 
 fn with_stdlib() -> Hermes {
     let mut rt = Hermes::new(DynamicCode::Closed).expect("runtime");
-    assert!(rt.install_stdlib(), "stdlib install failed");
+    let context = crate::bindings::Context::new(crate::grant::GrantSet::none());
+    rt.install_runtime(crate::bindings::Groups::DEFAULT, &context)
+        .expect("runtime install failed");
     assert!(rt.install_async_echo(), "echo op install failed");
     // Each test gets a clean queue; the console buffer is per-thread and
     // Rust's test harness reuses threads.
@@ -120,14 +122,11 @@ fn btoa_and_atob_round_trip_from_javascript() {
 fn a_rust_error_becomes_a_catchable_javascript_throw() {
     let mut rt = with_stdlib();
     let caught = rt
-        .eval("try { __ibex2_url_parse('::not a url::'); 'no throw' } catch (e) { 'caught: ' + e.message }")
+        .eval("try { new URL('::not a url::'); 'no throw' } catch (e) { 'caught: ' + e.message }")
         .unwrap();
     // `btoa('€')` used to be the Rust error here; the engine's own btoa took
     // that name over, so a Rust op that refuses is the URL parser now.
-    assert!(
-        caught.starts_with("caught: TypeError: invalid URL"),
-        "unexpected: {caught}"
-    );
+    assert!(caught.contains("invalid URL"), "unexpected: {caught}");
 }
 
 #[test]
@@ -135,14 +134,12 @@ fn text_encode_returns_bytes_javascript_can_read() {
     let mut rt = with_stdlib();
     // The result is a real ArrayBuffer, so a typed-array view works.
     assert_eq!(
-        rt.eval("new Uint8Array(__ibex2_text_encode('hi')).join(',')")
-            .unwrap(),
+        rt.eval("new TextEncoder().encode('hi').join(',')").unwrap(),
         "104,105"
     );
     // Multi-byte UTF-8 crosses intact.
     assert_eq!(
-        rt.eval("new Uint8Array(__ibex2_text_encode('€')).join(',')")
-            .unwrap(),
+        rt.eval("new TextEncoder().encode('€').join(',')").unwrap(),
         "226,130,172"
     );
 }
@@ -151,7 +148,7 @@ fn text_encode_returns_bytes_javascript_can_read() {
 fn bytes_round_trip_through_the_boundary_in_both_directions() {
     let mut rt = with_stdlib();
     assert_eq!(
-        rt.eval("__ibex2_text_decode(__ibex2_text_encode('héllo €'))")
+        rt.eval("new TextDecoder().decode(new TextEncoder().encode('héllo €'))")
             .unwrap(),
         "héllo €"
     );
@@ -161,14 +158,13 @@ fn bytes_round_trip_through_the_boundary_in_both_directions() {
 fn url_parsing_is_the_real_whatwg_one() {
     let mut rt = with_stdlib();
     assert_eq!(
-        rt.eval("__ibex2_url_parse('../c', 'https://example.com/a/b/').split('\\n')[0]")
+        rt.eval("new URL('../c', 'https://example.com/a/b/').href")
             .unwrap(),
         "https://example.com/a/c"
     );
     // IDNA, which is exactly what a hand-rolled parser gets wrong.
     assert_eq!(
-        rt.eval("__ibex2_url_parse('https://例え.テスト/').split('\\n')[0]")
-            .unwrap(),
+        rt.eval("new URL('https://例え.テスト/').href").unwrap(),
         "https://xn--r8jz45g.xn--zckzah/"
     );
 }
@@ -177,7 +173,7 @@ fn url_parsing_is_the_real_whatwg_one() {
 fn an_invalid_url_throws_rather_than_returning_something_plausible() {
     let mut rt = with_stdlib();
     let caught = rt
-        .eval("try { __ibex2_url_parse('not a url'); 'no throw' } catch (e) { 'caught' }")
+        .eval("try { new URL('not a url'); 'no throw' } catch (e) { 'caught' }")
         .unwrap();
     assert_eq!(caught, "caught");
 }
@@ -186,13 +182,13 @@ fn an_invalid_url_throws_rather_than_returning_something_plausible() {
 fn search_params_get_reads_through_the_boundary() {
     let mut rt = with_stdlib();
     assert_eq!(
-        rt.eval("__ibex2_search_params_get('?a=1&b=2&a=3', 'a')")
+        rt.eval("new URLSearchParams('?a=1&b=2&a=3').get('a')")
             .unwrap(),
         "1"
     );
     // A missing name is null, not undefined and not empty string.
     assert_eq!(
-        rt.eval("String(__ibex2_search_params_get('?a=1', 'zz'))")
+        rt.eval("String(new URLSearchParams('?a=1').get('zz'))")
             .unwrap(),
         "null"
     );
@@ -209,7 +205,7 @@ fn encode_into_writes_through_to_the_callers_own_buffer() {
     let observed = rt
         .eval(
             "const view = new Uint8Array(8);
-                 __ibex2_text_encode_into('hi', view.buffer);
+                 new TextEncoder().encodeInto('hi', view);
                  view.join(',')",
         )
         .unwrap();
@@ -221,19 +217,19 @@ fn encode_into_reports_read_and_written() {
     let mut rt = with_stdlib();
     // Three bytes of room for a three-byte character: exactly fits.
     assert_eq!(
-        rt.eval("__ibex2_text_encode_into('€', new Uint8Array(3).buffer)")
+        rt.eval("{ const r = new TextEncoder().encodeInto('€', new Uint8Array(3)); r.read + ',' + r.written }")
             .unwrap(),
         "1,3"
     );
     // Two bytes of room: nothing is written rather than half a code point.
     assert_eq!(
-        rt.eval("__ibex2_text_encode_into('€', new Uint8Array(2).buffer)")
+        rt.eval("{ const r = new TextEncoder().encodeInto('€', new Uint8Array(2)); r.read + ',' + r.written }")
             .unwrap(),
         "0,0"
     );
     // An astral character reports two UTF-16 units read, as JS counts them.
     assert_eq!(
-        rt.eval("__ibex2_text_encode_into('😀', new Uint8Array(8).buffer)")
+        rt.eval("{ const r = new TextEncoder().encodeInto('😀', new Uint8Array(8)); r.read + ',' + r.written }")
             .unwrap(),
         "2,4"
     );
@@ -245,7 +241,7 @@ fn encode_into_leaves_the_rest_of_the_buffer_untouched() {
     let observed = rt
         .eval(
             "const view = new Uint8Array(6).fill(9);
-                 __ibex2_text_encode_into('ab', view.buffer);
+                 new TextEncoder().encodeInto('ab', view);
                  view.join(',')",
         )
         .unwrap();
@@ -261,8 +257,8 @@ fn returned_buffers_survive_collection_pressure() {
     let mut rt = with_stdlib();
     let observed = rt
         .eval(
-            "const keep = new Uint8Array(__ibex2_text_encode('survivor'));
-                 for (let i = 0; i < 1000; i++) { __ibex2_text_encode('churn ' + i); }
+            "const keep = new TextEncoder().encode('survivor');
+                 for (let i = 0; i < 1000; i++) { new TextEncoder().encode('churn ' + i); }
                  String.fromCharCode.apply(null, keep)",
         )
         .unwrap();
@@ -276,7 +272,7 @@ fn a_returned_buffer_is_writable_in_place() {
     let mut rt = with_stdlib();
     let observed = rt
         .eval(
-            "const view = new Uint8Array(__ibex2_text_encode('abc'));
+            "const view = new TextEncoder().encode('abc');
                  view[0] = 122;
                  String.fromCharCode.apply(null, view)",
         )
@@ -291,7 +287,7 @@ fn a_large_buffer_crosses_intact() {
     let observed = rt
         .eval(
             "const big = 'x'.repeat(4 * 1024 * 1024);
-                 const bytes = new Uint8Array(__ibex2_text_encode(big));
+                 const bytes = new TextEncoder().encode(big);
                  bytes.length + ':' + bytes[0] + ':' + bytes[bytes.length - 1]",
         )
         .unwrap();
@@ -304,54 +300,54 @@ fn measure_boundary_costs() {
     use std::time::Instant;
     let mut rt = with_stdlib();
     // Warm up.
-    rt.eval("__ibex2_text_encode('x'.repeat(1024))").unwrap();
+    rt.eval("new TextEncoder().encode('x'.repeat(1024))")
+        .unwrap();
 
     let mb = 8;
     let setup = format!("globalThis.big = 'x'.repeat({} * 1024 * 1024);", mb);
     rt.eval(&setup).unwrap();
-    rt.eval("globalThis.bigBytes = __ibex2_text_encode(big);")
+    rt.eval("globalThis.encoder = new TextEncoder(); globalThis.decoder = new TextDecoder(); globalThis.bigBytes = encoder.encode(big);")
         .unwrap();
 
     let n = 20;
     // String IN (engine utf8() copy) + bytes OUT (zero-copy).
     let t = Instant::now();
     for _ in 0..n {
-        rt.eval("__ibex2_text_encode(big)").unwrap();
+        rt.eval("encoder.encode(big)").unwrap();
     }
     let encode = t.elapsed() / n;
 
     // Bytes IN (zero-copy) + string OUT (engine createFromUtf8 copy).
     let t = Instant::now();
     for _ in 0..n {
-        rt.eval("__ibex2_text_decode(bigBytes)").unwrap();
+        rt.eval("decoder.decode(bigBytes)").unwrap();
     }
     let decode = t.elapsed() / n;
 
     // String IN + write through into a buffer JS already owns: no output
     // allocation at all. The delta against encode is the output copy.
     rt.eval(&format!(
-        "globalThis.dest = new Uint8Array({} * 1024 * 1024).buffer;",
+        "globalThis.dest = new Uint8Array({} * 1024 * 1024);",
         mb + 1
     ))
     .unwrap();
     let t = Instant::now();
     for _ in 0..n {
-        rt.eval("__ibex2_text_encode_into(big, dest)").unwrap();
+        rt.eval("encoder.encodeInto(big, dest)").unwrap();
     }
     let encode_into = t.elapsed() / n;
 
     // Bytes IN (zero-copy) + tiny string OUT: isolates inbound bytes.
     let t = Instant::now();
     for _ in 0..n {
-        rt.eval("__ibex2_text_decode(bigBytes.slice(0, 8))")
-            .unwrap();
+        rt.eval("decoder.decode(bigBytes.slice(0, 8))").unwrap();
     }
     let bytes_in_only = t.elapsed() / n;
 
     // Baseline: eval() of a small source, which every row above also pays.
     let t = Instant::now();
     for _ in 0..n {
-        rt.eval("__ibex2_search_params_get('a=1', 'a')").unwrap();
+        rt.eval("new URLSearchParams('a=1').get('a')").unwrap();
     }
     let tiny = t.elapsed() / n;
 
@@ -369,12 +365,12 @@ fn measure_boundary_costs() {
     .unwrap();
     let t = Instant::now();
     for _ in 0..n {
-        rt.eval("__ibex2_text_encode_into(ascii, dest)").unwrap();
+        rt.eval("encoder.encodeInto(ascii, dest)").unwrap();
     }
     let ascii_in = t.elapsed() / n;
     let t = Instant::now();
     for _ in 0..n {
-        rt.eval("__ibex2_text_encode_into(wide, dest)").unwrap();
+        rt.eval("encoder.encodeInto(wide, dest)").unwrap();
     }
     let wide_in = t.elapsed() / n;
 
@@ -637,41 +633,44 @@ impl TestServer {
     }
 }
 
-fn fetch_rt(grant_spec: &str) -> (Hermes, Grants) {
+fn fetch_rt(grant_spec: &str) -> Hermes {
     let mut rt = with_stdlib();
-    let grants = Grants::parse(grant_spec).expect("grant spec parses");
-    assert!(rt.install_fetch(&grants), "fetch install failed");
-    rt.eval(
-        "globalThis.readBody = async function(handle) {
-      const chunks = []; let length = 0;
-      for (;;) {
-        const raw = await __ibex2_response_read(handle);
-        if (raw === null) break;
-        const chunk = new Uint8Array(raw);
-        chunks.push(chunk); length += chunk.length;
-      }
-      const bytes = new Uint8Array(length); let offset = 0;
-      chunks.forEach(chunk => { bytes.set(chunk, offset); offset += chunk.length; });
-      return __ibex2_text_decode(bytes);
-    };",
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ibex2-hermes-fetch-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join("bridge.js"),
+        "globalThis.__test_fetch = fetch; globalThis.readBody = response => response.text();",
     )
     .unwrap();
-    (rt, grants)
+    rt.set_loader(
+        crate::loader::Root::Declared(directory.clone()),
+        crate::loader::ModuleGrants::parse(&format!("[*]\n{grant_spec}\n"))
+            .expect("grant spec parses"),
+    )
+    .expect("loader");
+    rt.run_entry("./bridge.js").expect("fetch bridge");
+    std::fs::remove_dir_all(directory).unwrap();
+    rt
 }
 
 #[test]
 fn fetch_reaches_a_real_server_and_returns_a_response_handle() {
     let server = TestServer::start("hello from the server");
-    let (mut rt, _grants) = fetch_rt(&format!("net.fetch {}", server.origin()));
+    let mut rt = fetch_rt(&format!("net.fetch {}", server.origin()));
 
     rt.eval(&format!(
         "globalThis.status = 0; globalThis.body = '';
-             __ibex2_fetch('{}/thing').then(async h => {{
-               status = __ibex2_response_field(h, 0);
-               globalThis.okFlag = __ibex2_response_field(h, 1);
-               globalThis.ct = __ibex2_response_field(h, 3, 'content-type');
-               globalThis.custom = __ibex2_response_field(h, 3, 'X-IBEX');
-               body = await readBody(h);
+             __test_fetch('{}/thing').then(async response => {{
+               status = response.status;
+               globalThis.okFlag = response.ok;
+               globalThis.ct = response.headers.get('content-type');
+               globalThis.custom = response.headers.get('X-IBEX');
+               body = await readBody(response);
              }});",
         server.origin()
     ))
@@ -693,11 +692,11 @@ fn fetch_reaches_a_real_server_and_returns_a_response_handle() {
 fn an_ungranted_origin_is_refused_and_never_reaches_the_network() {
     let server = TestServer::start("secret");
     // Granted a DIFFERENT origin than the one it will try.
-    let (mut rt, _grants) = fetch_rt("net.fetch http://127.0.0.1:1");
+    let mut rt = fetch_rt("net.fetch http://127.0.0.1:1");
 
     rt.eval(&format!(
         "globalThis.err = 'none';
-             __ibex2_fetch('{}/secret').catch(e => {{ err = e.message; }});",
+             __test_fetch('{}/secret').catch(e => {{ err = e.message; }});",
         server.origin()
     ))
     .unwrap();
@@ -718,17 +717,17 @@ fn authority_is_carried_by_the_binding_not_by_the_code() {
     let server = TestServer::start("payload");
     let program = format!(
         "globalThis.result = 'pending';
-             __ibex2_fetch('{}/x')
-               .then(h => {{ result = 'ok:' + __ibex2_response_field(h, 0); }})
+             __test_fetch('{}/x')
+               .then(response => {{ result = 'ok:' + response.status; }})
                .catch(e => {{ result = 'denied:' + e.message; }});",
         server.origin()
     );
 
-    let (mut granted, _g1) = fetch_rt(&format!("net.fetch {}", server.origin()));
+    let mut granted = fetch_rt(&format!("net.fetch {}", server.origin()));
     granted.eval(&program).unwrap();
     granted.pump_until(1);
 
-    let (mut ungranted, _g2) = fetch_rt("net.fetch http://example.invalid");
+    let mut ungranted = fetch_rt("net.fetch http://example.invalid");
     ungranted.eval(&program).unwrap();
     ungranted.pump_until(1);
 
@@ -747,12 +746,12 @@ fn authority_is_carried_by_the_binding_not_by_the_code() {
 #[test]
 fn a_post_body_crosses_to_the_server() {
     let server = TestServer::start("unused");
-    let (mut rt, _grants) = fetch_rt(&format!("net.fetch {}", server.origin()));
+    let mut rt = fetch_rt(&format!("net.fetch {}", server.origin()));
 
     rt.eval(&format!(
         "globalThis.echoed = '';
-             __ibex2_fetch('{}/submit', 'POST', __ibex2_text_encode('name=ibex'))
-               .then(async h => {{ echoed = await readBody(h); }});",
+             __test_fetch('{}/submit', {{method: 'POST', body: 'name=ibex'}})
+               .then(async response => {{ echoed = await readBody(response); }});",
         server.origin()
     ))
     .unwrap();
@@ -765,13 +764,13 @@ fn a_post_body_crosses_to_the_server() {
 #[test]
 fn a_body_can_only_be_consumed_once() {
     let server = TestServer::start("once");
-    let (mut rt, _grants) = fetch_rt(&format!("net.fetch {}", server.origin()));
+    let mut rt = fetch_rt(&format!("net.fetch {}", server.origin()));
 
     rt.eval(&format!(
         "globalThis.second = 'not-run';
-             __ibex2_fetch('{}/x').then(async h => {{
-               await readBody(h);
-               try {{ await __ibex2_response_read(h); second = 'no throw'; }}
+             __test_fetch('{}/x').then(async response => {{
+               await response.text();
+               try {{ await response.text(); second = 'no throw'; }}
                catch (e) {{ second = 'threw'; }}
              }});",
         server.origin()
@@ -784,13 +783,13 @@ fn a_body_can_only_be_consumed_once() {
 #[test]
 fn fetch_works_under_async_await() {
     let server = TestServer::start("awaited body");
-    let (mut rt, _grants) = fetch_rt(&format!("net.fetch {}", server.origin()));
+    let mut rt = fetch_rt(&format!("net.fetch {}", server.origin()));
 
     rt.eval(&format!(
         "globalThis.out = 'pending';
              (async () => {{
-               const h = await __ibex2_fetch('{}/x');
-               out = await readBody(h);
+               const response = await __test_fetch('{}/x');
+               out = await readBody(response);
              }})();",
         server.origin()
     ))
@@ -803,10 +802,10 @@ fn fetch_works_under_async_await() {
 fn a_connection_failure_is_a_catchable_type_error() {
     // Port 1 on loopback: granted, so the refusal is the network's, not
     // the capability system's. The two must be distinguishable.
-    let (mut rt, _grants) = fetch_rt("net.fetch http://127.0.0.1:1");
+    let mut rt = fetch_rt("net.fetch http://127.0.0.1:1");
     rt.eval(
         "globalThis.err = 'none';
-             __ibex2_fetch('http://127.0.0.1:1/x').catch(e => { err = e.message; });",
+             __test_fetch('http://127.0.0.1:1/x').catch(e => { err = e.message; });",
     )
     .unwrap();
     rt.pump_until(1);
@@ -822,15 +821,15 @@ fn a_redirect_within_the_granted_origin_is_followed_by_rust() {
     let destination = TestServer::start("arrived");
     let redirector = TestServer::start_redirecting_to(format!("{}/final", destination.origin()));
 
-    let (mut rt, _grants) = fetch_rt(&format!(
+    let mut rt = fetch_rt(&format!(
         "net.fetch {}\nnet.fetch {}",
         redirector.origin(),
         destination.origin()
     ));
     rt.eval(&format!(
         "globalThis.body = '';
-             __ibex2_fetch('{}/start').then(async h => {{
-               body = await readBody(h);
+             __test_fetch('{}/start').then(async response => {{
+               body = await readBody(response);
              }});",
         redirector.origin()
     ))
@@ -855,15 +854,15 @@ fn the_platform_does_not_launder_a_redirect_past_the_capability_check() {
     let redirector = TestServer::start_redirecting_to(format!("{}/steal", ungranted.origin()));
 
     // Granted the redirector ONLY.
-    let (mut rt, _grants) = fetch_rt(&format!("net.fetch {}", redirector.origin()));
+    let mut rt = fetch_rt(&format!("net.fetch {}", redirector.origin()));
     rt.eval(&format!(
-            "globalThis.result = 'pending';
-             __ibex2_fetch('{}/start')
-               .then(h => {{ result = 'leaked:' + __ibex2_text_decode(__ibex2_response_field(h, 4)); }})
+        "globalThis.result = 'pending';
+             __test_fetch('{}/start')
+               .then(response => response.text().then(body => {{ result = 'leaked:' + body; }}))
                .catch(e => {{ result = e.message; }});",
-            redirector.origin()
-        ))
-        .unwrap();
+        redirector.origin()
+    ))
+    .unwrap();
     rt.pump_until(1);
 
     assert_eq!(rt.eval("result").unwrap(), "denied: net.fetch");
@@ -879,14 +878,14 @@ fn the_platform_does_not_launder_a_redirect_past_the_capability_check() {
 #[test]
 #[ignore]
 fn demo_real_https_fetch() {
-    let (mut rt, _grants) = fetch_rt("net.fetch https://example.com");
+    let mut rt = fetch_rt("net.fetch https://example.com");
     rt.eval(
         "globalThis.out = 'pending';
              (async () => {
-               const h = await __ibex2_fetch('https://example.com/');
-               const status = __ibex2_response_field(h, 0);
-               const server = __ibex2_response_field(h, 3, 'Content-Type');
-               const body = __ibex2_text_decode(__ibex2_response_field(h, 4));
+               const response = await __test_fetch('https://example.com/');
+               const status = response.status;
+               const server = response.headers.get('Content-Type');
+               const body = await response.text();
                out = status + ' | ' + server + ' | ' + body.length + ' bytes | '
                    + body.slice(body.indexOf('<title>'), body.indexOf('</title>') + 8);
              })().catch(e => { out = 'ERROR ' + e.message; });",
@@ -903,11 +902,11 @@ fn demo_real_https_fetch() {
 #[test]
 #[ignore]
 fn https_works_through_the_platform_transport() {
-    let (mut rt, _grants) = fetch_rt("net.fetch https://example.com");
+    let mut rt = fetch_rt("net.fetch https://example.com");
     rt.eval(
         "globalThis.status = 0; globalThis.err = '';
-             __ibex2_fetch('https://example.com/')
-               .then(h => { status = __ibex2_response_field(h, 0); })
+             __test_fetch('https://example.com/')
+               .then(response => { status = response.status; })
                .catch(e => { err = e.message; });",
     )
     .unwrap();
@@ -933,30 +932,30 @@ fn https_works_through_the_platform_transport() {
 #[test]
 fn a_module_not_handed_a_capability_cannot_reach_one() {
     let server = TestServer::start("payload");
-    let (mut rt, _grants) = fetch_rt(&format!("net.fetch {}", server.origin()));
+    let mut rt = fetch_rt(&format!("net.fetch {}", server.origin()));
 
     rt.eval(
         "globalThis.__moduleA = (function (fetchBinding) {
                return { call: function (url) { return fetchBinding(url); } };
-             })(__ibex2_fetch);
+             })(__test_fetch);
              // The loader's job: nothing capability-bearing stays ambient.
-             delete globalThis.__ibex2_fetch;",
+             delete globalThis.__test_fetch;",
     )
     .unwrap();
 
     // Module A holds it and works.
     rt.eval(&format!(
-            "globalThis.aResult = 'pending';
-             __moduleA.call('{}/x').then(h => {{ aResult = 'ok:' + __ibex2_response_field(h, 0); }});",
-            server.origin()
-        ))
-        .unwrap();
+        "globalThis.aResult = 'pending';
+             __moduleA.call('{}/x').then(response => {{ aResult = 'ok:' + response.status; }});",
+        server.origin()
+    ))
+    .unwrap();
     rt.pump_until(1);
     assert_eq!(rt.eval("aResult").unwrap(), "ok:200");
 
     // Module B, given nothing, has nothing.
     assert_eq!(
-        rt.eval("typeof __ibex2_fetch").unwrap(),
+        rt.eval("typeof __test_fetch").unwrap(),
         "undefined",
         "the capability is still ambient"
     );
@@ -966,8 +965,8 @@ fn a_module_not_handed_a_capability_cannot_reach_one() {
 /// `EnableEval(false)` at construction. No patch involved.
 #[test]
 fn escapes_that_compile_source_are_closed() {
-    let (mut rt, _grants) = fetch_rt("net.fetch http://127.0.0.1:1");
-    rt.eval("delete globalThis.__ibex2_fetch;").unwrap();
+    let mut rt = fetch_rt("net.fetch http://127.0.0.1:1");
+    rt.eval("delete globalThis.__test_fetch;").unwrap();
 
     let escapes = [
         "eval('globalThis')",
@@ -1006,12 +1005,8 @@ fn escapes_that_compile_source_are_closed() {
 /// This test asserts both halves: the hole is open, and it yields nothing.
 #[test]
 fn the_return_this_fast_path_is_open_and_yields_no_authority() {
-    let (mut rt, _grants) = fetch_rt("net.fetch http://127.0.0.1:1");
-    rt.eval("delete globalThis.__ibex2_fetch;").unwrap();
-    // The shipping boot: the bindings capture their helpers and remove them,
-    // so the reachable global carries no accessor over a handle table either.
-    rt.install_bindings().expect("bindings");
-
+    let mut rt = fetch_rt("net.fetch http://127.0.0.1:1");
+    rt.eval("delete globalThis.__test_fetch;").unwrap();
     // Open — and if a future engine or config closes it, this line fails
     // and the comment above needs revisiting rather than silently rotting.
     assert_eq!(
@@ -1051,24 +1046,34 @@ fn the_return_this_fast_path_is_open_and_yields_no_authority() {
 }
 
 /// Two modules, two grants, one runtime — and neither can reach the
-/// other's binding. This is D2's property, demonstrated without a module
-/// loader and without a patched engine.
+/// other's binding. This is D2's property, projected by the production
+/// module loader without a patched engine.
 #[test]
 fn two_modules_in_one_runtime_hold_different_authority() {
     let allowed = TestServer::start("allowed payload");
     let forbidden = TestServer::start("forbidden payload");
 
-    // One runtime, but two bindings built from two different grant sets.
     let mut rt = with_stdlib();
-    let grants_a = Grants::parse(&format!("net.fetch {}", allowed.origin())).unwrap();
-    assert!(rt.install_fetch(&grants_a));
-    rt.eval("globalThis.__a = __ibex2_fetch; delete globalThis.__ibex2_fetch;")
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ibex2-hermes-two-modules-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("a.js"), "globalThis.__a = fetch;").unwrap();
+    std::fs::write(directory.join("b.js"), "globalThis.__b = fetch;").unwrap();
+    let grants = crate::loader::ModuleGrants::parse(&format!(
+        "[./a.js]\nnet.fetch {}\n[./b.js]\nnet.fetch {}\n",
+        allowed.origin(),
+        forbidden.origin()
+    ))
+    .unwrap();
+    rt.set_loader(crate::loader::Root::Declared(directory.clone()), grants)
         .unwrap();
-
-    let grants_b = Grants::parse(&format!("net.fetch {}", forbidden.origin())).unwrap();
-    assert!(rt.install_fetch(&grants_b));
-    rt.eval("globalThis.__b = __ibex2_fetch; delete globalThis.__ibex2_fetch;")
-        .unwrap();
+    rt.run_entry("./a.js").unwrap();
+    rt.run_entry("./b.js").unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
 
     // A may reach `allowed` and not `forbidden`; B is the mirror image.
     rt.eval(&format!(
@@ -1098,21 +1103,21 @@ fn two_modules_in_one_runtime_hold_different_authority() {
 #[test]
 fn voluntary_handoff_is_not_defended_and_this_is_by_design() {
     let server = TestServer::start("payload");
-    let (mut rt, _grants) = fetch_rt(&format!("net.fetch {}", server.origin()));
+    let mut rt = fetch_rt(&format!("net.fetch {}", server.origin()));
 
     rt.eval(
         "globalThis.__holder = (function (f) {
                // A module that leaks its own binding. Nothing stops it.
                globalThis.__leaked = f;
                return {};
-             })(__ibex2_fetch);
-             delete globalThis.__ibex2_fetch;",
+             })(__test_fetch);
+             delete globalThis.__test_fetch;",
     )
     .unwrap();
 
     rt.eval(&format!(
         "globalThis.stolen = 'pending';
-             __leaked('{}/x').then(h => {{ stolen = 'ok:' + __ibex2_response_field(h, 0); }});",
+             __leaked('{}/x').then(response => {{ stolen = 'ok:' + response.status; }});",
         server.origin()
     ))
     .unwrap();
@@ -1128,9 +1133,7 @@ fn voluntary_handoff_is_not_defended_and_this_is_by_design() {
 // --- Timers: the macrotask side of the loop -----------------------------
 
 fn timer_rt() -> Hermes {
-    let mut rt = with_stdlib();
-    rt.install_bindings().expect("bindings");
-    rt
+    with_stdlib()
 }
 
 /// Pump until `js` reports done or the deadline passes. Timers are real
@@ -1318,12 +1321,12 @@ fn timers_and_completions_interleave_in_one_pump() {
 fn a_typed_array_crosses_the_boundary_as_bytes() {
     let mut rt = with_stdlib();
     assert_eq!(
-        rt.eval("__ibex2_text_decode(new TextEncoder().encode('hello'))")
+        rt.eval("new TextDecoder().decode(new TextEncoder().encode('hello'))")
             .unwrap(),
         "hello"
     );
     assert_eq!(
-        rt.eval("__ibex2_text_decode(new Uint8Array([104, 105]))")
+        rt.eval("new TextDecoder().decode(new Uint8Array([104, 105]))")
             .unwrap(),
         "hi"
     );
@@ -1337,7 +1340,7 @@ fn a_typed_array_view_sends_its_own_window_not_the_whole_buffer() {
     assert_eq!(
         rt.eval(
             "const all = new TextEncoder().encode('PREFIX:payload');
-             __ibex2_text_decode(all.subarray(7))"
+             new TextDecoder().decode(all.subarray(7))"
         )
         .unwrap(),
         "payload"
@@ -1345,7 +1348,7 @@ fn a_typed_array_view_sends_its_own_window_not_the_whole_buffer() {
     assert_eq!(
         rt.eval(
             "const all = new Uint8Array([1, 2, 104, 105, 9]);
-             __ibex2_text_decode(all.subarray(2, 4))"
+             new TextDecoder().decode(all.subarray(2, 4))"
         )
         .unwrap(),
         "hi"

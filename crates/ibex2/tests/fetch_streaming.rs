@@ -166,13 +166,11 @@ fn abort_after_headers_rejects_pending_and_future_reads_with_the_same_reason() {
 #[test]
 fn reader_release_preserves_an_inflight_chunk_for_the_next_reader() {
     let mut rt = Hermes::new(DynamicCode::Closed).unwrap();
-    assert!(rt.install_stdlib());
+    let context = ibex2::bindings::Context::new(ibex2::grant::GrantSet::none());
+    rt.install_runtime(ibex2::bindings::Groups::DEFAULT, &context)
+        .unwrap();
     // A controllable native read completion exercises the JavaScript lock race
     // deterministically; the preceding tests exercise the real transport.
-    rt.eval(include_str!("../src/bindings/headers.js")).unwrap();
-    rt.eval(include_str!("../src/bindings/domexception.js"))
-        .unwrap();
-    rt.eval(include_str!("../src/bindings/abort.js")).unwrap();
     rt.eval(
         r#"
         var resolveRead, reads = 0, releases = 0;
@@ -191,6 +189,12 @@ fn reader_release_preserves_an_inflight_chunk_for_the_next_reader() {
         };
         globalThis.__ibex2_fetch_control = function () { return 1; };
         globalThis.__ibex2_response_own = function (handle, body) { return () => body; };
+        globalThis.__ibex2_abort = {
+          own: function () { return { aborted: false }; },
+          subscribe: function () { return function () {}; }
+        };
+        globalThis.__ibex2_headers_free = function () {};
+        globalThis.__ibex2_text_decode = function (bytes) { return new TextDecoder().decode(bytes); };
     "#,
     )
     .unwrap();

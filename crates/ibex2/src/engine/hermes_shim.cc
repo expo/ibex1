@@ -29,25 +29,9 @@ extern "C" void ibex2_report_uncaught(const char *message);
 
 using namespace facebook;
 using namespace ibex2::jsi_adapter;
-#if defined(__linux__)
-namespace ibex2::intl_number_format {
-void install(jsi::Runtime &,
-             std::shared_ptr<ibex2::jsi_adapter::Lifetime>);
-}
-namespace ibex2::intl_case {
-void install(jsi::Runtime &,
-             std::shared_ptr<ibex2::jsi_adapter::Lifetime>);
-}
-namespace ibex2::intl_datetime {
-std::vector<jsi::Value> factory_arguments(
-    jsi::Runtime &, std::shared_ptr<ibex2::jsi_adapter::Lifetime>);
-}
-#endif
 extern "C" void ibex2_host_release(Ibex2AbiValue *);
 
 extern "C" const void *ibex2_queue_create();
-extern "C" void *ibex2_response_owner_create(const void *queue, double handle);
-extern "C" void ibex2_response_owner_destroy(void *owner);
 extern "C" size_t ibex2_grants_env_count(const void *grants);
 extern "C" int ibex2_grants_env_at(const void *grants, size_t index,
                                    char **out_name, char **out_value);
@@ -57,12 +41,6 @@ extern "C" void ibex2_grants_destroy(const void *grants);
 extern "C" void ibex2_end_drive(const void *queue);
 
 namespace {
-
-struct ResponseOwner final : jsi::NativeState {
-  void *owner;
-  explicit ResponseOwner(void *value) : owner(value) {}
-  ~ResponseOwner() override { ibex2_response_owner_destroy(owner); }
-};
 
 struct Ibex2Runtime {
   // The concrete engine, not the JSI interface: the time-limit monitor is
@@ -97,12 +75,6 @@ struct Ibex2Runtime {
     jsi::Value sqlite;
   };
   std::unordered_map<const void *, SharedBindings> shared;
-  // The fetch factory: `bindings/fetch.js`'s completion value, held here and
-  // never on the global object. Called once per grant set with the raw async
-  // binding; what it returns is what a module receives as `fetch`. Undefined
-  // until the bindings are installed, in which case the raw binding is used.
-  jsi::Value make_fetch;
-  jsi::Value make_sqlite;
   // The one deadline: armed by ibex2_hermes_set_deadline, consulted at every
   // entrance until cleared. A steady-clock point, so what an entrance is
   // given is the time left of the same deadline — never a fresh budget.
@@ -466,11 +438,6 @@ extern "C" int ibex2_loader_load(const void *state, const char *from,
 extern "C" const void *ibex2_loader_grants_for(const void *state,
                                                const char *specifier);
 extern "C" double ibex2_millis_until_next_timer(const void *queue);
-extern "C" int ibex2_response_field(const void *queue, double handle,
-                                    uint32_t field, const Ibex2AbiValue *name,
-                                    Ibex2AbiValue *out);
-
-
 // ---------------------------------------------------------------------------
 // The job-queue adapter (LLP 0058 §3 / OQ1).
 //
@@ -781,27 +748,12 @@ std::shared_ptr<jsi::Value> load_module(jsi::Runtime &rt, Ibex2Runtime *owner,
     jsi::Value fetch_binding = jsi::Value::undefined();
     if ((owner->groups & GROUP_FETCH) != 0) {
       fetch_binding = jsi::Value(rt, owner->bindings->fetch(grants));
-    } else if (owner->groups == 0) {
-      // Compatibility path for the pre-groups test API.
-      fetch_binding = jsi::Value(
-          rt, make_async_binding(rt, "fetch", 101, owner, grants));
-      if (owner->make_fetch.isObject() &&
-          owner->make_fetch.getObject(rt).isFunction(rt)) {
-        fetch_binding = owner->make_fetch.getObject(rt).getFunction(rt).call(
-            rt, std::move(fetch_binding));
-      }
     }
 
     jsi::Value fs_value = jsi::Value::undefined();
     jsi::Value sqlite_binding = jsi::Value::undefined();
     if ((owner->groups & GROUP_STORAGE) != 0) {
       auto storage = owner->bindings->storage(grants);
-      fs_value = storage.getProperty(rt, "fs");
-      sqlite_binding = storage.getProperty(rt, "sqlite");
-    } else if (owner->groups == 0 && owner->make_sqlite.isObject() &&
-               owner->make_sqlite.getObject(rt).isFunction(rt)) {
-      auto storage = owner->bindings->storage(
-          grants, owner->make_sqlite.getObject(rt).getFunction(rt));
       fs_value = storage.getProperty(rt, "fs");
       sqlite_binding = storage.getProperty(rt, "sqlite");
     }
@@ -814,7 +766,7 @@ std::shared_ptr<jsi::Value> load_module(jsi::Runtime &rt, Ibex2Runtime *owner,
     // reading AWS_SECRET_ACCESS_KEY finds undefined unless someone said
     // otherwise.
     jsi::Value process_value = jsi::Value::undefined();
-    if ((owner->groups & GROUP_ENV) != 0 || owner->groups == 0) {
+    if ((owner->groups & GROUP_ENV) != 0) {
       jsi::Object process(rt);
       jsi::Object env(rt);
       size_t env_count = ibex2_grants_env_count(grants);
@@ -1047,256 +999,6 @@ int ibex2_hermes_install_groups(void *handle, uint16_t groups,
     return 0;
   } catch (const std::exception &error) {
     if (out_error != nullptr) *out_error = dup_c_string(error.what());
-    return 1;
-  }
-}
-
-/// Install `fetch`, bound to the grants it will carry for its whole lifetime.
-///
-/// The grants are captured HERE, at install time, and handed back on every
-/// call. That is LLP 0060 D1 made concrete: two runtimes — or two bindings —
-/// can be given different authority for identical JavaScript, and neither can
-/// reach the other's.
-/// Evaluate `bindings/fetch.js` (as bytecode) and keep its completion value,
-/// the fetch factory, off the global object.
-int ibex2_hermes_install_fetch_factory(void *handle, const unsigned char *bytes,
-                                       size_t len) {
-  auto *rt = static_cast<Ibex2Runtime *>(handle);
-  if (rt == nullptr || bytes == nullptr) {
-    return 1;
-  }
-  try {
-    auto buffer = std::make_shared<OwnedBytes>(
-        std::vector<unsigned char>(bytes, bytes + len));
-    jsi::Value factory = rt->runtime->evaluateJavaScript(buffer, "fetch.js");
-    if (!factory.isObject() || !factory.getObject(*rt->runtime).isFunction(*rt->runtime)) {
-      return 1;
-    }
-    rt->make_fetch = std::move(factory);
-    return 0;
-  } catch (const jsi::JSError &) {
-    return 1;
-  }
-}
-
-int ibex2_hermes_install_sqlite_factory(void *handle, const unsigned char *bytes,
-                                        size_t len) {
-  auto *rt = static_cast<Ibex2Runtime *>(handle);
-  if (rt == nullptr || bytes == nullptr) return 1;
-  try {
-    auto buffer = std::make_shared<OwnedBytes>(
-        std::vector<unsigned char>(bytes, bytes + len));
-    auto factory = rt->runtime->evaluateJavaScript(buffer, "sqlite.js");
-    if (!factory.isObject() || !factory.getObject(*rt->runtime).isFunction(*rt->runtime))
-      return 1;
-    rt->make_sqlite = std::move(factory);
-    return 0;
-  } catch (const jsi::JSError &) { return 1; }
-}
-
-int ibex2_hermes_accept_intl_intrinsics(void *handle) {
-  auto *rt = static_cast<Ibex2Runtime *>(handle);
-  if (rt == nullptr || rt->runtime == nullptr || rt->bindings == nullptr)
-    return 1;
-#if defined(__linux__)
-  try {
-    auto &runtime = *rt->runtime;
-    auto global = runtime.global();
-    auto accept = [&](const char *constructor, const char *property) {
-      auto prototype = global.getPropertyAsObject(runtime, constructor)
-                           .getPropertyAsObject(runtime, "prototype");
-      rt->bindings->accept_trusted_intrinsic_property(std::move(prototype),
-                                                       property);
-    };
-    // The Integrity snapshot predates trusted bytecode installation. Admit
-    // exactly the standard methods the Linux Intl completion replaces; all
-    // other captured identities stay anchored, so a pre-hardening mutation
-    // elsewhere is still refused by SQLite.
-    accept("Number", "toLocaleString");
-    accept("BigInt", "toLocaleString");
-    accept("String", "toLocaleLowerCase");
-    accept("String", "toLocaleUpperCase");
-    return 0;
-  } catch (...) {
-    return 1;
-  }
-#else
-  return 0;
-#endif
-}
-
-int ibex2_hermes_install_intl_datetime(void *handle,
-                                       const unsigned char *bytes,
-                                       size_t len) {
-  auto *rt = static_cast<Ibex2Runtime *>(handle);
-  if (rt == nullptr || rt->runtime == nullptr || bytes == nullptr) return 1;
-#if defined(__linux__)
-  try {
-    auto &runtime = *rt->runtime;
-    auto buffer = std::make_shared<OwnedBytes>(
-        std::vector<unsigned char>(bytes, bytes + len));
-    auto value = runtime.evaluateJavaScript(buffer, "intl_datetime.js");
-    if (!value.isObject() || !value.getObject(runtime).isFunction(runtime))
-      return 1;
-    auto arguments =
-        ibex2::intl_datetime::factory_arguments(runtime,
-                                                 rt->bindings->lifetime());
-    value.getObject(runtime).getFunction(runtime).call(
-        runtime, static_cast<const jsi::Value *>(arguments.data()),
-        arguments.size());
-    return 0;
-  } catch (...) {
-    return 1;
-  }
-#else
-  (void)len;
-  return 1;
-#endif
-}
-
-int ibex2_hermes_install_fetch(void *handle, const void *grants) {
-  auto *rt = static_cast<Ibex2Runtime *>(handle);
-  if (rt == nullptr || rt->runtime == nullptr) {
-    return -1;
-  }
-  try {
-    jsi::Runtime &runtime = *rt->runtime;
-    jsi::Object global = runtime.global();
-    global.setProperty(
-        runtime, jsi::PropNameID::forAscii(runtime, "__ibex2_fetch"),
-        make_async_binding(runtime, "__ibex2_fetch", 101, rt, grants));
-
-    return 0;
-  } catch (const std::exception &) {
-    return 1;
-  }
-}
-
-/// Install the pure tier: console, btoa/atob, and a raw host-call escape hatch.
-int ibex2_hermes_install_stdlib(void *handle) {
-  auto *rt = static_cast<Ibex2Runtime *>(handle);
-  if (rt == nullptr || rt->runtime == nullptr) {
-    return -1;
-  }
-  try {
-    jsi::Runtime &runtime = *rt->runtime;
-    jsi::Object global = runtime.global();
-
-    jsi::Object console(runtime);
-    set_binding(runtime, console, "log", 1, rt->queue);
-    set_binding(runtime, console, "info", 2, rt->queue);
-    set_binding(runtime, console, "debug", 3, rt->queue);
-    set_binding(runtime, console, "warn", 4, rt->queue);
-    set_binding(runtime, console, "error", 5, rt->queue);
-    global.setProperty(runtime, jsi::PropNameID::forAscii(runtime, "console"),
-                       std::move(console));
-
-    // `btoa`/`atob` are the engine's own (Tier E): Hermes provides both
-    // natively and identically, so the Rust ones behind ops 10/11 are not
-    // bound — they stay for a Rust consumer of the standard library.
-    set_binding(runtime, global, "__ibex2_random_uuid", 70, rt->queue);
-    set_binding(runtime, global, "__ibex2_get_random_values", 71, rt->queue);
-    set_binding(runtime, global, "__ibex2_fetch_control", 72, rt->queue);
-    global.setProperty(runtime, "__ibex2_response_own",
-        jsi::Function::createFromHostFunction(runtime,
-            jsi::PropNameID::forAscii(runtime, "__ibex2_response_own"), 2,
-            [rt](jsi::Runtime &r, const jsi::Value &, const jsi::Value *args,
-                 size_t count) -> jsi::Value {
-              if (count != 2 || !args[0].isNumber() || !args[1].isObject())
-                throw jsi::JSError(r, "response owner needs a handle and a body");
-              auto body = args[1].getObject(r);
-              body.setNativeState(r, std::make_shared<ResponseOwner>(
-                  ibex2_response_owner_create(rt->queue, args[0].asNumber())));
-              auto weak = std::make_shared<jsi::WeakObject>(r, body);
-              return jsi::Function::createFromHostFunction(r,
-                  jsi::PropNameID::forAscii(r, "responseBody"), 0,
-                  [weak](jsi::Runtime &r, const jsi::Value &,
-                         const jsi::Value *, size_t) -> jsi::Value {
-                    return weak->lock(r);
-                  });
-            }));
-    global.setProperty(runtime, "__ibex2_response_read",
-        make_async_binding(runtime, "__ibex2_response_read", 102, rt, nullptr));
-    set_binding(runtime, global, "__ibex2_text_encode", 20, rt->queue);
-    set_binding(runtime, global, "__ibex2_text_decode", 21, rt->queue);
-    set_binding(runtime, global, "__ibex2_text_encode_into", 22, rt->queue);
-    set_binding(runtime, global, "__ibex2_url_parse", 30, rt->queue);
-    set_binding(runtime, global, "__ibex2_url_set", 32, rt->queue);
-    set_binding(runtime, global, "__ibex2_search_params_normalize", 29, rt->queue);
-    set_binding(runtime, global, "__ibex2_search_params_get", 31, rt->queue);
-    set_binding(runtime, global, "__ibex2_search_params_get_all", 33, rt->queue);
-    set_binding(runtime, global, "__ibex2_search_params_has", 34, rt->queue);
-    set_binding(runtime, global, "__ibex2_search_params_set", 35, rt->queue);
-    set_binding(runtime, global, "__ibex2_search_params_append", 36, rt->queue);
-    set_binding(runtime, global, "__ibex2_search_params_delete", 37, rt->queue);
-    set_binding(runtime, global, "__ibex2_search_params_sort", 38, rt->queue);
-    set_binding(runtime, global, "__ibex2_search_params_entries", 39, rt->queue);
-
-    // The ops behind the Headers class. Rust owns the semantics; the class
-    // shape is in bindings/headers.js.
-    jsi::Object headers(runtime);
-    set_binding(runtime, headers, "create", 40, rt->queue);
-    set_binding(runtime, headers, "append", 41, rt->queue);
-    set_binding(runtime, headers, "set", 42, rt->queue);
-    set_binding(runtime, headers, "get", 43, rt->queue);
-    set_binding(runtime, headers, "has", 44, rt->queue);
-    set_binding(runtime, headers, "remove", 45, rt->queue);
-    set_binding(runtime, headers, "count", 46, rt->queue);
-    set_binding(runtime, headers, "nameAt", 47, rt->queue);
-    set_binding(runtime, headers, "valueAt", 48, rt->queue);
-    set_binding(runtime, headers, "validName", 49, rt->queue);
-    set_binding(runtime, headers, "validValue", 50, rt->queue);
-    set_binding(runtime, headers, "free", 51, rt->queue);
-    global.setProperty(runtime,
-                       jsi::PropNameID::forAscii(runtime, "__ibex2_headers"),
-                       std::move(headers));
-
-    // Response accessors, in the UNGATED tier: a response crosses as a handle,
-    // and the handle is the authority. Reading a status off one you already
-    // hold conveys nothing further, and handles only come from a granted fetch.
-    // They were installed by install_fetch, which the per-module loader never
-    // calls — so a module with a granted fetch could not read its response.
-    auto field_fn = jsi::Function::createFromHostFunction(
-        runtime, jsi::PropNameID::forAscii(runtime, "__ibex2_response_field"), 3,
-        [rt](jsi::Runtime &r, const jsi::Value &, const jsi::Value *args,
-             size_t count) -> jsi::Value {
-          if (count < 2) {
-            throw jsi::JSError(r, "response field needs a handle and a field id");
-          }
-          std::vector<std::string> owned;
-          Ibex2AbiValue name{IBEX2_TAG_UNDEFINED, 0.0, nullptr, 0};
-          if (count >= 3) {
-            name = to_abi(r, args[2], owned);
-          }
-          Ibex2AbiValue out{IBEX2_TAG_UNDEFINED, 0.0, nullptr, 0};
-          int status = ibex2_response_field(
-              rt->queue, args[0].asNumber(),
-              static_cast<uint32_t>(args[1].asNumber()),
-              count >= 3 ? &name : nullptr, &out);
-          jsi::Value result = from_abi(r, out);
-          ibex2_host_release(&out);
-          if (status != 0) {
-            throw jsi::JSError(r, result.isString()
-                                      ? result.getString(r).utf8(r)
-                                      : std::string("response read failed"));
-          }
-          return result;
-        });
-    global.setProperty(runtime,
-                       jsi::PropNameID::forAscii(runtime, "__ibex2_response_field"),
-                       std::move(field_fn));
-    set_binding(runtime, global, "__ibex2_timer_set", 60, rt->queue);
-    set_binding(runtime, global, "__ibex2_timer_set_repeating", 61, rt->queue);
-    set_binding(runtime, global, "__ibex2_timer_clear", 62, rt->queue);
-    set_binding(runtime, global, "__ibex2_performance_now", 63, rt->queue);
-
-#if defined(__linux__)
-    ibex2::intl_number_format::install(runtime, rt->bindings->lifetime());
-    ibex2::intl_case::install(runtime, rt->bindings->lifetime());
-#endif
-
-    return 0;
-  } catch (const std::exception &) {
     return 1;
   }
 }
