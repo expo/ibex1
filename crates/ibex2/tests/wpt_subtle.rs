@@ -266,6 +266,36 @@ fn excluded(suite: &str, name: &str) -> Option<&'static str> {
 }
 
 #[test]
+fn l2_plan_uses_the_final_crypto_snapshot() {
+    let plan = include_str!("../../../llp/0057.000-wintertc-and-the-platform-families.plan.md");
+    for stale in [
+        "14,137 subtests",
+        "6,025 pass",
+        "8,112 are explicit",
+        "4,301,792 bytes",
+        "4,386,416 bytes",
+        "84,624-byte",
+    ] {
+        assert!(!plan.contains(stale), "stale L2 snapshot remains: {stale}");
+    }
+    for final_value in [
+        "14,933 WPT subtests",
+        "6,239 passes",
+        "8,694 named",
+        "4,399,824 bytes",
+        "4,504,344 with `crypto`",
+        "4,773,448 with",
+        "104,520 bytes",
+        "269,104 bytes",
+    ] {
+        assert!(
+            plan.contains(final_value),
+            "final L2 snapshot is missing: {final_value}"
+        );
+    }
+}
+
+#[test]
 fn webcrypto_wpt() {
     let mut failures = Vec::new();
     let mut exclusions = Vec::new();
