@@ -506,6 +506,10 @@
   // trusted bootstrap is still running. It never enters application globals.
   return {
     extractBody: extractBody,
+    snapshotBufferSource: function (value) {
+      var span = arrayBufferSpan(value);
+      return span ? copy(span.buffer, span.offset, span.length) : null;
+    },
     responseBlob: function (bytes, type) { return trustedBlob(bytes, type); }
   };
 })(globalThis);

@@ -481,6 +481,27 @@ fn request_rejects_get_and_head_bodies() {
 }
 
 #[test]
+fn request_snapshots_buffer_source_bodies_at_construction() {
+    let (origin, server) = capture("text/plain", b"ok");
+    let output = run_fetch_module(
+        "request-buffer-source-snapshot",
+        &origin,
+        &format!(
+            r#"
+            const backing = new Uint8Array([9, 1, 2, 3, 8]);
+            const body = backing.subarray(1, 4);
+            const request = new Request('{origin}/snapshot', {{method:'POST', body}});
+            backing.fill(7);
+            fetch(request).then(response => response.text()).then(console.log);
+            "#
+        ),
+    );
+    assert_eq!(output, ["ok"]);
+    let (_, body) = server.join().unwrap();
+    assert_eq!(body, [1, 2, 3]);
+}
+
+#[test]
 fn fetch_form_data_uses_rust_multipart_and_preserves_authored_content_type() {
     let (origin, server) = capture("text/plain", b"ok");
     let output = run_fetch_module(

@@ -187,6 +187,8 @@
         if (extracted.type && !headers.has("content-type")) headers.set("Content-Type", extracted.type);
         return extracted.bytes;
       }
+      var snapshot = blobHelpers.snapshotBufferSource(body);
+      if (snapshot) return snapshot;
     }
     if (body instanceof URLSearchParams) {
       if (!headers.has("content-type")) {
