@@ -282,6 +282,66 @@ fn platform_identity_is_private_and_unsupported_values_throw_data_clone_error() 
     );
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_intl_replacements_are_registered_platform_objects() {
+    check(
+        r#"
+        for (const value of [new Intl.NumberFormat(), new Intl.DateTimeFormat()]) {
+          dataCloneError(() => structuredClone(value));
+          Object.setPrototypeOf(value, null);
+          Object.defineProperty(value, Symbol.toStringTag, { value: "Changed" });
+          dataCloneError(() => structuredClone(value));
+        }
+        "#,
+    );
+}
+
+#[cfg(feature = "crypto")]
+#[test]
+fn webcrypto_platform_objects_and_keys_are_not_cloneable_by_identity() {
+    let mut runtime = Hermes::new(DynamicCode::Closed).expect("runtime");
+    let context = ibex2::bindings::Context::new(ibex2::grant::GrantSet::none());
+    runtime
+        .install_runtime(ibex2::bindings::Groups::DEFAULT, &context)
+        .expect("bindings");
+    runtime.harden().expect("harden");
+    runtime
+        .eval(
+            r#"
+            globalThis.__clone_crypto_result = "pending";
+            (async function () {
+              function assert(value, message) {
+                if (!value) throw new Error(message || "assertion failed");
+              }
+              function dataCloneError(value, label) {
+                try { structuredClone(value); } catch (error) {
+                  assert(error instanceof DOMException, label + " did not throw DOMException");
+                  assert(error.name === "DataCloneError", label + " threw " + error.name);
+                  return;
+                }
+                throw new Error(label + " was cloneable");
+              }
+
+              dataCloneError(crypto, "crypto");
+              dataCloneError(crypto.subtle, "crypto.subtle");
+              const key = await crypto.subtle.generateKey(
+                {name: "HMAC", hash: "SHA-256", length: 128}, false, ["sign"]
+              );
+              dataCloneError(key, "CryptoKey");
+              Object.setPrototypeOf(key, Object.prototype);
+              dataCloneError(key, "CryptoKey with changed prototype");
+            })().then(
+              () => { globalThis.__clone_crypto_result = "ok"; },
+              error => { globalThis.__clone_crypto_result = error.name + ": " + error.message; }
+            );
+            "#,
+        )
+        .expect("start clone checks");
+    runtime.drain_microtasks().expect("drain clone checks");
+    assert_eq!(runtime.eval("__clone_crypto_result").unwrap(), "ok");
+}
+
 #[test]
 fn transfer_is_empty_or_refused_and_intrinsics_are_captured() {
     check(
@@ -338,10 +398,6 @@ fn transfer_is_empty_or_refused_and_intrinsics_are_captured() {
 
 #[cfg(feature = "loader")]
 #[test]
-#[cfg_attr(
-    windows,
-    ignore = "Windows app directory capabilities and SQLite paths are not implemented yet"
-)]
 fn private_fetch_and_sqlite_objects_stay_branded_after_visible_shape_changes() {
     use ibex2::{
         boundary::HostError,

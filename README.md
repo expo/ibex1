@@ -192,8 +192,11 @@ cargo build -p ibex2 --features hermes
 Use `ibex2 build` followed by `ibex2 run --precompiled` for ahead-of-time
 bytecode. The executable needs the Windows system libraries and Microsoft C++
 runtime, but no Hermes DLL. The Rust-only surface still builds without the
-`hermes` feature. Windows `app:/` storage, native filesystem grants, SQLite
-paths, and the Linux Intl projection are not yet qualified; see
+`hermes` feature. Host-selected Windows `app:/data`, `app:/cache`, and
+`app:/tmp` storage uses retained directory handles. SQLite accepts those
+logical grants through its native Windows provider; the embedder must keep
+database ancestry stable for the connection lifetime. Native Windows filesystem
+grant spellings and the Linux Intl projection remain unqualified; see
 [LLP 0068](./llp/0068-the-standard-library-for-a-rust-consumer.spec.md#windows-host-and-engine).
 
 ## Crypto profiles

@@ -456,6 +456,16 @@ impl Hermes {
         state.live_headers()
     }
 
+    /// Number of Rust-side `CryptoKey` handles held by this runtime.
+    /// Used to witness garbage-collection release in integration tests.
+    #[doc(hidden)]
+    pub fn crypto_key_count(&self) -> usize {
+        // SAFETY: the runtime owns this state for the lifetime of `self`.
+        let state =
+            unsafe { ibex2_hermes_state(self.handle).as_ref() }.expect("live Hermes runtime state");
+        state.crypto_key_count()
+    }
+
     /// Drain the console records this runtime's thread has queued.
     pub fn drain_console(&self) -> Vec<crate::stdlib::console::Record> {
         crate::boundary_abi::drain_console()

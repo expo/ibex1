@@ -436,7 +436,6 @@ int ibex2_hermes_install_throwing_probe(void *handle, const char *name,
 void ibex2_hermes_free_string(char *value) { std::free(value); }
 
 } // extern "C"
-
 // ---------------------------------------------------------------------------
 // The host-call boundary (LLP 0059.000 §1), bridged onto stock JSI.
 // ---------------------------------------------------------------------------

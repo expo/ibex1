@@ -1,6 +1,5 @@
 //! Storage installed into an independently created runtime, without its loader.
 #![cfg(feature = "hermes")]
-#[cfg(unix)]
 use ibex2::stdlib::app_fs::AppDirectories;
 use ibex2::{
     bindings::{Context, Groups},
@@ -265,7 +264,6 @@ impl Consumer {
             std::fs::create_dir_all(directory.join(name)).unwrap();
         }
         let context = Context::new(GrantSet::parse(grants).unwrap());
-        #[cfg(unix)]
         context
             .set_app_directories(
                 AppDirectories::new(
@@ -431,6 +429,36 @@ fn fetch_group_does_not_install_timers_or_crypto() {
     .filter(|name| !baseline.contains(name))
     .collect();
     assert_eq!(added, expected);
+}
+
+#[test]
+fn omitted_crypto_group_exposes_no_crypto_surface_or_subtle_ops() {
+    let consumer = BareConsumer::new(Groups::PURE);
+    assert_eq!(
+        consumer.eval(
+            r#"[
+              typeof crypto,
+              typeof Crypto,
+              typeof CryptoKey,
+              typeof SubtleCrypto,
+              typeof globalThis.__ibex2_random_uuid,
+              typeof globalThis.__ibex2_get_random_values,
+              typeof globalThis.__ibex2_subtle
+            ].join(',')"#,
+        ),
+        "undefined,undefined,undefined,undefined,undefined,undefined,undefined"
+    );
+    assert_eq!(
+        consumer.eval(
+            r#"try {
+              globalThis.__ibex2_subtle.digest("SHA-256", new Uint8Array());
+              "reachable";
+            } catch (error) {
+              error instanceof TypeError ? "unreachable" : error.name;
+            }"#,
+        ),
+        "unreachable"
+    );
 }
 
 #[test]
@@ -878,13 +906,13 @@ fn wrong_binding_version_is_refused_and_spends_a_versioned_adapter() {
 }
 
 #[test]
-#[cfg_attr(
-    windows,
-    ignore = "Windows app directory capabilities and SQLite paths are not implemented yet"
-)]
 fn caller_owns_checkpoints_and_storage_is_typed_and_granted() {
     let c = Consumer::new("fs.read app:/data\nfs.write app:/data\nsqlite.open app:/data/db");
-    c.eval(r#"globalThis.result = ''; storage.fs.atomicWriteFile('app:/data/a\nb', new Uint8Array([1,2])).then(function(){ result = 'written'; });"#).unwrap();
+    // Both names exercise escaped strings; Windows refuses control characters.
+    let filename = if cfg!(windows) { r"a\u00e9 b" } else { r"a\nb" };
+    c.eval(&format!("globalThis.storageFilename = '{filename}';"))
+        .unwrap();
+    c.eval(r#"globalThis.result = ''; storage.fs.atomicWriteFile('app:/data/' + storageFilename, new Uint8Array([1,2])).then(function(){ result = 'written'; });"#).unwrap();
     assert!(c.context.wait(Duration::from_secs(5)));
     assert_eq!(c.eval("result").unwrap(), "");
     assert_eq!(c.step(true), 1);
@@ -897,10 +925,10 @@ fn caller_owns_checkpoints_and_storage_is_typed_and_granted() {
     assert_eq!(c.eval("result").unwrap(), "written");
     c.eval(r#"result = ''; (async function(){
       const names = await storage.fs.readdir('app:/data');
-      if (names.length !== 1 || names[0] !== 'a\nb') throw Error('filename');
-      const stat = await storage.fs.stat('app:/data/a\nb');
+      if (names.length !== 1 || names[0] !== storageFilename) throw Error('filename');
+      const stat = await storage.fs.stat('app:/data/' + storageFilename);
       if (!stat.isFile || stat.isDirectory || stat.size !== 2) throw Error('stat');
-      const bytes = await storage.fs.readFile('app:/data/a\nb');
+      const bytes = await storage.fs.readFile('app:/data/' + storageFilename);
       if (!(bytes instanceof ArrayBuffer) || new Uint8Array(bytes)[1] !== 2) throw Error('bytes');
       const db = await storage.sqlite.open('app:/data/db');
       await db.execute('CREATE TABLE notes(body TEXT)');

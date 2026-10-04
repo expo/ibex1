@@ -976,6 +976,8 @@ pub const DEFAULT_ADDED_GLOBALS: &[&str] = &[
     "DOMException",
     "QuotaExceededError",
     "Crypto",
+    "CryptoKey",
+    "SubtleCrypto",
     "AbortController",
     "AbortSignal",
     "crypto",
@@ -1007,13 +1009,13 @@ const GLOBAL_PARTITION: &[(Option<crate::bindings::Groups>, &[usize])] = &[
     (Some(crate::bindings::Groups::CONSOLE), &[4]),
     (
         Some(crate::bindings::Groups::PURE),
-        &[11, 12, 13, 18, 19, 20],
+        &[11, 12, 13, 20, 21, 22],
     ),
-    (Some(crate::bindings::Groups::CRYPTO), &[14, 17]),
-    (Some(crate::bindings::Groups::ABORT), &[15, 16]),
+    (Some(crate::bindings::Groups::CRYPTO), &[14, 15, 16, 19]),
+    (Some(crate::bindings::Groups::ABORT), &[17, 18]),
     (
         Some(crate::bindings::Groups::EVENTS),
-        &[21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34],
+        &[23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36],
     ),
 ];
 
