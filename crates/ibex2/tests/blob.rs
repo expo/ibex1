@@ -284,6 +284,54 @@ fn file_fields_and_every_form_data_operation_follow_entry_order() {
 }
 
 #[test]
+fn form_data_uses_web_idl_filename_overload_selection() {
+    let mut runtime = runtime(Groups::PURE | Groups::BLOB, true);
+    let value = runtime
+        .eval(
+            r#"
+            (() => {
+              const file = new File(['file'], 'kept.txt');
+              const blob = new Blob(['blob']);
+              const form = new FormData(undefined);
+              form.append('append-file', file, undefined);
+              form.append('append-blob', blob, undefined);
+              form.append('append-text', 'text', undefined);
+              form.set('set-file', file, undefined);
+              form.set('set-blob', blob, undefined);
+              form.set('set-text', 'text', undefined);
+              const errors = [];
+              for (const method of ['append', 'set']) {
+                try { form[method]('bad-' + method, 'text', 'named.txt'); }
+                catch (error) { errors.push(error instanceof TypeError); }
+              }
+              return JSON.stringify({
+                names: [
+                  form.get('append-file').name,
+                  form.get('append-blob').name,
+                  form.get('set-file').name,
+                  form.get('set-blob').name
+                ],
+                text: [form.get('append-text'), form.get('set-text')],
+                errors,
+                size: Array.from(form).length
+              });
+            })()
+            "#,
+        )
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&value).unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "names": ["kept.txt", "blob", "kept.txt", "blob"],
+            "text": ["text", "text"],
+            "errors": [true, true],
+            "size": 6
+        })
+    );
+}
+
+#[test]
 fn array_buffer_slice_override_does_not_change_blob_results() {
     let mut runtime = runtime(Groups::PURE | Groups::BLOB, false);
     runtime

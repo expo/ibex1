@@ -360,12 +360,15 @@
       else if (!get(files, value)) value = fileFromBlob(value, "blob");
       return { name: name, value: value };
     }
+    if (filenameGiven) {
+      throw new TypeErrorCtor("a filename requires a Blob value");
+    }
     return { name: name, value: usv(value) };
   }
 
   function FormData(form) {
     if (!call(intrinsicHasInstance, FormData, [this])) throw new TypeErrorCtor("FormData must be constructed with new");
-    if (arguments.length !== 0) {
+    if (arguments.length !== 0 && form !== undefined) {
       throw new TypeErrorCtor("FormData from an HTML form is not supported without a DOM");
     }
     set(forms, this, []);
@@ -374,7 +377,7 @@
   FormData.prototype.append = function (name, value, filename) {
     if (arguments.length < 2) throw new TypeErrorCtor("FormData.append requires name and value");
     call(arrayPush, requireBrand(forms, this, "FormData"), [
-      formEntry(name, value, filename, arguments.length >= 3)
+      formEntry(name, value, filename, arguments.length >= 3 && filename !== undefined)
     ]);
   };
 
@@ -417,7 +420,7 @@
 
   FormData.prototype.set = function (name, value, filename) {
     if (arguments.length < 2) throw new TypeErrorCtor("FormData.set requires name and value");
-    var entry = formEntry(name, value, filename, arguments.length >= 3);
+    var entry = formEntry(name, value, filename, arguments.length >= 3 && filename !== undefined);
     var entries = requireBrand(forms, this, "FormData"), first = -1;
     for (var i = 0; i < entries.length; i++) {
       if (entries[i].name !== entry.name) continue;
