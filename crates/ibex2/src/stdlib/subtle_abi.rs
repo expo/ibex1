@@ -1,0 +1,331 @@
+//! Primitive/handle projection of [`super::subtle`] for JavaScript engines.
+//!
+//! This module intentionally returns only numbers, strings, booleans, and
+//! byte buffers. `CryptoKey` material remains in `RuntimeState`'s table.
+
+use crate::boundary::{HostArg, HostError, HostValue};
+
+use super::subtle::{
+    self, AesGcmParams, DeriveAlgorithm, DerivedKeyAlgorithm, ExportedKey, GenerateAlgorithm,
+    HashAlgorithm, ImportAlgorithm, JsonWebKey, KeyFormat, KeyUsage,
+};
+
+const DIGEST: u32 = 90;
+const IMPORT_KEY: u32 = 91;
+const EXPORT_KEY: u32 = 92;
+const GENERATE_KEY: u32 = 93;
+const SIGN: u32 = 94;
+const VERIFY: u32 = 95;
+const ENCRYPT: u32 = 96;
+const DECRYPT: u32 = 97;
+const DERIVE_BITS: u32 = 98;
+const DERIVE_KEY: u32 = 99;
+
+fn failed(error: subtle::Error) -> HostError {
+    HostError::Failed(error.to_string())
+}
+
+fn invalid(message: impl Into<String>) -> HostError {
+    HostError::InvalidArgument(message.into())
+}
+
+fn string<'a>(args: &'a [HostArg<'a>], index: usize, label: &str) -> Result<&'a str, HostError> {
+    args.get(index)
+        .and_then(HostArg::as_str)
+        .ok_or_else(|| invalid(format!("expected {label}")))
+}
+
+fn optional_string<'a>(args: &'a [HostArg<'a>], index: usize) -> Option<&'a str> {
+    args.get(index).and_then(HostArg::as_str)
+}
+
+fn bytes<'a>(args: &'a [HostArg<'a>], index: usize, label: &str) -> Result<&'a [u8], HostError> {
+    args.get(index)
+        .and_then(HostArg::as_bytes)
+        .ok_or_else(|| invalid(format!("expected {label}")))
+}
+
+fn number(args: &[HostArg<'_>], index: usize, label: &str) -> Result<f64, HostError> {
+    match args.get(index) {
+        Some(HostArg::Number(value)) if value.is_finite() => Ok(*value),
+        _ => Err(invalid(format!("expected {label}"))),
+    }
+}
+
+fn integer(args: &[HostArg<'_>], index: usize, label: &str) -> Result<usize, HostError> {
+    let value = number(args, index, label)?;
+    if value < 0.0 || value.fract() != 0.0 || value >= usize::MAX as f64 {
+        return Err(invalid(format!("expected {label}")));
+    }
+    Ok(value as usize)
+}
+
+fn optional_integer(
+    args: &[HostArg<'_>],
+    index: usize,
+    label: &str,
+) -> Result<Option<usize>, HostError> {
+    match args.get(index) {
+        Some(HostArg::Number(-1.0)) | Some(HostArg::Undefined) | None => Ok(None),
+        _ => integer(args, index, label).map(Some),
+    }
+}
+
+fn boolean(args: &[HostArg<'_>], index: usize, label: &str) -> Result<bool, HostError> {
+    args.get(index)
+        .and_then(HostArg::as_bool)
+        .ok_or_else(|| invalid(format!("expected {label}")))
+}
+
+fn handle(args: &[HostArg<'_>], index: usize) -> Result<u64, HostError> {
+    let value = number(args, index, "a CryptoKey handle")?;
+    if value.fract() != 0.0 || !(1.0..=9_007_199_254_740_991.0).contains(&value) {
+        return Err(invalid("invalid CryptoKey handle"));
+    }
+    Ok(value as u64)
+}
+
+fn state(
+    state: Option<&crate::task::RuntimeState>,
+) -> Result<&crate::task::RuntimeState, HostError> {
+    state.ok_or_else(|| HostError::Failed("OperationError: no runtime state".into()))
+}
+
+fn hash(args: &[HostArg<'_>], index: usize) -> Result<HashAlgorithm, HostError> {
+    HashAlgorithm::parse(string(args, index, "a hash name")?).map_err(failed)
+}
+
+fn usages(value: &str) -> Result<Vec<KeyUsage>, HostError> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    value
+        .split(',')
+        .map(|usage| KeyUsage::parse(usage).map_err(failed))
+        .collect()
+}
+
+fn import_algorithm(args: &[HostArg<'_>], name_index: usize) -> Result<ImportAlgorithm, HostError> {
+    match string(args, name_index, "an algorithm name")? {
+        "HMAC" => Ok(ImportAlgorithm::Hmac {
+            hash: hash(args, name_index + 1)?,
+            length_bits: optional_integer(args, name_index + 2, "an HMAC length")?,
+        }),
+        "AES-GCM" => Ok(ImportAlgorithm::AesGcm),
+        "HKDF" => Ok(ImportAlgorithm::Hkdf),
+        "PBKDF2" => Ok(ImportAlgorithm::Pbkdf2),
+        name => Err(HostError::Failed(format!(
+            "NotSupportedError: key algorithm {name} is not supported"
+        ))),
+    }
+}
+
+fn generate_algorithm(args: &[HostArg<'_>]) -> Result<GenerateAlgorithm, HostError> {
+    match string(args, 0, "an algorithm name")? {
+        "HMAC" => Ok(GenerateAlgorithm::Hmac {
+            hash: hash(args, 1)?,
+            length_bits: optional_integer(args, 2, "an HMAC length")?,
+        }),
+        "AES-GCM" => Ok(GenerateAlgorithm::AesGcm {
+            length_bits: integer(args, 2, "an AES-GCM length")?,
+        }),
+        name => Err(HostError::Failed(format!(
+            "NotSupportedError: key algorithm {name} is not supported"
+        ))),
+    }
+}
+
+fn derive_algorithm<'a>(
+    args: &'a [HostArg<'a>],
+    start: usize,
+) -> Result<DeriveAlgorithm<'a>, HostError> {
+    match string(args, start, "a derivation algorithm")? {
+        "HKDF" => Ok(DeriveAlgorithm::Hkdf {
+            hash: hash(args, start + 1)?,
+            salt: bytes(args, start + 2, "HKDF salt")?,
+            info: bytes(args, start + 3, "HKDF info")?,
+        }),
+        "PBKDF2" => {
+            let iterations = integer(args, start + 4, "PBKDF2 iterations")?;
+            let iterations =
+                u32::try_from(iterations).map_err(|_| invalid("PBKDF2 iterations exceed u32"))?;
+            Ok(DeriveAlgorithm::Pbkdf2 {
+                hash: hash(args, start + 1)?,
+                salt: bytes(args, start + 2, "PBKDF2 salt")?,
+                iterations,
+            })
+        }
+        name => Err(HostError::Failed(format!(
+            "NotSupportedError: derivation algorithm {name} is not supported"
+        ))),
+    }
+}
+
+fn derived_algorithm(args: &[HostArg<'_>], start: usize) -> Result<DerivedKeyAlgorithm, HostError> {
+    match string(args, start, "a derived key algorithm")? {
+        "HMAC" => Ok(DerivedKeyAlgorithm::Hmac {
+            hash: hash(args, start + 1)?,
+            length_bits: optional_integer(args, start + 2, "an HMAC length")?,
+        }),
+        "AES-GCM" => Ok(DerivedKeyAlgorithm::AesGcm {
+            length_bits: integer(args, start + 2, "an AES-GCM length")?,
+        }),
+        name => Err(HostError::Failed(format!(
+            "NotSupportedError: derived key algorithm {name} is not supported"
+        ))),
+    }
+}
+
+fn with_key<T>(
+    state: &crate::task::RuntimeState,
+    handle: u64,
+    f: impl FnOnce(&subtle::CryptoKey) -> subtle::Result<T>,
+) -> Result<T, HostError> {
+    state
+        .with_crypto_key(handle, f)
+        .ok_or_else(|| {
+            HostError::Failed("InvalidAccessError: CryptoKey is released or unknown".into())
+        })?
+        .map_err(failed)
+}
+
+pub(crate) fn dispatch(
+    op: u32,
+    args: &[HostArg<'_>],
+    runtime: Option<&crate::task::RuntimeState>,
+) -> Option<Result<HostValue, HostError>> {
+    if !(DIGEST..=DERIVE_KEY).contains(&op) {
+        return None;
+    }
+    Some((|| {
+        if op == DIGEST {
+            return subtle::digest(hash(args, 0)?, bytes(args, 1, "digest data")?)
+                .map(HostValue::Bytes)
+                .map_err(failed);
+        }
+        let runtime = state(runtime)?;
+        match op {
+            IMPORT_KEY => {
+                let format = string(args, 0, "a key format")?;
+                let algorithm = import_algorithm(args, 2)?;
+                let extractable = boolean(args, 5, "extractable")?;
+                let usages = usages(string(args, 6, "key usages")?)?;
+                let key = match format {
+                    "raw" => subtle::import_raw_key(
+                        bytes(args, 1, "raw key data")?,
+                        algorithm,
+                        extractable,
+                        &usages,
+                    ),
+                    "jwk" => {
+                        let ext = match optional_integer(args, 11, "JWK ext")? {
+                            None => None,
+                            Some(0) => Some(false),
+                            Some(1) => Some(true),
+                            _ => return Err(invalid("JWK ext must be boolean when present")),
+                        };
+                        let jwk = JsonWebKey {
+                            kty: string(args, 7, "JWK kty")?.into(),
+                            k: string(args, 1, "JWK k")?.into(),
+                            alg: optional_string(args, 8).map(str::to_owned),
+                            key_use: optional_string(args, 9).map(str::to_owned),
+                            key_ops: optional_string(args, 10)
+                                .map(|ops| ops.split(',').map(str::to_owned).collect()),
+                            ext,
+                        };
+                        subtle::import_jwk_key(&jwk, algorithm, extractable, &usages)
+                    }
+                    format => {
+                        return Err(HostError::Failed(format!(
+                            "NotSupportedError: key format {format} is not supported"
+                        )))
+                    }
+                }
+                .map_err(failed)?;
+                Ok(HostValue::Number(runtime.store_crypto_key(key) as f64))
+            }
+            EXPORT_KEY => {
+                let format = match string(args, 1, "a key format")? {
+                    "raw" => KeyFormat::Raw,
+                    "jwk" => KeyFormat::Jwk,
+                    format => {
+                        return Err(HostError::Failed(format!(
+                            "NotSupportedError: key format {format} is not supported"
+                        )))
+                    }
+                };
+                with_key(runtime, handle(args, 0)?, |key| {
+                    subtle::export_key(format, key)
+                })
+                .map(|exported| match exported {
+                    ExportedKey::Raw(bytes) => HostValue::Bytes(bytes),
+                    ExportedKey::Jwk(jwk) => HostValue::Str(jwk.k),
+                })
+            }
+            GENERATE_KEY => {
+                let algorithm = generate_algorithm(args)?;
+                let extractable = boolean(args, 3, "extractable")?;
+                let usages = usages(string(args, 4, "key usages")?)?;
+                let key = subtle::generate_key(algorithm, extractable, &usages).map_err(failed)?;
+                Ok(HostValue::Number(runtime.store_crypto_key(key) as f64))
+            }
+            SIGN => with_key(runtime, handle(args, 0)?, |key| {
+                subtle::sign(
+                    key,
+                    bytes(args, 1, "data").map_err(|error| subtle::Error {
+                        name: subtle::ErrorName::DataError,
+                        message: error.to_string(),
+                    })?,
+                )
+            })
+            .map(HostValue::Bytes),
+            VERIFY => with_key(runtime, handle(args, 0)?, |key| {
+                let signature = bytes(args, 1, "signature").map_err(|error| subtle::Error {
+                    name: subtle::ErrorName::DataError,
+                    message: error.to_string(),
+                })?;
+                let data = bytes(args, 2, "data").map_err(|error| subtle::Error {
+                    name: subtle::ErrorName::DataError,
+                    message: error.to_string(),
+                })?;
+                subtle::verify(key, signature, data)
+            })
+            .map(HostValue::Bool),
+            ENCRYPT | DECRYPT => {
+                let params = AesGcmParams {
+                    iv: bytes(args, 1, "AES-GCM iv")?,
+                    additional_data: bytes(args, 2, "AES-GCM additionalData")?,
+                    tag_length_bits: integer(args, 3, "AES-GCM tagLength")?,
+                };
+                let input = bytes(args, 4, "AES-GCM data")?;
+                with_key(runtime, handle(args, 0)?, |key| {
+                    if op == ENCRYPT {
+                        subtle::encrypt(key, params, input)
+                    } else {
+                        subtle::decrypt(key, params, input)
+                    }
+                })
+                .map(HostValue::Bytes)
+            }
+            DERIVE_BITS => {
+                let algorithm = derive_algorithm(args, 1)?;
+                let length = integer(args, 6, "derived bit length")?;
+                with_key(runtime, handle(args, 0)?, |key| {
+                    subtle::derive_bits(algorithm, key, length)
+                })
+                .map(HostValue::Bytes)
+            }
+            DERIVE_KEY => {
+                let algorithm = derive_algorithm(args, 1)?;
+                let derived = derived_algorithm(args, 6)?;
+                let extractable = boolean(args, 9, "extractable")?;
+                let usages = usages(string(args, 10, "key usages")?)?;
+                let key = with_key(runtime, handle(args, 0)?, |key| {
+                    subtle::derive_key(algorithm, key, derived, extractable, &usages)
+                })?;
+                Ok(HostValue::Number(runtime.store_crypto_key(key) as f64))
+            }
+            _ => unreachable!(),
+        }
+    })())
+}

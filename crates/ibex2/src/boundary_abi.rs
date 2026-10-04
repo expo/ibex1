@@ -148,6 +148,16 @@ pub enum Op {
     CryptoGetRandomValues = 71,
     FetchControl = 72,
     SqliteResult = 80,
+    SubtleDigest = 90,
+    SubtleImportKey = 91,
+    SubtleExportKey = 92,
+    SubtleGenerateKey = 93,
+    SubtleSign = 94,
+    SubtleVerify = 95,
+    SubtleEncrypt = 96,
+    SubtleDecrypt = 97,
+    SubtleDeriveBits = 98,
+    SubtleDeriveKey = 99,
 }
 
 impl Op {
@@ -194,6 +204,16 @@ impl Op {
             71 => Op::CryptoGetRandomValues,
             72 => Op::FetchControl,
             80 => Op::SqliteResult,
+            90 => Op::SubtleDigest,
+            91 => Op::SubtleImportKey,
+            92 => Op::SubtleExportKey,
+            93 => Op::SubtleGenerateKey,
+            94 => Op::SubtleSign,
+            95 => Op::SubtleVerify,
+            96 => Op::SubtleEncrypt,
+            97 => Op::SubtleDecrypt,
+            98 => Op::SubtleDeriveBits,
+            99 => Op::SubtleDeriveKey,
             _ => return None,
         })
     }
@@ -255,6 +275,9 @@ fn dispatch(
     args: &[HostArg],
     state: Option<&crate::task::RuntimeState>,
 ) -> Result<HostValue, HostError> {
+    if let Some(result) = crate::stdlib::subtle_abi::dispatch(op as u32, args, state) {
+        return result;
+    }
     if let Some(result) = crate::bindings::headers_ops::dispatch(op as u32, args, state) {
         return result;
     }
@@ -414,6 +437,16 @@ fn dispatch(
         Op::TextEncodeInto | Op::CryptoGetRandomValues => {
             unreachable!("handled in ibex2_host_call, which owns the mutable span")
         }
+        Op::SubtleDigest
+        | Op::SubtleImportKey
+        | Op::SubtleExportKey
+        | Op::SubtleGenerateKey
+        | Op::SubtleSign
+        | Op::SubtleVerify
+        | Op::SubtleEncrypt
+        | Op::SubtleDecrypt
+        | Op::SubtleDeriveBits
+        | Op::SubtleDeriveKey => unreachable!("handled by subtle_abi above"),
         _ => unreachable!("console ops returned above"),
     }
 }

@@ -1,42 +1,406 @@
-// Object plumbing only: the Rust functions own entropy, quota, and UUID bits.
-// @ref LLP 0059.000#39-crypto--ambient-partially-gated — the shared implementation
+// Object plumbing only: Rust owns entropy, algorithms, key material, and errors.
+// @ref LLP 0059.000#314-cryptosubtle--pure-ungated-author-required — thin projection over Rust key handles
 (function () {
   "use strict";
   const fill = globalThis.__ibex2_get_random_values;
   const uuid = globalThis.__ibex2_random_uuid;
+  const native = globalThis.__ibex2_subtle;
   delete globalThis.__ibex2_get_random_values;
   delete globalThis.__ibex2_random_uuid;
+  delete globalThis.__ibex2_subtle;
 
   const isView = ArrayBuffer.isView;
-  const proto = Object.getPrototypeOf(Uint8Array.prototype);
-  const get = name => Object.getOwnPropertyDescriptor(proto, name).get;
+  const typedProto = Object.getPrototypeOf(Uint8Array.prototype);
+  const get = name => Object.getOwnPropertyDescriptor(typedProto, name).get;
   const tag = get(Symbol.toStringTag);
-  const buffer = get("buffer");
-  const offset = get("byteOffset");
-  const length = get("byteLength");
+  const viewBuffer = get("buffer");
+  const viewOffset = get("byteOffset");
+  const viewLength = get("byteLength");
+  const dataViewProto = DataView.prototype;
+  const dataViewBuffer = Object.getOwnPropertyDescriptor(dataViewProto, "buffer").get;
+  const dataViewOffset = Object.getOwnPropertyDescriptor(dataViewProto, "byteOffset").get;
+  const dataViewLength = Object.getOwnPropertyDescriptor(dataViewProto, "byteLength").get;
   const arrayBufferLength = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get;
-  const brands = new WeakSet();
-  function receiver(value) {
+  const freeze = Object.freeze;
+  const create = Object.create;
+  const arrayFrom = Array.from;
+  const resolve = Promise.resolve.bind(Promise);
+  const reject = Promise.reject.bind(Promise);
+  const empty = new ArrayBuffer(0);
+
+  const cryptoBrands = new WeakSet();
+  const subtleBrands = new WeakSet();
+  const keyHandles = new WeakMap();
+  const keyAlgorithms = new WeakMap();
+  const keyExtractable = new WeakMap();
+  const keyUsages = new WeakMap();
+
+  function receiver(brands, value) {
     if (!brands.has(value)) throw new TypeError("Illegal invocation");
+  }
+  function domString(value, label) {
+    if (typeof value === "symbol") throw new TypeError(label + " cannot be a Symbol");
+    return String(value);
+  }
+  function webError(error) {
+    const message = error && typeof error.message === "string" ? error.message : String(error);
+    for (const name of ["NotSupportedError", "InvalidAccessError", "DataError",
+                        "OperationError", "SyntaxError", "QuotaExceededError"]) {
+      if (message.indexOf(name + ": ") === 0) {
+        const detail = message.slice(name.length + 2);
+        if (name === "QuotaExceededError") return new QuotaExceededError(detail);
+        return new DOMException(detail, name);
+      }
+    }
+    return error;
   }
   function operation(call) {
     try { return call(); }
-    catch (error) {
-      const message = error.message;
-      for (const name of ["QuotaExceededError", "OperationError"]) {
-        if (message.indexOf(name + ": ") === 0) {
-          const detail = message.slice(name.length + 2);
-          if (name === "QuotaExceededError") throw new QuotaExceededError(detail);
-          throw new DOMException(detail, name);
-        }
+    catch (error) { throw webError(error); }
+  }
+  function promised(call) {
+    try { return resolve(call()); }
+    catch (error) { return reject(webError(error)); }
+  }
+  function unsupported(message) {
+    throw new DOMException(message, "NotSupportedError");
+  }
+  function algorithmName(value) {
+    const name = value !== null && (typeof value === "object" || typeof value === "function")
+      ? value.name : value;
+    return domString(name, "algorithm name").toUpperCase();
+  }
+  function hashName(value) {
+    const name = algorithmName(value);
+    if (name !== "SHA-256" && name !== "SHA-384" && name !== "SHA-512") {
+      unsupported("hash algorithm " + name + " is not supported");
+    }
+    return name;
+  }
+  function number(value, label) {
+    if (typeof value === "bigint" || typeof value === "symbol") {
+      throw new TypeError(label + " must be a number");
+    }
+    const result = Number(value);
+    if (!Number.isFinite(result) || result < 0 || Math.floor(result) !== result) {
+      throw new TypeError(label + " must be a non-negative integer");
+    }
+    return result;
+  }
+  function bufferSource(value, label) {
+    try {
+      arrayBufferLength.call(value);
+      return value;
+    } catch (_) {}
+    if (!isView(value)) throw new TypeError(label + " must be a BufferSource");
+    let backing, offset, length;
+    try {
+      backing = viewBuffer.call(value);
+      offset = viewOffset.call(value);
+      length = viewLength.call(value);
+    } catch (_) {
+      backing = dataViewBuffer.call(value);
+      offset = dataViewOffset.call(value);
+      length = dataViewLength.call(value);
+    }
+    arrayBufferLength.call(backing);
+    return new Uint8Array(backing, offset, length);
+  }
+  function byteLength(value) {
+    try { return arrayBufferLength.call(value); }
+    catch (_) { return viewLength.call(value); }
+  }
+  function usageList(value) {
+    let list;
+    try { list = arrayFrom(value); }
+    catch (_) { throw new TypeError("keyUsages must be a sequence"); }
+    const result = [];
+    for (const item of list) {
+      const usage = domString(item, "key usage");
+      if (["encrypt", "decrypt", "sign", "verify", "deriveKey", "deriveBits"].indexOf(usage) < 0) {
+        throw new TypeError("Unknown key usage " + usage);
       }
-      throw error;
+      if (result.indexOf(usage) < 0) result.push(usage);
+    }
+    return result;
+  }
+  function optionalLength(algorithm) {
+    if (algorithm === null || (typeof algorithm !== "object" && typeof algorithm !== "function")) return -1;
+    return algorithm.length === undefined ? -1 : number(algorithm.length, "length");
+  }
+  function normalizeKeyAlgorithm(algorithm, generating) {
+    const name = algorithmName(algorithm);
+    if (name === "HMAC") {
+      if (algorithm === null || (typeof algorithm !== "object" && typeof algorithm !== "function")) {
+        throw new TypeError("HMAC requires a hash");
+      }
+      return {name, hash: hashName(algorithm.hash), length: optionalLength(algorithm)};
+    }
+    if (name === "AES-GCM") {
+      const length = generating
+        ? number(algorithm && algorithm.length, "AES-GCM length") : -1;
+      if (generating && length !== 128 && length !== 256) {
+        if (length === 192) unsupported("AES-GCM-192 is not supported by ring");
+        throw new DOMException("AES-GCM keys must be 128 or 256 bits", "OperationError");
+      }
+      return {name, hash: "", length};
+    }
+    if (!generating && (name === "HKDF" || name === "PBKDF2")) {
+      return {name, hash: "", length: -1};
+    }
+    unsupported("key algorithm " + name + " is not supported");
+  }
+  function publicAlgorithm(normalized, materialBits) {
+    if (normalized.name === "HMAC") {
+      return freeze({
+        name: "HMAC",
+        hash: freeze({name: normalized.hash}),
+        length: normalized.length < 0 ? materialBits : normalized.length
+      });
+    }
+    if (normalized.name === "AES-GCM") {
+      return freeze({name: "AES-GCM", length: normalized.length < 0 ? materialBits : normalized.length});
+    }
+    return freeze({name: normalized.name});
+  }
+  function keyRecord(value) {
+    if (!keyHandles.has(value)) throw new TypeError("Expected a CryptoKey");
+    return {
+      handle: keyHandles.get(value),
+      algorithm: keyAlgorithms.get(value),
+      extractable: keyExtractable.get(value),
+      usages: keyUsages.get(value)
+    };
+  }
+  function makeKey(handle, algorithm, extractable, usages) {
+    const key = create(CryptoKey.prototype);
+    native.own(handle, key);
+    keyHandles.set(key, handle);
+    keyAlgorithms.set(key, algorithm);
+    keyExtractable.set(key, extractable);
+    keyUsages.set(key, freeze(usages.slice()));
+    return key;
+  }
+  function jwkAlg(algorithm) {
+    if (algorithm.name === "HMAC") return "HS" + algorithm.hash.name.slice(4);
+    return "A" + algorithm.length + "GCM";
+  }
+  function base64urlBits(value) {
+    return Math.floor(value.length * 6 / 8) * 8;
+  }
+  function normalizeDerivation(algorithm) {
+    const name = algorithmName(algorithm);
+    if (algorithm === null || (typeof algorithm !== "object" && typeof algorithm !== "function")) {
+      throw new TypeError(name + " requires parameters");
+    }
+    if (name === "HKDF") {
+      return {
+        name,
+        hash: hashName(algorithm.hash),
+        salt: bufferSource(algorithm.salt, "HKDF salt"),
+        info: bufferSource(algorithm.info, "HKDF info"),
+        iterations: 0
+      };
+    }
+    if (name === "PBKDF2") {
+      return {
+        name,
+        hash: hashName(algorithm.hash),
+        salt: bufferSource(algorithm.salt, "PBKDF2 salt"),
+        info: empty,
+        iterations: number(algorithm.iterations, "PBKDF2 iterations")
+      };
+    }
+    unsupported("derivation algorithm " + name + " is not supported");
+  }
+  function normalizeAes(algorithm) {
+    if (algorithmName(algorithm) !== "AES-GCM") unsupported("only AES-GCM is supported");
+    if (algorithm === null || (typeof algorithm !== "object" && typeof algorithm !== "function")) {
+      throw new TypeError("AES-GCM requires parameters");
+    }
+    return {
+      iv: bufferSource(algorithm.iv, "AES-GCM iv"),
+      additionalData: algorithm.additionalData === undefined
+        ? empty : bufferSource(algorithm.additionalData, "AES-GCM additionalData"),
+      tagLength: algorithm.tagLength === undefined ? 128 : number(algorithm.tagLength, "tagLength")
+    };
+  }
+
+  class CryptoKey {
+    constructor() { throw new TypeError("Illegal constructor"); }
+    get type() { keyRecord(this); return "secret"; }
+    get extractable() { return keyRecord(this).extractable; }
+    get algorithm() { return keyRecord(this).algorithm; }
+    get usages() { return keyRecord(this).usages; }
+  }
+  for (const name of ["type", "extractable", "algorithm", "usages"]) {
+    const descriptor = Object.getOwnPropertyDescriptor(CryptoKey.prototype, name);
+    descriptor.enumerable = true;
+    Object.defineProperty(CryptoKey.prototype, name, descriptor);
+  }
+  Object.defineProperty(CryptoKey.prototype, Symbol.toStringTag,
+    {value: "CryptoKey", configurable: true});
+
+  class SubtleCrypto {
+    constructor() { throw new TypeError("Illegal constructor"); }
+    digest(algorithm, data) {
+      receiver(subtleBrands, this);
+      return promised(() => native.digest(hashName(algorithm), bufferSource(data, "data")));
+    }
+    importKey(formatValue, keyData, algorithmValue, extractableValue, usagesValue) {
+      receiver(subtleBrands, this);
+      return promised(() => {
+        const format = domString(formatValue, "format").toLowerCase();
+        if (format !== "raw" && format !== "jwk") unsupported("key format " + format + " is not supported in L2a");
+        const algorithm = normalizeKeyAlgorithm(algorithmValue, false);
+        if (format === "jwk" && (algorithm.name === "HKDF" || algorithm.name === "PBKDF2")) {
+          unsupported(algorithm.name + " accepts raw keys only");
+        }
+        const extractable = Boolean(extractableValue);
+        const usages = usageList(usagesValue);
+        let material, kty, alg, use, keyOps, ext, bits;
+        if (format === "raw") {
+          material = bufferSource(keyData, "keyData");
+          bits = byteLength(material) * 8;
+        } else {
+          if (keyData === null || typeof keyData !== "object") throw new TypeError("JWK keyData must be an object");
+          material = domString(keyData.k, "JWK k");
+          kty = domString(keyData.kty, "JWK kty");
+          alg = keyData.alg === undefined ? undefined : domString(keyData.alg, "JWK alg");
+          use = keyData.use === undefined ? undefined : domString(keyData.use, "JWK use");
+          keyOps = keyData.key_ops === undefined ? undefined : usageList(keyData.key_ops).join(",");
+          ext = keyData.ext === undefined ? -1 : (Boolean(keyData.ext) ? 1 : 0);
+          bits = base64urlBits(material);
+        }
+        const handle = native.importKey(
+          format, material, algorithm.name, algorithm.hash, algorithm.length,
+          extractable, usages.join(","), kty, alg, use, keyOps, ext
+        );
+        return makeKey(handle, publicAlgorithm(algorithm, bits), extractable, usages);
+      });
+    }
+    exportKey(formatValue, keyValue) {
+      receiver(subtleBrands, this);
+      return promised(() => {
+        const format = domString(formatValue, "format").toLowerCase();
+        if (format !== "raw" && format !== "jwk") unsupported("key format " + format + " is not supported in L2a");
+        const key = keyRecord(keyValue);
+        const exported = native.exportKey(key.handle, format);
+        if (format === "raw") return exported;
+        return {
+          kty: "oct",
+          k: exported,
+          alg: jwkAlg(key.algorithm),
+          key_ops: key.usages.slice(),
+          ext: key.extractable
+        };
+      });
+    }
+    generateKey(algorithmValue, extractableValue, usagesValue) {
+      receiver(subtleBrands, this);
+      return promised(() => {
+        const algorithm = normalizeKeyAlgorithm(algorithmValue, true);
+        const extractable = Boolean(extractableValue);
+        const usages = usageList(usagesValue);
+        const handle = native.generateKey(
+          algorithm.name, algorithm.hash, algorithm.length, extractable, usages.join(",")
+        );
+        const bits = algorithm.name === "HMAC" && algorithm.length < 0
+          ? (algorithm.hash === "SHA-256" ? 512 : 1024) : algorithm.length;
+        return makeKey(handle, publicAlgorithm(algorithm, bits), extractable, usages);
+      });
+    }
+    sign(algorithm, keyValue, data) {
+      receiver(subtleBrands, this);
+      return promised(() => {
+        if (algorithmName(algorithm) !== "HMAC") unsupported("only HMAC signing is supported in L2a");
+        return native.sign(keyRecord(keyValue).handle, bufferSource(data, "data"));
+      });
+    }
+    verify(algorithm, keyValue, signature, data) {
+      receiver(subtleBrands, this);
+      return promised(() => {
+        if (algorithmName(algorithm) !== "HMAC") unsupported("only HMAC verification is supported in L2a");
+        return native.verify(
+          keyRecord(keyValue).handle,
+          bufferSource(signature, "signature"),
+          bufferSource(data, "data")
+        );
+      });
+    }
+    encrypt(algorithm, keyValue, data) {
+      receiver(subtleBrands, this);
+      return promised(() => {
+        const params = normalizeAes(algorithm);
+        return native.encrypt(
+          keyRecord(keyValue).handle, params.iv, params.additionalData, params.tagLength,
+          bufferSource(data, "data")
+        );
+      });
+    }
+    decrypt(algorithm, keyValue, data) {
+      receiver(subtleBrands, this);
+      return promised(() => {
+        const params = normalizeAes(algorithm);
+        return native.decrypt(
+          keyRecord(keyValue).handle, params.iv, params.additionalData, params.tagLength,
+          bufferSource(data, "data")
+        );
+      });
+    }
+    deriveBits(algorithmValue, baseKeyValue, lengthValue) {
+      receiver(subtleBrands, this);
+      return promised(() => {
+        const algorithm = normalizeDerivation(algorithmValue);
+        return native.deriveBits(
+          keyRecord(baseKeyValue).handle, algorithm.name, algorithm.hash,
+          algorithm.salt, algorithm.info, algorithm.iterations,
+          number(lengthValue, "length")
+        );
+      });
+    }
+    deriveKey(algorithmValue, baseKeyValue, derivedValue, extractableValue, usagesValue) {
+      receiver(subtleBrands, this);
+      return promised(() => {
+        const algorithm = normalizeDerivation(algorithmValue);
+        const derived = normalizeKeyAlgorithm(derivedValue, true);
+        const extractable = Boolean(extractableValue);
+        const usages = usageList(usagesValue);
+        const handle = native.deriveKey(
+          keyRecord(baseKeyValue).handle, algorithm.name, algorithm.hash,
+          algorithm.salt, algorithm.info, algorithm.iterations,
+          derived.name, derived.hash, derived.length,
+          extractable, usages.join(",")
+        );
+        const bits = derived.name === "HMAC" && derived.length < 0
+          ? (derived.hash === "SHA-256" ? 512 : 1024) : derived.length;
+        return makeKey(handle, publicAlgorithm(derived, bits), extractable, usages);
+      });
+    }
+    wrapKey() {
+      receiver(subtleBrands, this);
+      return promised(() => unsupported("wrapKey is not supported"));
+    }
+    unwrapKey() {
+      receiver(subtleBrands, this);
+      return promised(() => unsupported("unwrapKey is not supported"));
     }
   }
+  for (const key of ["digest", "importKey", "exportKey", "generateKey", "sign", "verify",
+                     "encrypt", "decrypt", "deriveBits", "deriveKey", "wrapKey", "unwrapKey"]) {
+    Object.defineProperty(SubtleCrypto.prototype, key, {enumerable: true});
+  }
+  Object.defineProperty(SubtleCrypto.prototype, Symbol.toStringTag,
+    {value: "SubtleCrypto", configurable: true});
+  const subtle = create(SubtleCrypto.prototype);
+  subtleBrands.add(subtle);
+  freeze(subtle);
+
   class Crypto {
     constructor() { throw new TypeError("Illegal constructor"); }
+    get subtle() { receiver(cryptoBrands, this); return subtle; }
     getRandomValues(array) {
-      receiver(this);
+      receiver(cryptoBrands, this);
       if (!isView(array)) throw new TypeError("Expected an ArrayBufferView");
       const kind = tag.call(array);
       if (["Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array",
@@ -44,25 +408,26 @@
            "BigUint64Array"].indexOf(kind) < 0) {
         throw new DOMException("Expected an integer TypedArray", "TypeMismatchError");
       }
-      const backing = buffer.call(array);
-      // WebIDL's ArrayBufferView excludes SharedArrayBuffer-backed views.
+      const backing = viewBuffer.call(array);
       arrayBufferLength.call(backing);
-      operation(() => fill(backing, offset.call(array), length.call(array)));
+      operation(() => fill(backing, viewOffset.call(array), viewLength.call(array)));
       return array;
     }
     randomUUID() {
-      receiver(this);
+      receiver(cryptoBrands, this);
       return operation(() => uuid());
     }
   }
-  for (const key of ["getRandomValues", "randomUUID"]) {
+  for (const key of ["subtle", "getRandomValues", "randomUUID"]) {
     Object.defineProperty(Crypto.prototype, key, {enumerable: true});
   }
   Object.defineProperty(Crypto.prototype, Symbol.toStringTag,
     {value: "Crypto", configurable: true});
-  const crypto = Object.create(Crypto.prototype);
-  brands.add(crypto);
-  Object.freeze(crypto);
+  const crypto = create(Crypto.prototype);
+  cryptoBrands.add(crypto);
+  freeze(crypto);
+  globalThis.CryptoKey = CryptoKey;
+  globalThis.SubtleCrypto = SubtleCrypto;
   globalThis.Crypto = Crypto;
   Object.defineProperty(globalThis, "crypto", {
     get() { return crypto; }, enumerable: true, configurable: true

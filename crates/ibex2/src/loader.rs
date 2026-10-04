@@ -976,6 +976,8 @@ pub const DEFAULT_ADDED_GLOBALS: &[&str] = &[
     "DOMException",
     "QuotaExceededError",
     "Crypto",
+    "CryptoKey",
+    "SubtleCrypto",
     "AbortController",
     "AbortSignal",
     "crypto",
