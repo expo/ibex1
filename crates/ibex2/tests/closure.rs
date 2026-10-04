@@ -9,7 +9,18 @@
 //! §5 closes with the reason: *"The clean closure is a security property;
 //! disabling legacy code is not isolation evidence."*
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::{HashMap, HashSet},
+    path::{Path, PathBuf},
+};
+
+const FORBIDDEN_LEGACY_PACKAGES: &[&str] = &[
+    "ibex-runtime",
+    "ibex_runtime",
+    "capsec-semantics",
+    "ibex-sfe-format",
+    "ibex-sfe-catalog",
+];
 
 fn crate_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -37,10 +48,74 @@ fn rust_and_native_sources() -> Vec<PathBuf> {
     out
 }
 
+fn forbidden_resolved_dependencies(metadata: &serde_json::Value) -> Vec<String> {
+    let packages = metadata["packages"]
+        .as_array()
+        .expect("package list in cargo metadata");
+    let package_names: HashMap<&str, &str> = packages
+        .iter()
+        .map(|package| {
+            (
+                package["id"].as_str().expect("package id"),
+                package["name"].as_str().expect("package name"),
+            )
+        })
+        .collect();
+    let root = packages
+        .iter()
+        .find(|package| package["name"] == "ibex2")
+        .and_then(|package| package["id"].as_str())
+        .expect("ibex2 package in cargo metadata");
+    let nodes = metadata["resolve"]["nodes"]
+        .as_array()
+        .expect("resolved nodes in cargo metadata");
+    let nodes_by_id: HashMap<&str, &serde_json::Value> = nodes
+        .iter()
+        .map(|node| (node["id"].as_str().expect("resolved node id"), node))
+        .collect();
+    assert!(nodes_by_id.contains_key(root), "ibex2 resolve node");
+
+    let mut reachable = HashSet::new();
+    let mut pending = vec![root];
+    while let Some(package_id) = pending.pop() {
+        if !reachable.insert(package_id) {
+            continue;
+        }
+        let node = nodes_by_id
+            .get(package_id)
+            .unwrap_or_else(|| panic!("resolved node for package {package_id}"));
+        for dependency in node["deps"].as_array().expect("resolved dependency list") {
+            let is_product_edge = dependency["dep_kinds"]
+                .as_array()
+                .expect("resolved dependency kinds")
+                .iter()
+                .any(|kind| kind["kind"].is_null() || kind["kind"] == "build");
+            if is_product_edge {
+                pending.push(
+                    dependency["pkg"]
+                        .as_str()
+                        .expect("resolved dependency package id"),
+                );
+            }
+        }
+    }
+
+    let mut forbidden: Vec<String> = reachable
+        .into_iter()
+        .filter_map(|package_id| package_names.get(package_id).copied())
+        .filter(|name| FORBIDDEN_LEGACY_PACKAGES.contains(name))
+        .map(str::to_owned)
+        .collect();
+    forbidden.sort();
+    forbidden.dedup();
+    forbidden
+}
+
 /// §5.3 — the kernel may not depend on the legacy runtime or its authority
 /// crates. Cargo metadata resolves package aliases, target tables and workspace
-/// dependencies, so this checks the graph edge rather than a bypassable spelling
-/// in either Rust source or the manifest.
+/// dependencies, so this checks the complete product graph rather than a
+/// bypassable direct spelling in either Rust source or the manifest. Dev-only
+/// edges are excluded because they do not enter the product/link closure.
 #[test]
 fn the_kernel_does_not_depend_on_the_legacy_runtime() {
     let manifest = crate_root().join("Cargo.toml");
@@ -49,7 +124,7 @@ fn the_kernel_does_not_depend_on_the_legacy_runtime() {
             "metadata",
             "--format-version",
             "1",
-            "--no-deps",
+            "--all-features",
             "--manifest-path",
         ])
         .arg(&manifest)
@@ -62,28 +137,73 @@ fn the_kernel_does_not_depend_on_the_legacy_runtime() {
     );
     let metadata: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("cargo metadata JSON");
-    let package = metadata["packages"]
-        .as_array()
-        .and_then(|packages| packages.iter().find(|package| package["name"] == "ibex2"))
-        .expect("ibex2 package in cargo metadata");
-    let dependencies = package["dependencies"]
-        .as_array()
-        .expect("ibex2 dependency list");
+    let forbidden = forbidden_resolved_dependencies(&metadata);
+    assert!(
+        forbidden.is_empty(),
+        "crates/ibex2's resolved normal/build dependency graph reaches forbidden legacy packages (§5.3): {forbidden:?}"
+    );
+}
 
-    for forbidden in [
-        "ibex-runtime",
-        "ibex_runtime",
-        "capsec-semantics",
-        "ibex-sfe-format",
-        "ibex-sfe-catalog",
-    ] {
-        assert!(
-            !dependencies
-                .iter()
-                .any(|dependency| dependency["name"] == forbidden),
-            "crates/ibex2 depends on {forbidden}, which pulls in the legacy closure (§5.3)"
-        );
-    }
+#[test]
+fn closure_walk_follows_renamed_transitive_and_build_dependencies() {
+    let metadata = serde_json::json!({
+        "packages": [
+            { "id": "root", "name": "ibex2" },
+            { "id": "bridge", "name": "workspace-bridge" },
+            { "id": "legacy", "name": "ibex-runtime" }
+        ],
+        "resolve": {
+            "nodes": [
+                {
+                    "id": "root",
+                    "deps": [{
+                        "name": "renamed_bridge",
+                        "pkg": "bridge",
+                        "dep_kinds": [{ "kind": null, "target": null }]
+                    }]
+                },
+                {
+                    "id": "bridge",
+                    "deps": [{
+                        "name": "innocent_alias",
+                        "pkg": "legacy",
+                        "dep_kinds": [{ "kind": "build", "target": null }]
+                    }]
+                },
+                { "id": "legacy", "deps": [] }
+            ]
+        }
+    });
+
+    assert_eq!(
+        forbidden_resolved_dependencies(&metadata),
+        vec!["ibex-runtime"]
+    );
+}
+
+#[test]
+fn closure_walk_excludes_dev_only_dependencies() {
+    let metadata = serde_json::json!({
+        "packages": [
+            { "id": "root", "name": "ibex2" },
+            { "id": "legacy", "name": "ibex-runtime" }
+        ],
+        "resolve": {
+            "nodes": [
+                {
+                    "id": "root",
+                    "deps": [{
+                        "name": "test_fixture",
+                        "pkg": "legacy",
+                        "dep_kinds": [{ "kind": "dev", "target": null }]
+                    }]
+                },
+                { "id": "legacy", "deps": [] }
+            ]
+        }
+    });
+
+    assert!(forbidden_resolved_dependencies(&metadata).is_empty());
 }
 
 /// §5.4 — no patched-engine symbol or identity-reading helper appears in the

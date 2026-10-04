@@ -5,7 +5,7 @@
 **Systems:** CapSec, Module Loader, Runtime, Host ABI, Build
 **Author:** Charlie Cheever / Claude (Fable 5)
 **Date:** 2026-08-29
-**Revised:** 2026-10-04 (§5: the legacy closure boundary is enforced from resolved Cargo dependencies; local `crate::host` is the intended R-c implementation); 2026-10-04 (§2: `net.websocket` is a built family; the `net.fetch` subdomain grant — both upstreamed from exact2's vendored copy); 2026-09-11 (§5: selected Linux Intl publication qualified in Snapback2 0.0.24; broader conformance boundaries remain open); 2026-09-11 (§5: selected Intl option-alias and locale-case callable limits, and TimeClip semantics); 2026-09-11 (§4, §5: Linux native Intl completion over vanilla Hermes, narrow post-install intrinsic admission, and the bounded exotic-constructor limitation); 2026-09-11 (§5: Linux vanilla-Hermes artifact, qualified scope, and Intl limitation); 2026-09-07 (app paths, rename source authority, and SQLite); 2026-08-30 (§2, §8: five families — `secret.keep` (LLP 0069) and `storage.kv` (LLP 0070) were added to the corpus without patching this page, which the LLP 0070 review caught; §8 now states the author-required form of a call site both arrived under) 2026-08-29 (accepted by Charlie Cheever, the same day) 2026-08-29 (§7: the tests the review added; §2 and §3 after the Grok 4.6 / Codex review: package identity is the bound install; fs paths are checked as realized as well as as spelt)
+**Revised:** 2026-10-04 (§5: the legacy closure test traverses the resolved all-feature normal/build dependency graph and excludes dev-only edges); 2026-10-04 (§5: the legacy closure boundary is enforced from resolved Cargo dependencies; local `crate::host` is the intended R-c implementation); 2026-10-04 (§2: `net.websocket` is a built family; the `net.fetch` subdomain grant — both upstreamed from exact2's vendored copy); 2026-09-11 (§5: selected Linux Intl publication qualified in Snapback2 0.0.24; broader conformance boundaries remain open); 2026-09-11 (§5: selected Intl option-alias and locale-case callable limits, and TimeClip semantics); 2026-09-11 (§4, §5: Linux native Intl completion over vanilla Hermes, narrow post-install intrinsic admission, and the bounded exotic-constructor limitation); 2026-09-11 (§5: Linux vanilla-Hermes artifact, qualified scope, and Intl limitation); 2026-09-07 (app paths, rename source authority, and SQLite); 2026-08-30 (§2, §8: five families — `secret.keep` (LLP 0069) and `storage.kv` (LLP 0070) were added to the corpus without patching this page, which the LLP 0070 review caught; §8 now states the author-required form of a call site both arrived under) 2026-08-29 (accepted by Charlie Cheever, the same day) 2026-08-29 (§7: the tests the review added; §2 and §3 after the Grok 4.6 / Codex review: package identity is the bound install; fs paths are checked as realized as well as as spelt)
 **Related:** LLP 0057 (§3.1 the boundary split, §4, and OQ2 — the decision this states), LLP 0059.000 (§4 — the capability families), LLP 0062 (the measurements: the escape inventory and the freeze), LLP 0065 (§4 — grants and resolution), LLP 0058.000.000 (the adapter protocol the runtime follows), LLP 0060 and LLP 0058.000 (superseded by this document for the model), LLP 0058.000.001 (tombstoned — the program this replaces with tests)
 
 ## Summary
@@ -159,10 +159,14 @@ declared root, on either arm, after canonicalization (LLP 0065 §3–§5). The
 closure scan (`tests/closure.rs`) keeps the legacy runtime's authority
 machinery out of this crate's dependency and link closure. The local
 `crate::host` library is the intentional R-c standard-library implementation,
-not legacy authority and not a forbidden dependency. The test therefore uses
-Cargo's resolved dependency metadata to reject the named legacy packages,
-including renamed and workspace dependencies, instead of scanning Rust path
-spellings that imports can trivially change.
+not legacy authority and not a forbidden dependency. The test runs Cargo
+metadata with all `ibex2` features, starts at the `ibex2` node in
+`resolve.nodes`, traverses every reachable normal or build dependency edge
+without filtering target conditions, and rejects a reachable package named
+`ibex-runtime`, `ibex_runtime`, `capsec-semantics`, `ibex-sfe-format`, or
+`ibex-sfe-catalog`; package IDs make renames and intermediary workspace crates
+inert. It does not traverse dev-only edges because test-only dependencies are
+not part of the product dependency or link closure being asserted.
 
 The Linux engine artifact is implemented for x86-64 as a source build of that
 same exact vanilla pin. Each build re-exports the pinned Git object into an
