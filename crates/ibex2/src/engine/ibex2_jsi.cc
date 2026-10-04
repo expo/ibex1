@@ -343,23 +343,27 @@ struct Adapter::State {
   bool alive = true;
   bool installed = false;
   Groups groups = 0;
+  uint32_t bytecode_version;
   std::shared_ptr<Lifetime> lifetime;
   jsi::Value fetch_factory;
   jsi::Value sqlite_factory;
   std::unique_ptr<Integrity> integrity;
-  State(jsi::Runtime& rt, const void* value,
+  State(jsi::Runtime& rt, const void* value, uint32_t version,
         std::shared_ptr<Lifetime> lifetime_value)
-      : queue(value), lifetime(std::move(lifetime_value)),
+      : queue(value), bytecode_version(version),
+        lifetime(std::move(lifetime_value)),
         integrity(std::make_unique<Integrity>(rt)) {}
   const void* require(jsi::Runtime& rt) const {
     return lifetime->require(rt);
   }
 };
 
-Adapter::Adapter(jsi::Runtime& rt, const void* queue)
+Adapter::Adapter(jsi::Runtime& rt, const void* queue,
+                 uint32_t bytecode_version)
     : runtime_(&rt),
       state_(std::make_shared<State>(
-          rt, queue, std::shared_ptr<Lifetime>(new Lifetime(queue)))) {
+          rt, queue, bytecode_version,
+          std::shared_ptr<Lifetime>(new Lifetime(queue)))) {
   if (!queue) throw std::invalid_argument("Ibex2 bindings require runtime state");
 }
 Adapter::~Adapter() { detach(); }
@@ -433,6 +437,16 @@ std::vector<const char*> expected_scripts(Groups groups) {
   if (has(groups, GROUP_FETCH)) result.push_back("fetch");
   if (has(groups, GROUP_STORAGE)) result.push_back("sqlite");
   return result;
+}
+
+constexpr uint8_t kHermesBytecodeMagic[] = {
+    0xc6, 0x1f, 0xbc, 0x03, 0xc1, 0x03, 0x19, 0x1f};
+
+uint32_t bytecode_version(const CompiledScript& script) {
+  return static_cast<uint32_t>(script.bytes[8]) |
+      (static_cast<uint32_t>(script.bytes[9]) << 8) |
+      (static_cast<uint32_t>(script.bytes[10]) << 16) |
+      (static_cast<uint32_t>(script.bytes[11]) << 24);
 }
 
 struct ResponseOwner final : jsi::NativeState {
@@ -614,8 +628,18 @@ void Adapter::install(Groups groups, const void* grants,
     if (scripts[i].name == nullptr || scripts[i].bytes == nullptr ||
         std::strcmp(scripts[i].name, expected[i]) != 0)
       throw std::invalid_argument("Ibex2 binding bytecode is not in scripts() order");
+    if (scripts[i].len < 12 ||
+        std::memcmp(scripts[i].bytes, kHermesBytecodeMagic,
+                    sizeof(kHermesBytecodeMagic)) != 0)
+      throw std::invalid_argument("Ibex2 binding payload is not Hermes bytecode");
+    if (state_->bytecode_version != 0 &&
+        bytecode_version(scripts[i]) != state_->bytecode_version)
+      throw std::invalid_argument(
+          "Ibex2 binding bytecode version does not match the runtime");
   }
 
+  // Validation above is deliberately complete before the first host function
+  // or JavaScript global is installed: one bad payload refuses the whole door.
   if (has(groups, GROUP_CONSOLE)) install_console(rt, state_->lifetime);
   if (has(groups, GROUP_PURE)) install_pure(rt, state_->lifetime);
   if (has(groups, GROUP_TIMERS)) install_timers(rt, state_->lifetime);

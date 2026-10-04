@@ -82,7 +82,10 @@ void set_binding(jsi::Runtime&, jsi::Object&, const char*, uint32_t, const void*
 // a destroyed adapter. Detach clears all JSI roots before the runtime is destroyed.
 class Adapter {
 public:
-  Adapter(jsi::Runtime&, const void* borrowed_queue);
+  // `bytecode_version` is the owning engine's supported HBC version when it
+  // exposes one. Zero keeps the JSI-only fallback at magic validation.
+  Adapter(jsi::Runtime&, const void* borrowed_queue,
+          uint32_t bytecode_version = 0);
   ~Adapter();
   Adapter(const Adapter&) = delete;
   Adapter& operator=(const Adapter&) = delete;

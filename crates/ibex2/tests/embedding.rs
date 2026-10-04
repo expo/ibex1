@@ -398,6 +398,40 @@ fn retained_pure_bindings_refuse_after_detach_and_context_drop() {
 }
 
 #[test]
+fn grouped_install_refuses_source_bytes() {
+    let context = Context::new(GrantSet::none());
+    let name = b"headers\0";
+    let source = include_bytes!("../src/bindings/headers.js");
+    let mut scripts: Vec<_> = ibex2::bindings::scripts(Groups::PURE)
+        .unwrap()
+        .into_iter()
+        .map(|(name, _)| compiled_script(name))
+        .collect();
+    scripts[0] = CompiledScript {
+        name: name.as_ptr().cast(),
+        bytes: source.as_ptr(),
+        len: source.len(),
+    };
+    let mut error = std::ptr::null_mut();
+    let handle = unsafe {
+        bindings_consumer_create(
+            context.state_ptr(),
+            context.grants_ptr(),
+            Groups::PURE.bits(),
+            scripts.as_ptr(),
+            scripts.len(),
+            &mut error,
+        )
+    };
+    assert!(handle.is_null(), "source payload unexpectedly installed");
+    let error = take(error);
+    assert!(
+        error.contains("not Hermes bytecode"),
+        "unexpected install error: {error}"
+    );
+}
+
+#[test]
 fn caller_owns_checkpoints_and_storage_is_typed_and_granted() {
     let c = Consumer::new("fs.read app:/data\nfs.write app:/data\nsqlite.open app:/data/db");
     c.eval(r#"globalThis.result = ''; storage.fs.atomicWriteFile('app:/data/a\nb', new Uint8Array([1,2])).then(function(){ result = 'written'; });"#).unwrap();

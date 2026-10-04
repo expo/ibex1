@@ -317,7 +317,11 @@ void *ibex2_hermes_create(int enable_eval) {
   auto *handle = new Ibex2Runtime();
   handle->runtime = std::move(runtime);
   handle->queue = ibex2_queue_create();
-  handle->bindings = std::make_unique<Adapter>(*handle->runtime, handle->queue);
+  auto *root = jsi::castInterface<facebook::hermes::IHermesRootAPI>(
+      facebook::hermes::makeHermesRootAPI());
+  handle->bindings = std::make_unique<Adapter>(
+      *handle->runtime, handle->queue,
+      root == nullptr ? 0 : root->getBytecodeVersion());
   return handle;
 }
 

@@ -16,6 +16,11 @@ struct Consumer {
   std::unique_ptr<jsi::Runtime> runtime;
   std::unique_ptr<ibex2::jsi_adapter::Adapter> adapter;
 };
+uint32_t bytecode_version() {
+  auto *root = jsi::castInterface<facebook::hermes::IHermesRootAPI>(
+      facebook::hermes::makeHermesRootAPI());
+  return root == nullptr ? 0 : root->getBytecodeVersion();
+}
 char *copy(const std::string &s) {
   auto *p = static_cast<char *>(std::malloc(s.size() + 1));
   std::memcpy(p, s.c_str(), s.size() + 1);
@@ -33,7 +38,8 @@ void *bindings_consumer_create(const void *queue, const void *grants,
         .withEnableEval(false).withMicrotaskQueue(true).build();
     c->runtime = facebook::hermes::makeHermesRuntimeNoThrow(config);
     if (!c->runtime) return nullptr;
-    c->adapter = std::make_unique<ibex2::jsi_adapter::Adapter>(*c->runtime, queue);
+    c->adapter = std::make_unique<ibex2::jsi_adapter::Adapter>(
+        *c->runtime, queue, bytecode_version());
     c->adapter->install(groups, grants, scripts, script_count);
     return c.release();
   } catch (const std::exception &e) { *error = copy(e.what()); return nullptr; }
@@ -55,7 +61,8 @@ void *storage_consumer_create(const void *queue, const void *grants,
     auto before = stringify.call(rt, names.call(rt, rt.global())).getString(rt).utf8(rt);
     auto f = rt.evaluateJavaScript(std::make_shared<Bytes>(factory, len), "sqlite.hbc")
         .getObject(rt).getFunction(rt);
-    c->adapter = std::make_unique<ibex2::jsi_adapter::Adapter>(rt, queue);
+    c->adapter = std::make_unique<ibex2::jsi_adapter::Adapter>(
+        rt, queue, bytecode_version());
     if (harden_len) rt.evaluateJavaScript(std::make_shared<Bytes>(harden, harden_len), "harden.hbc");
     auto storage = c->adapter->storage(grants, f);
     auto after = stringify.call(rt, names.call(rt, rt.global())).getString(rt).utf8(rt);
