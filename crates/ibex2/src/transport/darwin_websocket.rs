@@ -43,6 +43,21 @@ extern "C" {
     fn ibex2_darwin_ws_buffered_amount(handle: *mut c_void) -> usize;
     fn ibex2_darwin_ws_release(handle: *mut c_void);
     fn ibex2_darwin_ws_free(value: *mut c_void);
+    #[cfg(test)]
+    fn ibex2_darwin_ws_test_pause_next_send(handle: *mut c_void);
+    #[cfg(test)]
+    fn ibex2_darwin_ws_test_wait_send_admitted(handle: *mut c_void);
+    #[cfg(test)]
+    fn ibex2_darwin_ws_test_wait_close_attempted(handle: *mut c_void);
+    #[cfg(test)]
+    fn ibex2_darwin_ws_test_wait_close_submitted(
+        handle: *mut c_void,
+        timeout_seconds: f64,
+    ) -> c_int;
+    #[cfg(test)]
+    fn ibex2_darwin_ws_test_resume_send(handle: *mut c_void);
+    #[cfg(test)]
+    fn ibex2_darwin_ws_test_send_submitted_after_close(handle: *mut c_void) -> c_int;
 }
 
 /// The platform socket on Apple platforms.
@@ -142,7 +157,7 @@ impl DarwinSocketTransport {
         signal: &AbortSignal,
         protocols: &[String],
         test_certificate: Option<&[u8]>,
-    ) -> Result<Box<dyn MessageSource>, HostError> {
+    ) -> Result<DarwinSocket, HostError> {
         let target = CString::new(url.as_str())
             .map_err(|_| HostError::Failed("SyntaxError: invalid socket URL".into()))?;
         let protocols = CString::new(protocols.join(","))
@@ -184,14 +199,14 @@ impl DarwinSocketTransport {
         let sender = Arc::new(DarwinSender {
             handle: Arc::clone(&handle),
         });
-        Ok(Box::new(DarwinSocket {
+        Ok(DarwinSocket {
             handle,
             signal: signal.clone(),
             _registration: registration,
             closed: false,
             sender,
             protocol: String::from_utf8_lossy(&selected.unwrap_or_default()).into_owned(),
-        }))
+        })
     }
 }
 
@@ -213,6 +228,7 @@ impl SocketTransport for DarwinSocketTransport {
         protocols: &[String],
     ) -> Result<Box<dyn MessageSource>, HostError> {
         self.connect_impl(url, max_message, signal, protocols, None)
+            .map(|socket| Box::new(socket) as Box<dyn MessageSource>)
     }
 }
 
@@ -224,7 +240,9 @@ impl SocketTransport for DarwinTestSocketTransport {
         max_message: usize,
         signal: &AbortSignal,
     ) -> Result<Box<dyn MessageSource>, HostError> {
-        DarwinSocketTransport.connect_impl(url, max_message, signal, &[], Some(&self.certificate))
+        DarwinSocketTransport
+            .connect_impl(url, max_message, signal, &[], Some(&self.certificate))
+            .map(|socket| Box::new(socket) as Box<dyn MessageSource>)
     }
 }
 
@@ -312,6 +330,52 @@ impl MessageSource for DarwinSocket {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn concurrent_send_and_close_submit_to_the_platform_in_admission_order() {
+        use crate::stdlib::abort::AbortSignal;
+        use crate::stdlib::websocket::MessageSender;
+
+        let (port, seen) = super::super::websocket::tests::peer();
+        let url = url::Url::parse(&format!("ws://127.0.0.1:{port}/echo")).unwrap();
+        let socket = super::DarwinSocketTransport
+            .connect_impl(&url, 1024, &AbortSignal::default(), &[], None)
+            .unwrap();
+        let handle = socket.handle.pointer();
+        // SAFETY: the concrete socket remains alive through both racing calls.
+        unsafe { super::ibex2_darwin_ws_test_pause_next_send(handle) };
+
+        let sending = std::sync::Arc::clone(&socket.sender);
+        let send = std::thread::spawn(move || sending.send_text("racing"));
+        unsafe { super::ibex2_darwin_ws_test_wait_send_admitted(handle) };
+
+        let closing = std::sync::Arc::clone(&socket.sender);
+        let close = std::thread::spawn(move || closing.close(Some(1000), ""));
+        unsafe { super::ibex2_darwin_ws_test_wait_close_attempted(handle) };
+        // On the broken implementation close crosses the gap while send is
+        // paused. On the fixed implementation it is blocked by send's atomic
+        // admission/submission section, so this bounded wait returns false.
+        let _ = unsafe { super::ibex2_darwin_ws_test_wait_close_submitted(handle, 0.25) };
+        unsafe { super::ibex2_darwin_ws_test_resume_send(handle) };
+
+        send.join().unwrap().unwrap();
+        close.join().unwrap().unwrap();
+        assert_eq!(
+            unsafe { super::ibex2_darwin_ws_test_send_submitted_after_close(handle) },
+            0,
+            "an admitted send was submitted to NSURLSession after close"
+        );
+        assert_eq!(
+            seen.recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap(),
+            "/echo message 1 6"
+        );
+        assert_eq!(
+            seen.recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap(),
+            "/echo close 1000 "
+        );
+    }
+
     #[test]
     fn the_darwin_transport_holds_the_whole_conversation() {
         super::super::websocket::tests::conversation(&super::DarwinSocketTransport);

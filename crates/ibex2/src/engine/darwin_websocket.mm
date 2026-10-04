@@ -32,6 +32,18 @@ char *dup_utf8(NSString *value) {
 
 // Every field is read and written under `condition`, including from the
 // session's serial delegate queue.
+@interface Ibex2SendGate : NSObject
+@property(nonatomic, strong) NSCondition *condition;
+@property(nonatomic, assign) BOOL admitted;
+@property(nonatomic, assign) BOOL resume;
+@property(nonatomic, assign) BOOL closeAttempted;
+@property(nonatomic, assign) BOOL closeSubmitted;
+@property(nonatomic, assign) BOOL sendSubmittedAfterClose;
+@end
+
+@implementation Ibex2SendGate
+@end
+
 @interface Ibex2Socket : NSObject <NSURLSessionWebSocketDelegate>
 @property(nonatomic, strong) NSCondition *condition;
 @property(nonatomic, strong) NSURLSession *session;
@@ -54,6 +66,9 @@ char *dup_utf8(NSString *value) {
 @property(nonatomic, assign) BOOL received;
 @property(nonatomic, strong) NSURLSessionWebSocketMessage *message;
 @property(nonatomic, strong) NSError *error;
+// Installed only by the concurrent send/close unit test. Atomic publication
+// lets the close entry point announce its attempt before taking `condition`.
+@property(atomic, strong) Ibex2SendGate *testSendGate;
 @end
 
 @implementation Ibex2Socket
@@ -133,6 +148,40 @@ char *dup_utf8(NSString *value) {
   }
 }
 @end
+
+namespace {
+void await_test_send(Ibex2SendGate *gate) {
+  if (gate == nil) return;
+  [gate.condition lock];
+  gate.admitted = YES;
+  [gate.condition broadcast];
+  while (!gate.resume) [gate.condition wait];
+  [gate.condition unlock];
+}
+
+void note_test_close_attempt(Ibex2SendGate *gate) {
+  if (gate == nil) return;
+  [gate.condition lock];
+  gate.closeAttempted = YES;
+  [gate.condition broadcast];
+  [gate.condition unlock];
+}
+
+void note_test_close_submission(Ibex2SendGate *gate) {
+  if (gate == nil) return;
+  [gate.condition lock];
+  gate.closeSubmitted = YES;
+  [gate.condition broadcast];
+  [gate.condition unlock];
+}
+
+void note_test_send_submission(Ibex2SendGate *gate) {
+  if (gate == nil) return;
+  [gate.condition lock];
+  if (gate.closeSubmitted) gate.sendSubmittedAfterClose = YES;
+  [gate.condition unlock];
+}
+} // namespace
 
 extern "C" {
 
@@ -292,15 +341,22 @@ int send_message(Ibex2Socket *socket, NSURLSessionWebSocketMessage *message,
     socket.requestedCloseCode = 1009;
   }
   if (!ended && !full) socket.pendingMessages += 1;
-  [socket.condition unlock];
   // WHATWG keeps bytes handed to a closing/closed socket in bufferedAmount.
-  if (ended) return 0;
+  if (ended) {
+    [socket.condition unlock];
+    return 0;
+  }
   if (full) {
+    [socket.condition unlock];
     [socket.task cancelWithCloseCode:(NSURLSessionWebSocketCloseCode)1009
                               reason:nil];
     return 0;
   }
+  Ibex2SendGate *testGate = socket.testSendGate;
+  await_test_send(testGate);
+  note_test_send_submission(testGate);
   __weak Ibex2Socket *weak = socket;
+  // @ref LLP 0059.000#312-websocket--delegating-capability-bearing-author-required — admission and NSURLSession submission are atomic with close
   [socket.task sendMessage:message completionHandler:^(NSError *error) {
     Ibex2Socket *strong = weak;
     if (strong == nil) return;
@@ -319,6 +375,7 @@ int send_message(Ibex2Socket *socket, NSURLSessionWebSocketMessage *message,
     [strong.condition broadcast];
     [strong.condition unlock];
   }];
+  [socket.condition unlock];
   return 0;
 }
 
@@ -344,6 +401,8 @@ int ibex2_darwin_ws_send_binary(void *handle, const unsigned char *data,
 void ibex2_darwin_ws_close(void *handle, int code,
                            const unsigned char *reason, size_t len) {
   Ibex2Socket *socket = (__bridge Ibex2Socket *)handle;
+  Ibex2SendGate *testGate = socket.testSendGate;
+  note_test_close_attempt(testGate);
   NSData *data = len == 0 ? nil : [NSData dataWithBytes:reason length:len];
   // NSURLSession has no spelling for an empty RFC 6455 close payload. Its
   // `Invalid` enum produces a transport cancellation, not a clean handshake,
@@ -356,10 +415,67 @@ void ibex2_darwin_ws_close(void *handle, int code,
   socket.closing = YES;
   socket.requestedCloseCode = platformCode;
   socket.requestedCloseReason = data;
-  [socket.condition unlock];
-  if (already) return;
+  if (already) {
+    [socket.condition unlock];
+    return;
+  }
+  note_test_close_submission(testGate);
   [socket.task cancelWithCloseCode:platformCode
                             reason:data];
+  [socket.condition unlock];
+}
+
+void ibex2_darwin_ws_test_pause_next_send(void *handle) {
+  Ibex2Socket *socket = (__bridge Ibex2Socket *)handle;
+  Ibex2SendGate *gate = [[Ibex2SendGate alloc] init];
+  gate.condition = [[NSCondition alloc] init];
+  socket.testSendGate = gate;
+}
+
+void ibex2_darwin_ws_test_wait_send_admitted(void *handle) {
+  Ibex2Socket *socket = (__bridge Ibex2Socket *)handle;
+  Ibex2SendGate *gate = socket.testSendGate;
+  [gate.condition lock];
+  while (!gate.admitted) [gate.condition wait];
+  [gate.condition unlock];
+}
+
+void ibex2_darwin_ws_test_wait_close_attempted(void *handle) {
+  Ibex2Socket *socket = (__bridge Ibex2Socket *)handle;
+  Ibex2SendGate *gate = socket.testSendGate;
+  [gate.condition lock];
+  while (!gate.closeAttempted) [gate.condition wait];
+  [gate.condition unlock];
+}
+
+int ibex2_darwin_ws_test_wait_close_submitted(void *handle,
+                                               double timeout_seconds) {
+  Ibex2Socket *socket = (__bridge Ibex2Socket *)handle;
+  Ibex2SendGate *gate = socket.testSendGate;
+  NSDate *limit = [NSDate dateWithTimeIntervalSinceNow:timeout_seconds];
+  [gate.condition lock];
+  while (!gate.closeSubmitted && [gate.condition waitUntilDate:limit]) {}
+  BOOL submitted = gate.closeSubmitted;
+  [gate.condition unlock];
+  return submitted ? 1 : 0;
+}
+
+void ibex2_darwin_ws_test_resume_send(void *handle) {
+  Ibex2Socket *socket = (__bridge Ibex2Socket *)handle;
+  Ibex2SendGate *gate = socket.testSendGate;
+  [gate.condition lock];
+  gate.resume = YES;
+  [gate.condition broadcast];
+  [gate.condition unlock];
+}
+
+int ibex2_darwin_ws_test_send_submitted_after_close(void *handle) {
+  Ibex2Socket *socket = (__bridge Ibex2Socket *)handle;
+  Ibex2SendGate *gate = socket.testSendGate;
+  [gate.condition lock];
+  BOOL raced = gate.sendSubmittedAfterClose;
+  [gate.condition unlock];
+  return raced ? 1 : 0;
 }
 
 size_t ibex2_darwin_ws_buffered_amount(void *handle) {
