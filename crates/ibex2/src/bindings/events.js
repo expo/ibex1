@@ -2,8 +2,37 @@
 (function (global) {
   "use strict";
 
-  var eventStates = new WeakMap();
-  var targetStates = new WeakMap();
+  // @ref LLP 0057.000#l3--events-abort-and-the-second-direction — trust and private state use bootstrap-captured intrinsics in unhardened borrowed runtimes
+  var FunctionCall = Function.prototype.call;
+  var FunctionBind = Function.prototype.bind;
+  function uncurry(fn) { return FunctionCall.call(FunctionBind, FunctionCall, fn); }
+  var functionCall = uncurry(Function.prototype.call);
+  var functionApply = uncurry(Function.prototype.apply);
+  var weakMapGet = uncurry(WeakMap.prototype.get);
+  var weakMapSet = uncurry(WeakMap.prototype.set);
+  var weakMapHas = uncurry(WeakMap.prototype.has);
+  var arrayForEach = uncurry(Array.prototype.forEach);
+  var arrayIndexOf = uncurry(Array.prototype.indexOf);
+  var arrayPush = uncurry(Array.prototype.push);
+  var arraySlice = uncurry(Array.prototype.slice);
+  var arraySome = uncurry(Array.prototype.some);
+  var arraySplice = uncurry(Array.prototype.splice);
+  var objectCreate = Object.create;
+  var objectDefineProperty = Object.defineProperty;
+  var objectDefineProperties = Object.defineProperties;
+  var objectFreeze = Object.freeze;
+  var ObjectCtor = Object;
+  var StringCtor = String;
+  var NumberCtor = Number;
+  var WeakMapCtor = WeakMap;
+  var performanceObject = global.performance;
+  var performanceNow = performanceObject && typeof performanceObject.now === "function"
+    ? performanceObject.now
+    : null;
+  var dateNow = Date.now;
+
+  var eventStates = new WeakMapCtor();
+  var targetStates = new WeakMapCtor();
   var brand = global.__ibex2_brand || function (value) { return value; };
   var abortSubscribe = null;
   var nativeReport = global.__ibex2_report_error;
@@ -12,23 +41,21 @@
 
   function domString(value) {
     if (typeof value === "symbol") throw new TypeError("cannot convert a Symbol to a string");
-    return String(value);
+    return StringCtor(value);
   }
 
   function dictionary(value) {
-    return value == null ? {} : Object(value);
+    return value == null ? {} : ObjectCtor(value);
   }
 
   function eventState(event) {
-    var state = eventStates.get(event);
-    if (!state) throw new TypeError("Illegal invocation");
-    return state;
+    if (!weakMapHas(eventStates, event)) throw new TypeError("Illegal invocation");
+    return weakMapGet(eventStates, event);
   }
 
   function targetState(target) {
-    var state = targetStates.get(target);
-    if (!state) throw new TypeError("Illegal invocation");
-    return state;
+    if (!weakMapHas(targetStates, target)) throw new TypeError("Illegal invocation");
+    return weakMapGet(targetStates, target);
   }
 
   function isTrusted() {
@@ -37,7 +64,7 @@
 
   function initializeEvent(event, type, init, kind) {
     init = dictionary(init);
-    eventStates.set(event, {
+    weakMapSet(eventStates, event, {
       type: domString(type),
       bubbles: !!init.bubbles,
       cancelable: !!init.cancelable,
@@ -52,13 +79,13 @@
       phase: 0,
       path: [],
       trusted: false,
-      timeStamp: global.performance && typeof global.performance.now === "function"
-        ? global.performance.now()
-        : Date.now()
+      timeStamp: performanceNow
+        ? functionCall(performanceNow, performanceObject)
+        : dateNow()
     });
     // Web IDL's [LegacyUnforgeable] isTrusted is an own accessor. Keep the
     // getter shared across instances, as the platform descriptor requires.
-    Object.defineProperty(event, "isTrusted", {
+    objectDefineProperty(event, "isTrusted", {
       get: isTrusted,
       enumerable: true
     });
@@ -71,7 +98,7 @@
     initializeEvent(this, type, init, "Event");
   }
 
-  Object.defineProperties(Event.prototype, {
+  objectDefineProperties(Event.prototype, {
     type: { get: function () { return eventState(this).type; }, enumerable: true },
     target: { get: function () { return eventState(this).target; }, enumerable: true },
     srcElement: { get: function () { return eventState(this).target; }, enumerable: true },
@@ -103,7 +130,7 @@
     state.stop = true;
     state.stopImmediate = true;
   };
-  Event.prototype.composedPath = function () { return eventState(this).path.slice(); };
+  Event.prototype.composedPath = function () { return arraySlice(eventState(this).path); };
   Event.prototype.initEvent = function (type, bubbles, cancelable) {
     var state = eventState(this);
     if (state.dispatching) return;
@@ -122,14 +149,17 @@
     state.trusted = false;
   };
 
-  [["NONE", 0], ["CAPTURING_PHASE", 1], ["AT_TARGET", 2], ["BUBBLING_PHASE", 3]]
-    .forEach(function (entry) {
-      Object.defineProperty(Event, entry[0], { value: entry[1], enumerable: true });
-      Object.defineProperty(Event.prototype, entry[0], { value: entry[1], enumerable: true });
-    });
+  var eventConstants = [
+    ["NONE", 0], ["CAPTURING_PHASE", 1],
+    ["AT_TARGET", 2], ["BUBBLING_PHASE", 3]
+  ];
+  arrayForEach(eventConstants, function (entry) {
+    objectDefineProperty(Event, entry[0], { value: entry[1], enumerable: true });
+    objectDefineProperty(Event.prototype, entry[0], { value: entry[1], enumerable: true });
+  });
 
   function inherit(constructor) {
-    constructor.prototype = Object.create(Event.prototype, {
+    constructor.prototype = objectCreate(Event.prototype, {
       constructor: { value: constructor, writable: true, configurable: true }
     });
   }
@@ -142,7 +172,7 @@
     eventState(this).detail = "detail" in init ? init.detail : null;
   }
   inherit(CustomEvent);
-  Object.defineProperty(CustomEvent.prototype, "detail", {
+  objectDefineProperty(CustomEvent.prototype, "detail", {
     get: function () { return eventState(this).detail; }, enumerable: true
   });
   CustomEvent.prototype.initCustomEvent = function (type, bubbles, cancelable, detail) {
@@ -160,12 +190,12 @@
     var state = eventState(this);
     state.message = "message" in init ? domString(init.message) : "";
     state.filename = "filename" in init ? domString(init.filename) : "";
-    state.lineno = "lineno" in init ? Number(init.lineno) >>> 0 : 0;
-    state.colno = "colno" in init ? Number(init.colno) >>> 0 : 0;
+    state.lineno = "lineno" in init ? NumberCtor(init.lineno) >>> 0 : 0;
+    state.colno = "colno" in init ? NumberCtor(init.colno) >>> 0 : 0;
     state.error = "error" in init ? init.error : null;
   }
   inherit(ErrorEvent);
-  Object.defineProperties(ErrorEvent.prototype, {
+  objectDefineProperties(ErrorEvent.prototype, {
     message: { get: function () { return eventState(this).message; }, enumerable: true },
     filename: { get: function () { return eventState(this).filename; }, enumerable: true },
     lineno: { get: function () { return eventState(this).lineno; }, enumerable: true },
@@ -175,24 +205,24 @@
 
   function PromiseRejectionEvent(type, init) {
     if (!new.target) throw new TypeError("PromiseRejectionEvent requires new");
-    if (arguments.length < 2 || init == null || !("promise" in Object(init))) {
+    if (arguments.length < 2 || init == null || !("promise" in ObjectCtor(init))) {
       throw new TypeError("PromiseRejectionEvent requires a promise");
     }
-    init = Object(init);
+    init = ObjectCtor(init);
     initializeEvent(this, type, init, "PromiseRejectionEvent");
     var state = eventState(this);
     state.promise = init.promise;
     state.reason = init.reason;
   }
   inherit(PromiseRejectionEvent);
-  Object.defineProperties(PromiseRejectionEvent.prototype, {
+  objectDefineProperties(PromiseRejectionEvent.prototype, {
     promise: { get: function () { return eventState(this).promise; }, enumerable: true },
     reason: { get: function () { return eventState(this).reason; }, enumerable: true }
   });
 
   function EventTarget() {
     if (!new.target) throw new TypeError("EventTarget requires new");
-    targetStates.set(this, { listeners: [] });
+    weakMapSet(targetStates, this, { listeners: [] });
     brand(this, "EventTarget");
   }
 
@@ -202,10 +232,10 @@
 
   function removeEntry(target, entry) {
     var listeners = targetState(target).listeners;
-    var index = listeners.indexOf(entry);
+    var index = arrayIndexOf(listeners, entry);
     if (index < 0) return;
     entry.removed = true;
-    listeners.splice(index, 1);
+    arraySplice(listeners, index, 1);
     if (entry.abortRelease) {
       var release = entry.abortRelease;
       entry.abortRelease = null;
@@ -231,12 +261,12 @@
     if (typeof callback !== "function" && typeof callback !== "object") {
       throw new TypeError("event listener must be a function or object");
     }
-    if (state.listeners.some(function (entry) {
+    if (arraySome(state.listeners, function (entry) {
       return !entry.removed && entry.type === type && entry.callback === callback && entry.capture === capture;
     })) return;
     var entry = { type: type, callback: callback, capture: capture, once: once,
       passive: passive, abortRelease: null, removed: false };
-    state.listeners.push(entry);
+    arrayPush(state.listeners, entry);
     if (signal !== undefined) {
       if (typeof abortSubscribe !== "function") {
         removeEntry(target, entry);
@@ -263,7 +293,7 @@
 
   function invoke(target, event, capture) {
     var state = eventState(event);
-    var listeners = targetState(target).listeners.slice();
+    var listeners = arraySlice(targetState(target).listeners);
     for (var i = 0; i < listeners.length; i++) {
       var entry = listeners[i];
       if (state.stopImmediate) break;
@@ -271,10 +301,10 @@
       if (entry.once) removeEntry(target, entry);
       state.passive = entry.passive;
       try {
-        if (typeof entry.callback === "function") entry.callback.call(target, event);
+        if (typeof entry.callback === "function") functionCall(entry.callback, target, event);
         else {
           var handleEvent = entry.callback.handleEvent;
-          if (typeof handleEvent === "function") handleEvent.call(entry.callback, event);
+          if (typeof handleEvent === "function") functionCall(handleEvent, entry.callback, event);
         }
       } catch (error) {
         reportException(error);
@@ -365,30 +395,30 @@
   function defineEventHandler(name, type, errorHandler) {
     var callback = null;
     var wrapper = null;
-    Object.defineProperty(global, name, {
+    objectDefineProperty(global, name, {
       configurable: true,
       enumerable: true,
       get: function () { return callback; },
       set: function (value) {
-        if (wrapper) EventTarget.prototype.removeEventListener.call(global, type, wrapper);
+        if (wrapper) functionCall(EventTarget.prototype.removeEventListener, global, type, wrapper);
         callback = typeof value === "function" ? value : null;
         wrapper = null;
         if (!callback) return;
         wrapper = function (event) {
           var result = errorHandler
-            ? callback.call(global, event.message, event.filename, event.lineno, event.colno, event.error)
-            : callback.call(global, event);
+            ? functionCall(callback, global, event.message, event.filename, event.lineno, event.colno, event.error)
+            : functionCall(callback, global, event);
           if ((errorHandler && result === true) || (!errorHandler && result === false)) {
             event.preventDefault();
           }
         };
-        EventTarget.prototype.addEventListener.call(global, type, wrapper);
+        functionCall(EventTarget.prototype.addEventListener, global, type, wrapper);
       }
     });
   }
 
   // @ref LLP 0057.000#l3--events-abort-and-the-second-direction — keep the engine global's prototype intact; only its private target record is new
-  targetStates.set(global, { listeners: [] });
+  weakMapSet(targetStates, global, { listeners: [] });
   global.Event = Event;
   global.EventTarget = EventTarget;
   global.CustomEvent = CustomEvent;
@@ -396,28 +426,30 @@
   global.PromiseRejectionEvent = PromiseRejectionEvent;
   global.reportError = reportError;
   global.self = global;
-  global.navigator = Object.freeze(brand({ userAgent: "Ibex/0.1.0" }, "Navigator"));
+  global.navigator = objectFreeze(brand({ userAgent: "Ibex/0.1.0" }, "Navigator"));
   global.addEventListener = function () {
-    return EventTarget.prototype.addEventListener.apply(global, arguments);
+    return functionApply(EventTarget.prototype.addEventListener, global, arguments);
   };
   global.removeEventListener = function () {
-    return EventTarget.prototype.removeEventListener.apply(global, arguments);
+    return functionApply(EventTarget.prototype.removeEventListener, global, arguments);
   };
   global.dispatchEvent = function () {
-    return EventTarget.prototype.dispatchEvent.apply(global, arguments);
+    return functionApply(EventTarget.prototype.dispatchEvent, global, arguments);
   };
   defineEventHandler("onerror", "error", true);
   defineEventHandler("onunhandledrejection", "unhandledrejection", false);
   defineEventHandler("onrejectionhandled", "rejectionhandled", false);
 
   if (typeof Symbol === "function" && Symbol.toStringTag) {
-    [[Event, "Event"], [EventTarget, "EventTarget"], [CustomEvent, "CustomEvent"],
-     [ErrorEvent, "ErrorEvent"], [PromiseRejectionEvent, "PromiseRejectionEvent"]]
-      .forEach(function (entry) {
-        Object.defineProperty(entry[0].prototype, Symbol.toStringTag, {
-          value: entry[1], configurable: true
-        });
+    var taggedConstructors = [
+      [Event, "Event"], [EventTarget, "EventTarget"], [CustomEvent, "CustomEvent"],
+      [ErrorEvent, "ErrorEvent"], [PromiseRejectionEvent, "PromiseRejectionEvent"]
+    ];
+    arrayForEach(taggedConstructors, function (entry) {
+      objectDefineProperty(entry[0].prototype, Symbol.toStringTag, {
+        value: entry[1], configurable: true
       });
+    });
   }
 
   return {
@@ -428,7 +460,7 @@
       var event = new PromiseRejectionEvent("unhandledrejection", {
         cancelable: true, promise: promise, reason: reason
       });
-      // @ref LLP 0059.000#310-atob--btoa-structuredclone-blob-customevent--pure-ungated — stock Hermes exposes callable Promise tracker slots, so their events cannot authenticate host provenance
+      // @ref LLP 0059.000#310-atob--btoa-structuredclone-blob--file--formdata-customevent--pure-ungated — stock Hermes exposes callable Promise tracker slots, so their events cannot authenticate host provenance
       if (dispatch(global, event, false)) nativeReport(errorText(reason));
     },
     onHandled: function (_, reason, promise) {

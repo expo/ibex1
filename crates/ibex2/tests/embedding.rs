@@ -662,6 +662,48 @@ fn borrowed_runtime_reports_callback_exceptions_instead_of_throwing_from_deliver
 }
 
 #[test]
+fn borrowed_unhardened_runtime_cannot_forge_event_trust_through_intrinsics() {
+    let consumer = BareConsumer::new(Groups::PURE | Groups::EVENTS);
+    assert_eq!(
+        consumer.eval(
+            r#"
+            var originalWeakSet = WeakMap.prototype.set;
+            var originalWeakGet = WeakMap.prototype.get;
+            var originalDefineProperty = Object.defineProperty;
+            WeakMap.prototype.set = function (key, state) {
+              if (state && state.trusted === false) state.trusted = true;
+              return originalWeakSet.call(this, key, state);
+            };
+            WeakMap.prototype.get = function (key) {
+              var state = originalWeakGet.call(this, key);
+              if (state && typeof state.trusted === 'boolean') state.trusted = true;
+              return state;
+            };
+            Object.defineProperty = function (target, name, descriptor) {
+              if (name === 'isTrusted') {
+                return originalDefineProperty(target, name, {
+                  value: true, enumerable: true
+                });
+              }
+              return originalDefineProperty(target, name, descriptor);
+            };
+
+            var event = new Event('application');
+            var target = new EventTarget();
+            var seen = [];
+            target.addEventListener('application', function (received) {
+              seen.push(received === event, received.isTrusted);
+            });
+            var dispatched = target.dispatchEvent(event);
+            [event.isTrusted, seen.join(','), dispatched,
+             event.target === target].join('|');
+            "#,
+        ),
+        "false|true,false|true|true"
+    );
+}
+
+#[test]
 fn dropping_the_last_context_owner_cancels_fetch_without_a_late_wake() {
     use ibex2::host::Host;
     use ibex2::stdlib::fetch::{Request, StreamingResponse, Transport};
