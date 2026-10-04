@@ -201,11 +201,20 @@ mod request_headers {
         spec: &str,
         source: &str,
     ) -> (Vec<String>, usize) {
+        run_with_spec_groups_and_live_headers(name, spec, source, Groups::DEFAULT)
+    }
+
+    fn run_with_spec_groups_and_live_headers(
+        name: &str,
+        spec: &str,
+        source: &str,
+        groups: Groups,
+    ) -> (Vec<String>, usize) {
         let project = super::common::Project::new(name);
         project.file("index.js", source);
         let mut rt = Hermes::new(DynamicCode::Closed).unwrap();
         let context = Context::new(ibex2::grant::GrantSet::none());
-        rt.install_runtime(Groups::DEFAULT, &context).unwrap();
+        rt.install_runtime(groups, &context).unwrap();
         rt.set_loader(
             Root::Declared(project.0.clone()),
             ModuleGrants::parse(&format!("[*]\n{spec}\n")).unwrap(),
@@ -532,6 +541,37 @@ mod request_headers {
         // Only the caller's Headers remains. A leaked request snapshot would
         // make this two.
         assert_eq!(live_headers, 1);
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[test]
+    fn preaborted_and_invalid_signals_release_every_request_header_snapshot() {
+        let (listener, origin) = listener();
+        let (out, live_headers) = run_with_spec_groups_and_live_headers(
+            "fetch-release-before-dispatch",
+            &format!("net.fetch {origin}"),
+            &format!(
+                "const controller = new AbortController();
+                 controller.abort(new Error('already stopped'));
+                 const pending = [];
+                 for (let i = 0; i < 1000; i++) {{
+                   pending.push(fetch('{origin}/', {{signal: controller.signal}}).catch(() => undefined));
+                 }}
+                 for (let i = 0; i < 1000; i++) {{
+                   pending.push(fetch('{origin}/', {{signal: {{}}}}).catch(() => undefined));
+                 }}
+                 Promise.all(pending).then(() => console.log('done'));"
+            ),
+            Groups::DEFAULT | Groups::BLOB,
+        );
+        assert_eq!(out, ["done"]);
+        assert_eq!(
+            live_headers, 0,
+            "early exits must free all 2,000 one-shot Headers snapshots"
+        );
         assert_eq!(
             listener.accept().unwrap_err().kind(),
             std::io::ErrorKind::WouldBlock

@@ -378,6 +378,9 @@ pub struct RuntimeState {
     /// Header lists JavaScript holds by handle, for the same reason responses
     /// are: a header list is not a primitive and §1.1 forbids serializing.
     headers: Mutex<std::collections::HashMap<u64, crate::stdlib::fetch::Headers>>,
+    /// Secret keys held by JavaScript `CryptoKey` objects. Material stays in
+    /// Rust and leaves only through an allowed `exportKey` operation.
+    crypto_keys: Mutex<std::collections::HashMap<u64, crate::stdlib::subtle::CryptoKey>>,
     /// The timer wheel (LLP 0059.000 §3.2). Rust owns *when*; the engine keeps
     /// the closures and owns *what*.
     timers: Mutex<crate::stdlib::timers::Timers>,
@@ -479,6 +482,7 @@ impl RuntimeState {
             shutdown: std::sync::atomic::AtomicBool::new(false),
             owners: std::sync::atomic::AtomicUsize::new(0),
             headers: Mutex::new(std::collections::HashMap::new()),
+            crypto_keys: Mutex::new(std::collections::HashMap::new()),
             timers: Mutex::new(crate::stdlib::timers::Timers::new()),
             started: std::time::Instant::now(),
             loader: Mutex::new(None),
@@ -766,6 +770,10 @@ impl RuntimeState {
             .expect("event subscriptions poisoned");
         subscriptions.clear();
         self.queue.cancel_all_events();
+        self.crypto_keys
+            .lock()
+            .expect("crypto key registry poisoned")
+            .clear();
     }
 
     pub(crate) fn is_shutdown(&self) -> bool {
@@ -834,6 +842,43 @@ impl RuntimeState {
     #[cfg(feature = "hermes")]
     pub(crate) fn live_headers(&self) -> usize {
         self.headers.lock().expect("header registry poisoned").len()
+    }
+
+    pub(crate) fn store_crypto_key(&self, key: crate::stdlib::subtle::CryptoKey) -> u64 {
+        let handle = self
+            .next_handle
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.crypto_keys
+            .lock()
+            .expect("crypto key registry poisoned")
+            .insert(handle, key);
+        handle
+    }
+
+    pub(crate) fn with_crypto_key<T>(
+        &self,
+        handle: u64,
+        f: impl FnOnce(&crate::stdlib::subtle::CryptoKey) -> T,
+    ) -> Option<T> {
+        self.crypto_keys
+            .lock()
+            .expect("crypto key registry poisoned")
+            .get(&handle)
+            .map(f)
+    }
+
+    pub(crate) fn release_crypto_key(&self, handle: u64) {
+        self.crypto_keys
+            .lock()
+            .expect("crypto key registry poisoned")
+            .remove(&handle);
+    }
+
+    pub(crate) fn crypto_key_count(&self) -> usize {
+        self.crypto_keys
+            .lock()
+            .expect("crypto key registry poisoned")
+            .len()
     }
 
     pub fn task_started(&self) {
@@ -1553,6 +1598,58 @@ pub unsafe extern "C" fn ibex2_response_owner_destroy(owner: *mut std::ffi::c_vo
     }
 }
 
+struct CryptoKeyOwner {
+    state: std::sync::Weak<RuntimeState>,
+    handle: u64,
+}
+
+/// Attach one Rust key handle to one engine-owned `CryptoKey` object.
+/// # Safety
+/// `queue` must be a live pointer returned by `ibex2_queue_create`.
+#[no_mangle]
+pub unsafe extern "C" fn ibex2_crypto_key_owner_create(
+    queue: *const RuntimeState,
+    handle: f64,
+) -> *mut std::ffi::c_void {
+    let Some(state) = clone_queue(queue) else {
+        return std::ptr::null_mut();
+    };
+    if handle.fract() != 0.0 || !(1.0..=9_007_199_254_740_991.0).contains(&handle) {
+        return std::ptr::null_mut();
+    }
+    let handle = handle as u64;
+    if state.with_crypto_key(handle, |_| ()).is_none() {
+        return std::ptr::null_mut();
+    }
+    Box::into_raw(Box::new(CryptoKeyOwner {
+        state: Arc::downgrade(&state),
+        handle,
+    }))
+    .cast()
+}
+
+/// Release a key when its JavaScript `CryptoKey` is collected.
+/// # Safety
+/// `owner` must be null or an unfreed pointer from `ibex2_crypto_key_owner_create`.
+#[no_mangle]
+pub unsafe extern "C" fn ibex2_crypto_key_owner_destroy(owner: *mut std::ffi::c_void) {
+    if owner.is_null() {
+        return;
+    }
+    let owner = Box::from_raw(owner.cast::<CryptoKeyOwner>());
+    if let Some(state) = owner.state.upgrade() {
+        state.release_crypto_key(owner.handle);
+    }
+}
+
+/// Test and diagnostics witness for the per-runtime key registry.
+/// # Safety
+/// `queue` must be null or a live pointer returned by `ibex2_queue_create`.
+#[no_mangle]
+pub unsafe extern "C" fn ibex2_crypto_key_count(queue: *const RuntimeState) -> usize {
+    borrow_state(queue).map_or(0, RuntimeState::crypto_key_count)
+}
+
 /// Borrow the runtime state without taking ownership.
 ///
 /// # Safety
@@ -1616,6 +1713,25 @@ impl Pump {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "crypto")]
+    #[test]
+    fn runtime_shutdown_releases_every_crypto_key() {
+        let state = RuntimeState::new(crate::transport::default_transport());
+        let key = crate::stdlib::subtle::generate_key(
+            crate::stdlib::subtle::GenerateAlgorithm::Hmac {
+                hash: crate::stdlib::subtle::HashAlgorithm::Sha256,
+                length_bits: Some(256),
+            },
+            false,
+            &[crate::stdlib::subtle::KeyUsage::Sign],
+        )
+        .unwrap();
+        state.store_crypto_key(key);
+        assert_eq!(state.crypto_key_count(), 1);
+        state.shutdown();
+        assert_eq!(state.crypto_key_count(), 0);
+    }
 
     #[test]
     fn shutdown_interrupts_body_without_waiting_on_its_registry_lock() {

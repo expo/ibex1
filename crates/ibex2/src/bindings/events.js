@@ -2,6 +2,7 @@
 (function (global) {
   "use strict";
 
+  var brand = global.__ibex2_brand || function (value) { return value; };
   var eventStates = new WeakMap();
   var targetStates = new WeakMap();
   var abortSubscribe = null;
@@ -61,6 +62,7 @@
       get: isTrusted,
       enumerable: true
     });
+    brand(event, "Event");
   }
 
   function Event(type, init) {
@@ -240,6 +242,7 @@
   function EventTarget() {
     if (!new.target) throw new TypeError("EventTarget requires new");
     targetStates.set(this, { listeners: [] });
+    brand(this, "EventTarget");
   }
 
   function captureOf(options) {

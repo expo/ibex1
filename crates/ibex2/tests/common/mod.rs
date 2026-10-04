@@ -52,6 +52,8 @@ impl Project {
                 std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join("../../ios/Frameworks-vanilla")
             }
+            Err(_) if cfg!(windows) => std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tools/hermes-vanilla/windows-x64"),
             Err(_) => std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("../../linux/Frameworks-vanilla"),
         }

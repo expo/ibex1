@@ -8,56 +8,42 @@
 
   var results = [];
   var pending = 0;
+  var outstandingPromiseTests = 0;
+  var promiseTestTail = Promise.resolve();
 
   function record(name, error) {
     results.push({ name: name, ok: !error, message: error ? String(error && error.message || error) : "" });
   }
 
-  function context(name, asynchronous) {
-    var finished = false;
-    var firstError = null;
-    function finish(error) {
-      if (finished) return;
-      finished = true;
-      if (asynchronous) pending--;
-      record(name, error || firstError);
-    }
-    var t = {
-      step_func: function (fn) {
-        return function () {
-          try { return fn.apply(this, arguments); }
-          catch (error) {
-            if (!firstError) firstError = error;
-            if (asynchronous) finish(error);
-          }
-        };
-      },
-      step_func_done: function (fn) {
-        return function () {
-          try { if (fn) fn.apply(this, arguments); finish(null); }
-          catch (error) { finish(error); }
-        };
-      },
-      step_timeout: function (fn, milliseconds) {
-        return setTimeout(t.step_func(fn), milliseconds);
-      },
-      unreached_func: function (description) {
-        return t.step_func(function () { fail("reached unreachable code", description); });
-      },
-      done: function () { finish(null); },
-      _error: function () { return firstError; }
+  function context() {
+    var cleanups = [];
+    var state = {
+      add_cleanup: function (fn) { cleanups.push(fn); },
+      cleanup: function (error) {
+        for (var i = cleanups.length - 1; i >= 0; i--) {
+          try { cleanups[i](); } catch (e) { if (!error) error = e; }
+        }
+        return error;
+      }
     };
-    return t;
+    state.step = function (fn) { return fn.call(state); };
+    state.step_func = function (fn) {
+      return function () { return fn.apply(state, arguments); };
+    };
+    state.unreached_func = function (description) {
+      return state.step_func(function () { fail("reached unreachable code", description); });
+    };
+    return state;
   }
 
   global.test = function (fn, name) {
-    var t = context(name, false);
+    var state = context(), error = null;
     try {
-      fn.call(t, t);
-      record(name, t._error());
+      fn.call(state, state);
     } catch (e) {
-      record(name, e);
+      error = e;
     }
+    record(name, state.cleanup(error));
   };
 
   global.async_test = function (fn, name) {
@@ -67,27 +53,68 @@
       name = fn;
       fn = null;
     }
+    var state = context(), complete = false, firstError = null;
     pending++;
-    var t = context(name, true);
-    try { if (typeof fn === "function") fn.call(t, t); }
-    catch (e) { t.step_func_done(function () { throw e; })(); }
-    return t;
+    function finish(error) {
+      if (complete) return;
+      complete = true;
+      pending--;
+      record(name, state.cleanup(error || firstError));
+    }
+    state.step = function (callback) {
+      if (complete) return;
+      try { callback.call(state); } catch (error) {
+        if (!firstError) firstError = error;
+        finish(error);
+      }
+    };
+    state.step_func = function (callback) {
+      return function () {
+        if (complete) return;
+        try { return callback.apply(state, arguments); } catch (error) {
+          if (!firstError) firstError = error;
+          finish(error);
+        }
+      };
+    };
+    state.step_func_done = function (callback) {
+      return function () {
+        try { if (callback) callback.apply(state, arguments); finish(null); }
+        catch (error) { finish(error); }
+      };
+    };
+    state.step_timeout = function (callback, milliseconds) {
+      return setTimeout(state.step_func(callback), milliseconds);
+    };
+    state.unreached_func = function (description) {
+      return state.step_func(function () { fail("reached unreachable code", description); });
+    };
+    state.done = function () { finish(null); };
+    try { if (typeof fn === "function") fn.call(state, state); }
+    catch (error) { finish(error); }
+    return state;
   };
 
   global.promise_test = function (fn, name) {
-    pending++;
-    var t = context(name, true);
-    try {
-      var p = fn(t);
-      if (p && typeof p.then === "function") {
-        p.then(function () { t.done(); },
-               t.step_func_done(function (e) { throw e; }));
-      } else {
-        t.done();
-      }
-    } catch (e) {
-      t.step_func_done(function () { throw e; })();
+    var state = context();
+    var complete = false;
+    outstandingPromiseTests++;
+    function finish(error) {
+      if (complete) return;
+      complete = true;
+      record(name, state.cleanup(error));
+      outstandingPromiseTests--;
     }
+    // WPT promise tests run in registration order. Besides matching the real
+    // harness, serialization keeps tests which temporarily delete an interface
+    // from perturbing unrelated cases that use it.
+    promiseTestTail = promiseTestTail.then(function () {
+      return fn.call(state, state);
+    }).then(function () {
+      finish(null);
+    }, function (e) {
+      finish(e);
+    });
   };
 
   global.done = function () {};
@@ -101,7 +128,7 @@
   }
 
   global.assert_equals = function (actual, expected, description) {
-    if (actual !== expected) {
+    if (!Object.is(actual, expected)) {
       fail("expected " + format(expected) + " but got " + format(actual), description);
     }
   };
@@ -109,6 +136,15 @@
     if (actual === expected) {
       fail("got disallowed value " + format(actual), description);
     }
+  };
+  global.assert_greater_than_equal = function (actual, expected, description) {
+    if (!(actual >= expected)) fail(format(actual) + " is not >= " + format(expected), description);
+  };
+  global.assert_less_than_equal = function (actual, expected, description) {
+    if (!(actual <= expected)) fail(format(actual) + " is not <= " + format(expected), description);
+  };
+  global.assert_less_than = function (actual, expected, description) {
+    if (!(actual < expected)) fail(format(actual) + " is not < " + format(expected), description);
   };
   global.assert_true = function (value, description) {
     if (value !== true) fail("expected true but got " + format(value), description);
@@ -136,9 +172,11 @@
     fail("did not throw", description);
   };
   global.assert_throws_exactly = function (expected, fn, description) {
-    try { fn(); } catch (e) {
+    try {
+      fn();
+    } catch (e) {
       if (e === expected) return;
-      fail("threw " + format(e) + " instead of the exact expected value", description);
+      fail("threw " + format(e) + " instead of the expected value", description);
     }
     fail("did not throw", description);
   };
@@ -155,6 +193,22 @@
     }
     fail("did not throw", description);
   };
+  global.promise_rejects_dom = function (_, name, promise, description) {
+    return Promise.resolve(promise).then(function () {
+      fail("did not reject", description);
+    }, function (error) {
+      if (!(error instanceof DOMException) || error.name !== name) {
+        fail("expected DOMException " + name + " but got " + error, description);
+      }
+    });
+  };
+  global.promise_rejects_exactly = function (_, expected, promise, description) {
+    return Promise.resolve(promise).then(function () {
+      fail("did not reject", description);
+    }, function (error) {
+      if (error !== expected) fail("rejected with a different value", description);
+    });
+  };
   // The overload used by the adopted WebCrypto tests. Preserve upstream's
   // constructor, name, code, quota and requested checks.
   global.assert_throws_quotaexceedederror = function (fn, requested, quota, description) {
@@ -170,6 +224,12 @@
   global.assert_unreached = function (description) {
     fail("reached unreachable code", description);
   };
+  // WPT uses this to mark a permitted optional feature as unsupported. The
+  // Rust runner turns this failure into a named exclusion for its pass/fail
+  // accounting.
+  global.assert_implements_optional = function (actual, description) {
+    if (!actual) fail("optional feature not implemented", description);
+  };
   global.assert_class_string = function (object, className, description) {
     var got = Object.prototype.toString.call(object);
     if (got !== "[object " + className + "]") {
@@ -184,12 +244,34 @@
     return String(value);
   }
 
+  global.format_value = format;
+
   global.__ibex2_test_results = function () {
     return JSON.stringify(results);
+  };
+  global.__ibex2_test_outstanding = function () {
+    return outstandingPromiseTests;
   };
   global.__ibex2_reset_results = function () {
     results = [];
     pending = 0;
+    outstandingPromiseTests = 0;
+    promiseTestTail = Promise.resolve();
   };
   global.__ibex2_pending_tests = function () { return pending; };
+
+  // The ECDSA fixture clones plain records containing typed arrays while it
+  // constructs invalid-vector variants. This test-only clone is deliberately
+  // limited to that data shape; it is not the standard-library implementation.
+  if (typeof global.structuredClone === "undefined") {
+    global.structuredClone = function clone(value) {
+      if (value === null || typeof value !== "object") return value;
+      if (ArrayBuffer.isView(value)) return new value.constructor(value);
+      if (value instanceof ArrayBuffer) return value.slice(0);
+      if (Array.isArray(value)) return value.map(clone);
+      var result = {};
+      Object.keys(value).forEach(function (key) { result[key] = clone(value[key]); });
+      return result;
+    };
+  }
 })(globalThis);

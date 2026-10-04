@@ -24,10 +24,13 @@ fn median(mut values: Vec<f64>) -> f64 {
     values[values.len() / 2]
 }
 
-fn install_runtime(rt: &mut Hermes) {
+fn install_runtime_with(rt: &mut Hermes, groups: ibex2::bindings::Groups) {
     let context = ibex2::bindings::Context::new(ibex2::grant::GrantSet::none());
-    rt.install_runtime(ibex2::bindings::Groups::DEFAULT, &context)
-        .expect("bindings");
+    rt.install_runtime(groups, &context).expect("bindings");
+}
+
+fn install_runtime(rt: &mut Hermes) {
+    install_runtime_with(rt, ibex2::bindings::Groups::DEFAULT);
 }
 
 // --- the floor -------------------------------------------------------------
@@ -46,13 +49,13 @@ impl Floor {
     }
 }
 
-fn floor() -> Floor {
+fn floor_with(groups: ibex2::bindings::Groups) -> Floor {
     let t = Instant::now();
     let mut rt = Hermes::new(DynamicCode::Closed).expect("runtime");
     let create = ms(t.elapsed());
     let stdlib = 0.0;
     let t = Instant::now();
-    install_runtime(&mut rt);
+    install_runtime_with(&mut rt, groups);
     let bindings = ms(t.elapsed());
     let t = Instant::now();
     rt.harden().expect("harden");
@@ -67,6 +70,10 @@ fn floor() -> Floor {
         freeze,
         first_eval,
     }
+}
+
+fn floor() -> Floor {
+    floor_with(ibex2::bindings::Groups::DEFAULT)
 }
 
 // --- a graph ---------------------------------------------------------------
@@ -291,6 +298,28 @@ fn main() {
     put("floor_bindings_ms", num(pick(|f| f.bindings)));
     put("floor_freeze_ms", num(pick(|f| f.freeze)));
     put("floor_first_eval_ms", num(pick(|f| f.first_eval)));
+
+    // D5/D6 decide a default-on install group by its own cost, not by the
+    // total floor. Alternate the two profiles to keep machine noise from
+    // becoming the result, then compare medians over the same sample count.
+    let without_blob = ibex2::bindings::Groups::DEFAULT.without(ibex2::bindings::Groups::BLOB);
+    let with_blob_groups = without_blob | ibex2::bindings::Groups::BLOB;
+    let mut with_blob = Vec::new();
+    let mut without_blob_samples = Vec::new();
+    for _ in 0..60 {
+        without_blob_samples.push(floor_with(without_blob).total());
+        with_blob.push(floor_with(with_blob_groups).total());
+    }
+    put(
+        "blob_floor_us",
+        num((median(with_blob) - median(without_blob_samples)) * 1000.0),
+    );
+    put(
+        "blob_bytecode_bytes",
+        include_bytes!(concat!(env!("OUT_DIR"), "/blob.hbc"))
+            .len()
+            .to_string(),
+    );
 
     // A 100-module graph from source: the cost bytecode exists to remove.
     let small = Graph::build(100);

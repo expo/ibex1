@@ -171,6 +171,14 @@ fn compiled_binding(name: &str) -> CompiledScript {
             b"websocket\0",
             include_bytes!(concat!(env!("OUT_DIR"), "/websocket.hbc")),
         ),
+        "blob" => (
+            b"blob\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/blob.hbc")),
+        ),
+        "structured_clone" => (
+            b"structured_clone\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/structured_clone.hbc")),
+        ),
         "fetch" => (
             b"fetch\0",
             include_bytes!(concat!(env!("OUT_DIR"), "/fetch.hbc")),
@@ -454,6 +462,16 @@ impl Hermes {
         let state =
             unsafe { ibex2_hermes_state(self.handle).as_ref() }.expect("live Hermes runtime state");
         state.live_headers()
+    }
+
+    /// Number of Rust-side `CryptoKey` handles held by this runtime.
+    /// Used to witness garbage-collection release in integration tests.
+    #[doc(hidden)]
+    pub fn crypto_key_count(&self) -> usize {
+        // SAFETY: the runtime owns this state for the lifetime of `self`.
+        let state =
+            unsafe { ibex2_hermes_state(self.handle).as_ref() }.expect("live Hermes runtime state");
+        state.crypto_key_count()
     }
 
     /// Drain the console records this runtime's thread has queued.

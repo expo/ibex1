@@ -4,6 +4,7 @@
 
   var hooks = global.__ibex2_websocket;
   var fireTrustedEvent = global.__ibex2_fire_trusted_event;
+  var brand = global.__ibex2_brand || function (value) { return value; };
   delete global.__ibex2_websocket;
   delete global.__ibex2_fire_trusted_event;
   if (!hooks || typeof hooks.open !== "function" ||
@@ -149,6 +150,7 @@
       handlers: Object.create(null)
     };
     states.set(socket, state);
+    brand(socket, "WebSocket");
     state.handle = hooks.open(socket, function (packet) {
       receive(socket, packet);
     }, state.url, offered.join("\n"));

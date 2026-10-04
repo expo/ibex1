@@ -4,6 +4,370 @@
   "fetchedOn": "2026-08-28",
   "files": [
     {
+      "upstream": "FileAPI/blob/Blob-array-buffer.any.js",
+      "local": "third_party/wpt/FileAPI/blob/Blob-array-buffer.any.js",
+      "sha256": "eb5ac8ab115dfb3f91202132c144b33c1e530a456f463324066dbe11ade2f60b",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "FileAPI/blob/Blob-bytes.any.js",
+      "local": "third_party/wpt/FileAPI/blob/Blob-bytes.any.js",
+      "sha256": "a305534e59646650d71826a838e499a57da1c2ea60ebb3fdb899f1ea0d6a5964",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "FileAPI/blob/Blob-constructor.any.js",
+      "local": "third_party/wpt/FileAPI/blob/Blob-constructor.any.js",
+      "sha256": "7a09f45aa13c1634489425c08a0d77f69f92fc5da4bc2d3cf341e9e290aabe8b",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "FileAPI/blob/Blob-newobject.any.js",
+      "local": "third_party/wpt/FileAPI/blob/Blob-newobject.any.js",
+      "sha256": "64257c4adfd0ff059fb492605a62e921ff17b63c9b66c3a87d94c1626a9c3444",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "FileAPI/blob/Blob-slice-overflow.any.js",
+      "local": "third_party/wpt/FileAPI/blob/Blob-slice-overflow.any.js",
+      "sha256": "5da17f7ad6fa2e15a0ae6e8435f9cfd0413b64a39ea337bedd99e915048d8d5d",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "FileAPI/blob/Blob-slice.any.js",
+      "local": "third_party/wpt/FileAPI/blob/Blob-slice.any.js",
+      "sha256": "506fc067d18adb43b2b3b01fcc1123fadaaaf78bfed311b8e863c5f7edd64cda",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "FileAPI/blob/Blob-text.any.js",
+      "local": "third_party/wpt/FileAPI/blob/Blob-text.any.js",
+      "sha256": "e1fa952af9b0bb70c103d0aa63a9524142904b66d60481e25d4c957426e13101",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "FileAPI/support/Blob.js",
+      "local": "third_party/wpt/FileAPI/support/Blob.js",
+      "sha256": "a1152b82af45d952c56f8b6f82c3a87e9ac58f834114a9813778418bfa7df25d",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/derive_bits_keys/hkdf.https.any.js",
+      "local": "third_party/wpt/WebCryptoAPI/derive_bits_keys/hkdf.https.any.js",
+      "sha256": "7c66459c925c6c5c863940cc4b073c2e4c3d2bd05d53de811df21de31bbbce8a",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/derive_bits_keys/hkdf.js",
+      "local": "third_party/wpt/WebCryptoAPI/derive_bits_keys/hkdf.js",
+      "sha256": "a58d856816e283187129baefc659e97754e7835949a7d0aa546d26f7e79642d5",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/derive_bits_keys/hkdf_vectors.js",
+      "local": "third_party/wpt/WebCryptoAPI/derive_bits_keys/hkdf_vectors.js",
+      "sha256": "6ae0b9b75525020e897d06b07219f257c6a823afec4243658207b33ddc5ea800",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/derive_bits_keys/kdf.js",
+      "local": "third_party/wpt/WebCryptoAPI/derive_bits_keys/kdf.js",
+      "sha256": "6326c303cc630d55f815e0e5ce414df9d5eeb345d1943687cbe2f509a5656786",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/derive_bits_keys/pbkdf2.https.any.js",
+      "local": "third_party/wpt/WebCryptoAPI/derive_bits_keys/pbkdf2.https.any.js",
+      "sha256": "8d9f12945123e1cc4a8ca872d8e35a2bd55f56ee6560091cd8b91cc7e94d7c5a",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/derive_bits_keys/pbkdf2.js",
+      "local": "third_party/wpt/WebCryptoAPI/derive_bits_keys/pbkdf2.js",
+      "sha256": "635666b590e56fd873752ec1b4730e5b524b23900e1248bdddba9e0eb7411e7b",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/derive_bits_keys/pbkdf2_vectors.js",
+      "local": "third_party/wpt/WebCryptoAPI/derive_bits_keys/pbkdf2_vectors.js",
+      "sha256": "69b064b17954ad2626a6db32e38461b8f4bdf607a19cf8db34537c9aedcebd82",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/digest/digest.https.any.js",
+      "local": "third_party/wpt/WebCryptoAPI/digest/digest.https.any.js",
+      "sha256": "55bf4b5b7d747bc67cc5a25acba03df24f909dd5868dfdbb703fb6d908b9fb01",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/digest/digest.js",
+      "local": "third_party/wpt/WebCryptoAPI/digest/digest.js",
+      "sha256": "a321b5c107caeb5af402ce1dc07cb4b33dd10edde887eead81aebf343cccf4da",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/digest/digest_test_data.js",
+      "local": "third_party/wpt/WebCryptoAPI/digest/digest_test_data.js",
+      "sha256": "1f35502231a757e70ff3eab3dde74e557a2551cc4a013a9c82cfc40cde2fd1c3",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/encrypt_decrypt/aes.js",
+      "local": "third_party/wpt/WebCryptoAPI/encrypt_decrypt/aes.js",
+      "sha256": "b519911d683b89a8c66af48fab699cbba2247dabbb3c3aa6e8549f3bc8f7c07b",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/encrypt_decrypt/aes_common_fixtures.js",
+      "local": "third_party/wpt/WebCryptoAPI/encrypt_decrypt/aes_common_fixtures.js",
+      "sha256": "9b6198f380eb867adabb94a4e8dee9b46d6058a622d42f1884ce5c13a1d08f6f",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/encrypt_decrypt/aes_gcm.https.any.js",
+      "local": "third_party/wpt/WebCryptoAPI/encrypt_decrypt/aes_gcm.https.any.js",
+      "sha256": "da85e248fdb9d37cc73a80f7ac516454e3145c56d3adeb1ae4b7f5d9b7393974",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/encrypt_decrypt/aes_gcm_96_iv_fixtures.js",
+      "local": "third_party/wpt/WebCryptoAPI/encrypt_decrypt/aes_gcm_96_iv_fixtures.js",
+      "sha256": "11b8e9d73efad16332f3f0e6baca50621f6224b570fb8baebb8400ab960e3376",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/encrypt_decrypt/aes_gcm_vectors.js",
+      "local": "third_party/wpt/WebCryptoAPI/encrypt_decrypt/aes_gcm_vectors.js",
+      "sha256": "9004d32bd2f0e1107ef09257744a40a780c65d8740c1a4e9845ebfb4fc86e655",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/generateKey/algorithm_registry.js",
+      "local": "third_party/wpt/WebCryptoAPI/generateKey/algorithm_registry.js",
+      "sha256": "3fa5f8fc3b98a163a7008432c882002e5ddb04e91d504f58acb27a2674a5f68c",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/generateKey/successes.js",
+      "local": "third_party/wpt/WebCryptoAPI/generateKey/successes.js",
+      "sha256": "ffe652492496003fe3762d7cd0a9d5b01fc15e0014acdbee9e183de723f00e68",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/generateKey/successes_AES-GCM.https.any.js",
+      "local": "third_party/wpt/WebCryptoAPI/generateKey/successes_AES-GCM.https.any.js",
+      "sha256": "711dd4d6e756cfde94269ca5d753665311dbbc0de2a525e0d3fa75652669cce9",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/generateKey/successes_ECDSA.https.any.js",
+      "local": "third_party/wpt/WebCryptoAPI/generateKey/successes_ECDSA.https.any.js",
+      "sha256": "b060d1cd59fdb34b9bc7cbc8dfef7343c387ccde6726c33483cb6ffee8c8701a",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/generateKey/successes_Ed25519.https.any.js",
+      "local": "third_party/wpt/WebCryptoAPI/generateKey/successes_Ed25519.https.any.js",
+      "sha256": "4c3e604dff898bb0e78dbdf1952c1cba81b20fcee628b22343b87407508a54ab",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/generateKey/successes_HMAC.https.any.js",
+      "local": "third_party/wpt/WebCryptoAPI/generateKey/successes_HMAC.https.any.js",
+      "sha256": "cb713e71893ad8691fbfcbec925888be471a6fc148f6550c77bc4f3ada5a275c",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/getRandomValues.any.js",
+      "local": "third_party/wpt/WebCryptoAPI/getRandomValues.any.js",
+      "sha256": "e74df8320534db600e4a22c7238f80f9d7d6eb5bb86e0cced15559eeb9d67526",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-09-06"
+    },
+    {
+      "upstream": "WebCryptoAPI/import_export/ec_importKey.https.any.js",
+      "local": "third_party/wpt/WebCryptoAPI/import_export/ec_importKey.https.any.js",
+      "sha256": "ba3c3212c139ba277f9fe2409d6598591722b6b5c0961dfb0745bf486a4f4c96",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/import_export/okp_importKey.js",
+      "local": "third_party/wpt/WebCryptoAPI/import_export/okp_importKey.js",
+      "sha256": "0e10fca264b0c85f10dd98f0e6e38faa7201f19d416ee8e15e63e63302dad009",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/import_export/okp_importKey_Ed25519.https.any.js",
+      "local": "third_party/wpt/WebCryptoAPI/import_export/okp_importKey_Ed25519.https.any.js",
+      "sha256": "29773689baff9f4edc5935b7a8494904cec40fa902cc6f53eecf0eb29c411928",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/import_export/okp_importKey_fixtures.js",
+      "local": "third_party/wpt/WebCryptoAPI/import_export/okp_importKey_fixtures.js",
+      "sha256": "ddad596bc2888870a6d168e7f064925045b245ae7e6ae45642b9db9c906015cd",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/import_export/symmetric_importKey.https.any.js",
+      "local": "third_party/wpt/WebCryptoAPI/import_export/symmetric_importKey.https.any.js",
+      "sha256": "0b50423abd7c975e2b58ab6f6793d95ff8ec7a1c9365d7016eb418b36429dfe5",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/import_export/symmetric_importKey.js",
+      "local": "third_party/wpt/WebCryptoAPI/import_export/symmetric_importKey.js",
+      "sha256": "758a2d93b40decc42d2c1f2544809f9a5dc95668acd93e808a9a73bcec590b80",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/randomUUID.https.any.js",
+      "local": "third_party/wpt/WebCryptoAPI/randomUUID.https.any.js",
+      "sha256": "e23fb613b2b1494f8a8dc7156c874df9ee2129e8e2f2ed327f0e4cdfafad5842",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-09-06"
+    },
+    {
+      "upstream": "WebCryptoAPI/sign_verify/ecdsa.https.any.js",
+      "local": "third_party/wpt/WebCryptoAPI/sign_verify/ecdsa.https.any.js",
+      "sha256": "e69ac315ff8f73aba02b1c4a48d31d6a987423d543f577599083ed79a025aa46",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/sign_verify/ecdsa.js",
+      "local": "third_party/wpt/WebCryptoAPI/sign_verify/ecdsa.js",
+      "sha256": "c688814e87d92289d34ad374decc29f65434f1e14cf7e36222a107f94200e744",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/sign_verify/ecdsa_vectors.js",
+      "local": "third_party/wpt/WebCryptoAPI/sign_verify/ecdsa_vectors.js",
+      "sha256": "67e47c27b1aada50ceb62689b149bc7aa0dfa273f3dd122f91fd6eb5daa78426",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/sign_verify/eddsa.js",
+      "local": "third_party/wpt/WebCryptoAPI/sign_verify/eddsa.js",
+      "sha256": "b0155826033feb10fef4504b7ec4019a2cd54a50087d0dd530dafb25a6babed1",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/sign_verify/eddsa_curve25519.https.any.js",
+      "local": "third_party/wpt/WebCryptoAPI/sign_verify/eddsa_curve25519.https.any.js",
+      "sha256": "19ed793dc775bed9fdb48d3ba68477153e32ec381cdfe2ae88fac7e8fe113cdb",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/sign_verify/eddsa_vectors.js",
+      "local": "third_party/wpt/WebCryptoAPI/sign_verify/eddsa_vectors.js",
+      "sha256": "74fa523933c1b6f461f98876eb864df20a703cc60c26be9ab7666da484671040",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/sign_verify/hmac.https.any.js",
+      "local": "third_party/wpt/WebCryptoAPI/sign_verify/hmac.https.any.js",
+      "sha256": "41d1a8035c598e2a7cc21d513c9e72a38a805c65b7a48008074c5c179a886361",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/sign_verify/hmac.js",
+      "local": "third_party/wpt/WebCryptoAPI/sign_verify/hmac.js",
+      "sha256": "c3ca8075ba6bffe2ed33fc103e45240c13bbb4593b15849930b399ad44ec8746",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/sign_verify/hmac_vectors.js",
+      "local": "third_party/wpt/WebCryptoAPI/sign_verify/hmac_vectors.js",
+      "sha256": "88a14ad2a5cd8eb6c4e5087bf08ac11aa9801d7eaa3d65f64ec7693e60b1788f",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/sign_verify/mac.js",
+      "local": "third_party/wpt/WebCryptoAPI/sign_verify/mac.js",
+      "sha256": "6e92e55a41ea81ec6bd3b0c9abfec50e0ad75af323fdb566ac648b792d471ab6",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/sign_verify/signature.js",
+      "local": "third_party/wpt/WebCryptoAPI/sign_verify/signature.js",
+      "sha256": "67c901cdb7be4b4af1d5599f60b5f118b29793a37528b207cdf014d37abe8cf6",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/util/ec_key_fixtures.js",
+      "local": "third_party/wpt/WebCryptoAPI/util/ec_key_fixtures.js",
+      "sha256": "af42b5b0ba57d0bdbc2919fedd57bb32b732f94392c60fbf9be70a12a0594cdc",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/util/helpers.js",
+      "local": "third_party/wpt/WebCryptoAPI/util/helpers.js",
+      "sha256": "9dfd282f2bb5255ece417b7815a36ad4b16a91c67bc194a052ae58756843d11a",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "WebCryptoAPI/util/okp_key_fixtures.js",
+      "local": "third_party/wpt/WebCryptoAPI/util/okp_key_fixtures.js",
+      "sha256": "f04882a29723aa50de3a68fb7e77e04029d3fea201e29cce914e0db96a7b3f0e",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "common/subset-tests.js",
+      "local": "third_party/wpt/common/subset-tests.js",
+      "sha256": "72643af8e7b9e580a754dd7201179e104437da2265d4a20a898eaa15c5d7cb32",
+      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
+      "fetchedOn": "2026-10-04"
+    },
+    {
       "upstream": "fetch/api/headers/headers-basic.any.js",
       "local": "third_party/wpt/fetch/api/headers/headers-basic.any.js",
       "sha256": "596cd577710773b42a5edf7c6150138fd0502e005a76b383a8331b5fcaf2cfeb"
@@ -24,23 +388,100 @@
       "sha256": "8f914199d80ed14cd5dec7992464a10981e0b5b74fd26b70768f04f1fd1fb4c1"
     },
     {
+      "upstream": "html/webappapis/structured-clone/structured-clone-battery-of-tests-harness.js",
+      "local": "third_party/wpt/html/webappapis/structured-clone/structured-clone-battery-of-tests-harness.js",
+      "sha256": "61cf8d71704c1a509a58b51248fbb50f389d9339e68ad0c5520130d59d433ab8",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "html/webappapis/structured-clone/structured-clone-battery-of-tests-with-transferables.js",
+      "local": "third_party/wpt/html/webappapis/structured-clone/structured-clone-battery-of-tests-with-transferables.js",
+      "sha256": "1d72f2f1ce39a35ea0bf13c157e8e20bbc0b87c959af844ebc32d77b1eaed671",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "html/webappapis/structured-clone/structured-clone-battery-of-tests.js",
+      "local": "third_party/wpt/html/webappapis/structured-clone/structured-clone-battery-of-tests.js",
+      "sha256": "8242d0df5b6a98140e795041c8807a58e32dc8afe971e31be7e7b588fef6d2f8",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "html/webappapis/structured-clone/structured-clone.any.js",
+      "local": "third_party/wpt/html/webappapis/structured-clone/structured-clone.any.js",
+      "sha256": "fab6a2c44f860c790873e2e12790d85ad150415aa1b444ef63f6793ef4d42f15",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
       "upstream": "url/resources/urltestdata.json",
       "local": "third_party/wpt/urltestdata.json",
       "sha256": "b8767904d25029a46e0d297e1320ded3a733322f489caa5a482c886fb11e9238"
     },
     {
-      "upstream": "WebCryptoAPI/getRandomValues.any.js",
-      "local": "third_party/wpt/WebCryptoAPI/getRandomValues.any.js",
-      "sha256": "e74df8320534db600e4a22c7238f80f9d7d6eb5bb86e0cced15559eeb9d67526",
-      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
-      "fetchedOn": "2026-09-06"
+      "upstream": "xhr/formdata/append.any.js",
+      "local": "third_party/wpt/xhr/formdata/append.any.js",
+      "sha256": "0adedf9be59114773d698e6c2b90f87b33c15f633854e7b3a948bbcad03a7a41",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
     },
     {
-      "upstream": "WebCryptoAPI/randomUUID.https.any.js",
-      "local": "third_party/wpt/WebCryptoAPI/randomUUID.https.any.js",
-      "sha256": "e23fb613b2b1494f8a8dc7156c874df9ee2129e8e2f2ed327f0e4cdfafad5842",
-      "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
-      "fetchedOn": "2026-09-06"
+      "upstream": "xhr/formdata/constructor.any.js",
+      "local": "third_party/wpt/xhr/formdata/constructor.any.js",
+      "sha256": "a49b4e2e5f194f35e5a3fb626ad0665b45d6a02d09fbb5185b2ba9d0e6f6c391",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "xhr/formdata/delete.any.js",
+      "local": "third_party/wpt/xhr/formdata/delete.any.js",
+      "sha256": "8a83a4a9112522a7099924300bd5191d6879b33b1c1a7df390758a943088ff77",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "xhr/formdata/foreach.any.js",
+      "local": "third_party/wpt/xhr/formdata/foreach.any.js",
+      "sha256": "7b94892d20c70699c6b7be5858b643714b439e01e5ce9e1683c30b936b26536b",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "xhr/formdata/get.any.js",
+      "local": "third_party/wpt/xhr/formdata/get.any.js",
+      "sha256": "fd983b9ccc39eebc7f4f7591d78a7710f3d16b12e1c5024896dc97a127e61955",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "xhr/formdata/has.any.js",
+      "local": "third_party/wpt/xhr/formdata/has.any.js",
+      "sha256": "cbe1e781d18a5d8930a29ec7045c2876216b173eebbe9edac318bbc2b2eb0cc7",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "xhr/formdata/iteration.any.js",
+      "local": "third_party/wpt/xhr/formdata/iteration.any.js",
+      "sha256": "e98147f85dfe7aa744c7e4eb4c4a0111cc26a5999c3c242171bf3169fed21231",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "xhr/formdata/set-blob.any.js",
+      "local": "third_party/wpt/xhr/formdata/set-blob.any.js",
+      "sha256": "c5724281fc7f0b4d29a2acddb8a40081cb922c607acaf3987b96c7429b002c5c",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "xhr/formdata/set.any.js",
+      "local": "third_party/wpt/xhr/formdata/set.any.js",
+      "sha256": "a58a8a2393077834aac649dc52e0633578d5b63e1f7ae7cc2f51388f4ecbe92e",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
     },
     {
       "upstream": "dom/events/Event-constructors.any.js",
@@ -324,6 +765,34 @@
     }
   ],
   "exclusions": [
+    {
+      "upstream": "FileAPI/blob/Blob-constructor-endings.any.js",
+      "reason": "Ibex v1 deliberately refuses endings=native; transparent is covered by Blob-constructor.any.js."
+    },
+    {
+      "upstream": "FileAPI/blob/Blob-constructor-detached-buffer.any.js",
+      "reason": "Hermes exposes no MessageChannel or transferable-buffer detachment API."
+    },
+    {
+      "upstream": "FileAPI/blob/Blob-stream.any.js and FileAPI/blob/Blob-textStream.any.js",
+      "reason": "Blob.stream() and general Streams are outside the v1 platform."
+    },
+    {
+      "upstream": "FileAPI/blob/*.{html,window.js,worker.js}",
+      "reason": "These fixtures require a DOM, synchronous XHR, or a Worker global."
+    },
+    {
+      "upstream": "xhr/formdata/*-formelement.html and xhr/formdata/*submitter*.html",
+      "reason": "The no-DOM FormData constructor intentionally has no HTML form or submitter overload."
+    },
+    {
+      "upstream": "FileAPI/blob/Blob-constructor.any.js :: Passing a FrozenArray as the blobParts array should work (FrozenArray<MessagePort>).",
+      "reason": "Hermes exposes no MessageChannel. The rest of this unmodified fixture still runs."
+    },
+    {
+      "upstream": "FileAPI/blob/Blob-newobject.any.js :: Blob.stream() returns [NewObject]",
+      "reason": "The fixture mixes the excluded Blob.stream() with supported Blob read methods; the latter still run unmodified."
+    },
     {
       "upstream": "dom/events/Event-dispatch-listener-order.window.js",
       "reason": "Requires document.createElement, a closed ShadowRoot, and a five-node propagation path; Ibex's event target deliberately has no DOM tree."

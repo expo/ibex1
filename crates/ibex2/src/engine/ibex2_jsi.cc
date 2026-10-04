@@ -21,6 +21,8 @@ extern "C" void* ibex2_sqlite_owner_create(const void*, double, int);
 extern "C" void ibex2_sqlite_owner_destroy(void*);
 extern "C" void* ibex2_response_owner_create(const void*, double);
 extern "C" void ibex2_response_owner_destroy(void*);
+extern "C" void* ibex2_crypto_key_owner_create(const void*, double);
+extern "C" void ibex2_crypto_key_owner_destroy(void*);
 extern "C" int ibex2_response_field(const void*, double, uint32_t,
                                     const Ibex2AbiValue*, Ibex2AbiValue*);
 extern "C" size_t ibex2_grants_env_count(const void*);
@@ -374,6 +376,7 @@ struct Adapter::State {
   uint32_t bytecode_version;
   std::shared_ptr<Lifetime> lifetime;
   jsi::Value fetch_factory;
+  jsi::Value blob_helpers;
   jsi::Value sqlite_factory;
   jsi::Value event_reporter;
   jsi::Value trusted_event_dispatch;
@@ -417,6 +420,7 @@ void Adapter::detach() {
   state_->lifetime->detach();
   state_->pending.clear();
   state_->fetch_factory = jsi::Value::undefined();
+  state_->blob_helpers = jsi::Value::undefined();
   state_->sqlite_factory = jsi::Value::undefined();
   state_->event_reporter = jsi::Value::undefined();
   state_->trusted_event_dispatch = jsi::Value::undefined();
@@ -432,7 +436,8 @@ void freeze(jsi::Runtime&, const jsi::Object&);
 
 constexpr Groups kKnownGroups = GROUP_PURE | GROUP_CONSOLE | GROUP_TIMERS |
     GROUP_ABORT | GROUP_CRYPTO | GROUP_FETCH | GROUP_STORAGE | GROUP_ENV |
-    GROUP_SECRETS | GROUP_KV | GROUP_INTL | GROUP_EVENTS | GROUP_WEBSOCKET;
+    GROUP_SECRETS | GROUP_KV | GROUP_INTL | GROUP_BLOB | GROUP_EVENTS |
+    GROUP_WEBSOCKET;
 
 bool has(Groups groups, Groups group) { return (groups & group) == group; }
 
@@ -447,6 +452,7 @@ void validate_groups_impl(Groups groups) {
       {GROUP_FETCH, GROUP_PURE | GROUP_ABORT},
       {GROUP_EVENTS, GROUP_PURE},
       {GROUP_WEBSOCKET, GROUP_PURE | GROUP_EVENTS},
+      {GROUP_BLOB, GROUP_PURE},
   };
   for (const auto& requirement : requirements) {
     if (has(groups, requirement.group) && !has(groups, requirement.required))
@@ -470,6 +476,7 @@ std::vector<const char*> expected_scripts_impl(Groups groups) {
   if (has(groups, GROUP_EVENTS)) result.push_back("events");
   if (has(groups, GROUP_ABORT)) result.push_back("abort");
   if (has(groups, GROUP_WEBSOCKET)) result.push_back("websocket");
+  if (has(groups, GROUP_BLOB)) result.push_back("blob");
 #if defined(IBEX2_JSI_HAS_INTL)
   if (has(groups, GROUP_INTL)) {
     result.push_back("intl_number_format");
@@ -479,6 +486,7 @@ std::vector<const char*> expected_scripts_impl(Groups groups) {
 #endif
   if (has(groups, GROUP_FETCH)) result.push_back("fetch");
   if (has(groups, GROUP_STORAGE)) result.push_back("sqlite");
+  if (has(groups, GROUP_PURE)) result.push_back("structured_clone");
   return result;
 }
 
@@ -522,6 +530,12 @@ struct WebSocketOwner final : jsi::NativeState {
   void* owner;
   explicit WebSocketOwner(void* value) : owner(value) {}
   ~WebSocketOwner() override { ibex2_websocket_owner_destroy(owner); }
+};
+
+struct CryptoKeyOwner final : jsi::NativeState {
+  void* owner;
+  explicit CryptoKeyOwner(void* value) : owner(value) {}
+  ~CryptoKeyOwner() override { ibex2_crypto_key_owner_destroy(owner); }
 };
 
 jsi::Function make_group_binding(jsi::Runtime& rt, const char* name,
@@ -619,6 +633,41 @@ void install_crypto(jsi::Runtime& rt,
   auto global = rt.global();
   set_group_binding(rt, global, "__ibex2_random_uuid", 70, lifetime);
   set_group_binding(rt, global, "__ibex2_get_random_values", 71, lifetime);
+  jsi::Object subtle(rt);
+  set_group_binding(rt, subtle, "digest", 160, lifetime);
+  set_group_binding(rt, subtle, "importKey", 161, lifetime);
+  set_group_binding(rt, subtle, "exportKey", 162, lifetime);
+  set_group_binding(rt, subtle, "generateKey", 163, lifetime);
+  set_group_binding(rt, subtle, "sign", 164, lifetime);
+  set_group_binding(rt, subtle, "verify", 165, lifetime);
+  set_group_binding(rt, subtle, "encrypt", 166, lifetime);
+  set_group_binding(rt, subtle, "decrypt", 167, lifetime);
+  set_group_binding(rt, subtle, "deriveBits", 168, lifetime);
+  set_group_binding(rt, subtle, "deriveKey", 169, lifetime);
+  subtle.setProperty(
+      rt, "own",
+      jsi::Function::createFromHostFunction(
+          rt, jsi::PropNameID::forAscii(rt, "ownCryptoKey"), 2,
+          [lifetime](jsi::Runtime& r, const jsi::Value&,
+                     const jsi::Value* args, size_t count) -> jsi::Value {
+            const void* state = lifetime->require(r);
+            if (count != 2 || !args[0].isNumber() || !args[1].isObject())
+              throw jsi::JSError(r, "CryptoKey owner needs a handle and object");
+            void* owner = ibex2_crypto_key_owner_create(state, args[0].asNumber());
+            if (owner == nullptr)
+              throw jsi::JSError(r, "CryptoKey handle is released or unknown");
+            args[1].getObject(r).setNativeState(
+                r, std::make_shared<CryptoKeyOwner>(owner));
+            return jsi::Value::undefined();
+          }));
+  global.setProperty(rt, "__ibex2_subtle", std::move(subtle));
+}
+
+void install_blob(jsi::Runtime& rt,
+                  const std::shared_ptr<Lifetime>& lifetime) {
+  auto global = rt.global();
+  set_group_binding(rt, global, "__ibex2_multipart_boundary", 73, lifetime);
+  set_group_binding(rt, global, "__ibex2_multipart_encode", 74, lifetime);
 }
 
 void install_fetch(jsi::Runtime& rt, Adapter& adapter,
@@ -914,6 +963,7 @@ void Adapter::install(Groups groups, const Ibex2Bindings* bindings,
     if (has(groups, GROUP_CRYPTO)) install_crypto(rt, state_->lifetime);
     if (has(groups, GROUP_EVENTS)) install_events(rt, state_->lifetime);
     if (has(groups, GROUP_WEBSOCKET)) install_websocket();
+    if (has(groups, GROUP_BLOB)) install_blob(rt, state_->lifetime);
     if (has(groups, GROUP_FETCH)) install_fetch(rt, *this, state_->lifetime);
 #if defined(IBEX2_JSI_HAS_INTL)
     if (has(groups, GROUP_INTL)) {
@@ -928,8 +978,18 @@ void Adapter::install(Groups groups, const Ibex2Bindings* bindings,
         rt.global().setProperty(rt, "__ibex2_fire_trusted_event",
                                 jsi::Value(rt, state_->trusted_event_dispatch));
       }
+      if (std::strcmp(script.name, "fetch") == 0 &&
+          state_->blob_helpers.isObject())
+        rt.global().setProperty(rt, "__ibex2_blob_helpers",
+                                state_->blob_helpers);
       auto buffer = std::make_shared<CompiledBytes>(script.bytes, script.len);
       auto value = rt.evaluateJavaScript(buffer, std::string(script.name) + ".js");
+      if (std::strcmp(script.name, "blob") == 0) {
+        if (!value.isObject())
+          throw jsi::JSError(rt, "Blob binding did not evaluate to helpers");
+        state_->blob_helpers = jsi::Value(rt, value);
+        continue;
+      }
       if (std::strcmp(script.name, "fetch") == 0) {
         if (!value.isObject() || !value.getObject(rt).isFunction(rt))
           throw jsi::JSError(rt, "fetch binding did not evaluate to a factory");

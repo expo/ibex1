@@ -99,7 +99,7 @@ accept a reachable-but-empty global. The default is to accept, and D5 requires
 that choice be recorded rather than defaulted into. `crates/ibex2` pins both
 halves in a test — the hole is open, and it yields nothing.
 
-<!-- @ref ios/Frameworks-vanilla/hermes-headers/hermes/Public/RuntimeConfig.h — EnableEval is stock; the latch is not needed once boot compiles nothing -->
+<!-- @ref https://github.com/facebook/hermes/blob/6badada762121682b5481b6124e6c3a991ae6046/public/hermes/Public/RuntimeConfig.h — EnableEval is stock; the latch is not needed once boot compiles nothing -->
 
 **D5 — Every remaining patch is a recorded decision, not a default.** The five
 patches D3 does not retire (§5) must each be retired, replaced in userland, or
@@ -189,7 +189,7 @@ D3 covers the first row. The rest are open, with a stated leaning:
 | 0012 keyed external ArrayBuffer | Likely unnecessary. Stock JSI already provides `MutableBuffer`, `createArrayBuffer`, and `tryGetMutableBuffer`, which is the zero-copy property LLP 0059.000 §1.4 requires. The patch's residue is keyed detach and transfer refusal — a hardening property v1 can decline. |
 | 0015 empty `HermesInternal` | Hardening delta over stock `EnableHermesInternal=false`. Upstream it or accept the difference. |
 
-<!-- @ref ios/Frameworks-vanilla/hermes-headers/jsi/jsi.h — stock MutableBuffer/createArrayBuffer, the zero-copy path patch 0012 predates -->
+<!-- @ref https://github.com/facebook/hermes/blob/6badada762121682b5481b6124e6c3a991ae6046/API/jsi/jsi/jsi.h — stock MutableBuffer/createArrayBuffer, the zero-copy path patch 0012 predates -->
 
 ## 6. Verification
 

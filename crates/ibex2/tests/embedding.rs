@@ -1,9 +1,9 @@
 //! Storage installed into an independently created runtime, without its loader.
 #![cfg(feature = "hermes")]
+use ibex2::stdlib::app_fs::AppDirectories;
 use ibex2::{
     bindings::{Context, Groups},
     grant::GrantSet,
-    stdlib::app_fs::AppDirectories,
 };
 use std::{
     ffi::{c_char, c_void, CStr},
@@ -100,6 +100,14 @@ fn compiled_script(name: &str) -> CompiledScript {
             b"websocket\0",
             include_bytes!(concat!(env!("OUT_DIR"), "/websocket.hbc")),
         ),
+        "blob" => (
+            b"blob\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/blob.hbc")),
+        ),
+        "structured_clone" => (
+            b"structured_clone\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/structured_clone.hbc")),
+        ),
         "fetch" => (
             b"fetch\0",
             include_bytes!(concat!(env!("OUT_DIR"), "/fetch.hbc")),
@@ -187,8 +195,9 @@ impl BareConsumer {
                     "x64"
                 };
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
-                    "../../tools/hermes-vanilla/hermesc-{}-{arch}",
-                    std::env::consts::OS
+                    "../../tools/hermes-vanilla/hermesc-{}-{arch}{}",
+                    std::env::consts::OS,
+                    std::env::consts::EXE_SUFFIX
                 ))
             });
         assert!(std::process::Command::new(compiler)
@@ -316,8 +325,9 @@ impl Consumer {
                     "x64"
                 };
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
-                    "../../tools/hermes-vanilla/hermesc-{}-{arch}",
-                    std::env::consts::OS
+                    "../../tools/hermes-vanilla/hermesc-{}-{arch}{}",
+                    std::env::consts::OS,
+                    std::env::consts::EXE_SUFFIX
                 ))
             });
         assert!(std::process::Command::new(compiler)
@@ -391,6 +401,7 @@ fn pure_installs_exactly_its_globals_into_a_bare_runtime() {
         "btoa",
         "DOMException",
         "QuotaExceededError",
+        "structuredClone",
     ]
     .into_iter()
     .map(str::to_string)
@@ -419,12 +430,57 @@ fn fetch_group_does_not_install_timers_or_crypto() {
         "AbortController",
         "AbortSignal",
         "fetch",
+        "structuredClone",
     ]
     .into_iter()
     .map(str::to_string)
     .filter(|name| !baseline.contains(name))
     .collect();
     assert_eq!(added, expected);
+}
+
+#[test]
+fn blob_group_installs_only_its_globals_and_requires_pure() {
+    let baseline = global_names(&BareConsumer::new(Groups::empty()));
+    let installed = global_names(&BareConsumer::new(Groups::PURE | Groups::BLOB));
+    let pure = global_names(&BareConsumer::new(Groups::PURE));
+    let added: std::collections::BTreeSet<_> = installed.difference(&pure).cloned().collect();
+    let expected = ["Blob", "File", "FormData"]
+        .into_iter()
+        .map(str::to_string)
+        .filter(|name| !baseline.contains(name))
+        .collect();
+    assert_eq!(added, expected);
+}
+
+#[test]
+fn omitted_crypto_group_exposes_no_crypto_surface_or_subtle_ops() {
+    let consumer = BareConsumer::new(Groups::PURE);
+    assert_eq!(
+        consumer.eval(
+            r#"[
+              typeof crypto,
+              typeof Crypto,
+              typeof CryptoKey,
+              typeof SubtleCrypto,
+              typeof globalThis.__ibex2_random_uuid,
+              typeof globalThis.__ibex2_get_random_values,
+              typeof globalThis.__ibex2_subtle
+            ].join(',')"#,
+        ),
+        "undefined,undefined,undefined,undefined,undefined,undefined,undefined"
+    );
+    assert_eq!(
+        consumer.eval(
+            r#"try {
+              globalThis.__ibex2_subtle.digest("SHA-256", new Uint8Array());
+              "reachable";
+            } catch (error) {
+              error instanceof TypeError ? "unreachable" : error.name;
+            }"#,
+        ),
+        "unreachable"
+    );
 }
 
 #[test]
@@ -463,6 +519,7 @@ fn rust_and_cpp_group_validation_tables_agree() {
         Groups::SECRETS,
         Groups::KV,
         Groups::INTL,
+        Groups::BLOB,
         Groups::EVENTS,
         Groups::WEBSOCKET,
     ];
@@ -875,7 +932,11 @@ fn wrong_binding_version_is_refused_and_spends_a_versioned_adapter() {
 #[test]
 fn caller_owns_checkpoints_and_storage_is_typed_and_granted() {
     let c = Consumer::new("fs.read app:/data\nfs.write app:/data\nsqlite.open app:/data/db");
-    c.eval(r#"globalThis.result = ''; storage.fs.atomicWriteFile('app:/data/a\nb', new Uint8Array([1,2])).then(function(){ result = 'written'; });"#).unwrap();
+    // Both names exercise escaped strings; Windows refuses control characters.
+    let filename = if cfg!(windows) { r"a\u00e9 b" } else { r"a\nb" };
+    c.eval(&format!("globalThis.storageFilename = '{filename}';"))
+        .unwrap();
+    c.eval(r#"globalThis.result = ''; storage.fs.atomicWriteFile('app:/data/' + storageFilename, new Uint8Array([1,2])).then(function(){ result = 'written'; });"#).unwrap();
     assert!(c.context.wait(Duration::from_secs(5)));
     assert_eq!(c.eval("result").unwrap(), "");
     assert_eq!(c.step(true), 1);
@@ -888,10 +949,10 @@ fn caller_owns_checkpoints_and_storage_is_typed_and_granted() {
     assert_eq!(c.eval("result").unwrap(), "written");
     c.eval(r#"result = ''; (async function(){
       const names = await storage.fs.readdir('app:/data');
-      if (names.length !== 1 || names[0] !== 'a\nb') throw Error('filename');
-      const stat = await storage.fs.stat('app:/data/a\nb');
+      if (names.length !== 1 || names[0] !== storageFilename) throw Error('filename');
+      const stat = await storage.fs.stat('app:/data/' + storageFilename);
       if (!stat.isFile || stat.isDirectory || stat.size !== 2) throw Error('stat');
-      const bytes = await storage.fs.readFile('app:/data/a\nb');
+      const bytes = await storage.fs.readFile('app:/data/' + storageFilename);
       if (!(bytes instanceof ArrayBuffer) || new Uint8Array(bytes)[1] !== 2) throw Error('bytes');
       const db = await storage.sqlite.open('app:/data/db');
       await db.execute('CREATE TABLE notes(body TEXT)');
