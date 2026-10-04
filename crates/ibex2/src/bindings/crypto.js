@@ -45,6 +45,7 @@
   }
   function webError(error) {
     const message = error && typeof error.message === "string" ? error.message : String(error);
+    if (message.indexOf("TypeError: ") === 0) return new TypeError(message.slice(11));
     for (const name of ["NotSupportedError", "InvalidAccessError", "DataError",
                         "OperationError", "SyntaxError", "QuotaExceededError"]) {
       if (message.indexOf(name + ": ") === 0) {
@@ -71,6 +72,13 @@
       ? value.name : value;
     if (name === undefined) throw new TypeError("algorithm name is required");
     return domString(name, "algorithm name").toUpperCase();
+  }
+  function keyFormat(value) {
+    const format = domString(value, "format");
+    if (["raw", "jwk", "spki", "pkcs8"].indexOf(format) < 0) {
+      throw new TypeError("key format " + format + " is not valid");
+    }
+    return format;
   }
   function hashName(value) {
     const name = algorithmName(value);
@@ -305,8 +313,7 @@
     importKey(formatValue, keyData, algorithmValue, extractableValue, usagesValue) {
       receiver(subtleBrands, this);
       return promised(() => {
-        const format = domString(formatValue, "format").toLowerCase();
-        if (["raw", "jwk", "spki", "pkcs8"].indexOf(format) < 0) unsupported("key format " + format + " is not supported");
+        const format = keyFormat(formatValue);
         const algorithm = normalizeKeyAlgorithm(algorithmValue, false);
         if (format === "jwk" && (algorithm.name === "HKDF" || algorithm.name === "PBKDF2")) {
           unsupported(algorithm.name + " accepts raw keys only");
@@ -347,8 +354,7 @@
     exportKey(formatValue, keyValue) {
       receiver(subtleBrands, this);
       return promised(() => {
-        const format = domString(formatValue, "format").toLowerCase();
-        if (["raw", "jwk", "spki", "pkcs8"].indexOf(format) < 0) unsupported("key format " + format + " is not supported");
+        const format = keyFormat(formatValue);
         const key = keyRecord(keyValue);
         const exported = native.exportKey(key.handle, format);
         if (format === "raw") return exported;

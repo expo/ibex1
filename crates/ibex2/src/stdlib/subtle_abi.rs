@@ -119,6 +119,18 @@ fn hash(args: &[HostArg<'_>], index: usize) -> Result<HashAlgorithm, HostError> 
     HashAlgorithm::parse(string(args, index, "a hash name")?).map_err(failed)
 }
 
+fn key_format(args: &[HostArg<'_>], index: usize) -> Result<KeyFormat, HostError> {
+    match string(args, index, "a key format")? {
+        "raw" => Ok(KeyFormat::Raw),
+        "jwk" => Ok(KeyFormat::Jwk),
+        "spki" => Ok(KeyFormat::Spki),
+        "pkcs8" => Ok(KeyFormat::Pkcs8),
+        format => Err(HostError::Failed(format!(
+            "TypeError: key format {format} is not valid"
+        ))),
+    }
+}
+
 fn usages(value: &str) -> Result<Vec<KeyUsage>, HostError> {
     if value.is_empty() {
         return Ok(Vec::new());
@@ -280,19 +292,19 @@ pub(crate) fn dispatch(
         let runtime = state(runtime)?;
         match op {
             IMPORT_KEY => {
-                let format = string(args, 0, "a key format")?;
+                let format = key_format(args, 0)?;
                 let algorithm = import_algorithm(args, 2)?;
                 subtle::ensure_import_feature(algorithm).map_err(failed)?;
                 let extractable = boolean(args, 5, "extractable")?;
                 let usages = usages(string(args, 6, "key usages")?)?;
                 let key = match format {
-                    "raw" => subtle::import_raw_key(
+                    KeyFormat::Raw => subtle::import_raw_key(
                         bytes(args, 1, "raw key data")?,
                         algorithm,
                         extractable,
                         &usages,
                     ),
-                    "jwk" => {
+                    KeyFormat::Jwk => {
                         let ext = match optional_flag(args, 11, "JWK ext")? {
                             None => None,
                             Some(0) => Some(false),
@@ -340,39 +352,24 @@ pub(crate) fn dispatch(
                         };
                         subtle::import_jwk_key(&jwk, algorithm, extractable, &usages)
                     }
-                    "spki" => subtle::import_spki_key(
+                    KeyFormat::Spki => subtle::import_spki_key(
                         bytes(args, 1, "spki key data")?,
                         algorithm,
                         extractable,
                         &usages,
                     ),
-                    "pkcs8" => subtle::import_pkcs8_key(
+                    KeyFormat::Pkcs8 => subtle::import_pkcs8_key(
                         bytes(args, 1, "pkcs8 key data")?,
                         algorithm,
                         extractable,
                         &usages,
                     ),
-                    format => {
-                        return Err(HostError::Failed(format!(
-                            "NotSupportedError: key format {format} is not supported"
-                        )))
-                    }
                 }
                 .map_err(failed)?;
                 Ok(HostValue::Number(runtime.store_crypto_key(key) as f64))
             }
             EXPORT_KEY => {
-                let format = match string(args, 1, "a key format")? {
-                    "raw" => KeyFormat::Raw,
-                    "jwk" => KeyFormat::Jwk,
-                    "spki" => KeyFormat::Spki,
-                    "pkcs8" => KeyFormat::Pkcs8,
-                    format => {
-                        return Err(HostError::Failed(format!(
-                            "NotSupportedError: key format {format} is not supported"
-                        )))
-                    }
-                };
+                let format = key_format(args, 1)?;
                 with_key(runtime, handle(args, 0)?, |key| {
                     subtle::export_key(format, key)
                 })
@@ -486,6 +483,22 @@ mod tests {
         );
         for value in [-1.0, 1.5, 4_294_967_296.0, f64::NAN, f64::INFINITY] {
             assert!(unsigned_long(&[HostArg::Number(value)], 0, "value").is_err());
+        }
+    }
+
+    #[test]
+    fn key_format_is_a_case_sensitive_enum_at_the_native_boundary() {
+        assert_eq!(
+            key_format(&[HostArg::Str("raw")], 0).unwrap(),
+            KeyFormat::Raw
+        );
+        for format in ["RAW", "unknown"] {
+            assert_eq!(
+                key_format(&[HostArg::Str(format)], 0)
+                    .unwrap_err()
+                    .to_string(),
+                format!("TypeError: key format {format} is not valid")
+            );
         }
     }
 

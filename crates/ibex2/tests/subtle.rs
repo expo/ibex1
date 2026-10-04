@@ -75,6 +75,27 @@ fn digest_hmac_and_key_metadata_round_trip() {
 
 #[cfg(feature = "crypto")]
 #[test]
+fn key_formats_are_case_sensitive_enums() {
+    let mut runtime = runtime();
+    run_async(
+        &mut runtime,
+        r#"
+        const algorithm = {name: "HMAC", hash: "SHA-256"};
+        const key = await crypto.subtle.importKey(
+          "raw", new Uint8Array([1, 2, 3]), algorithm, true, ["sign"]
+        );
+        for (const format of ["RAW", "unknown"]) {
+          await rejects("TypeError", () => crypto.subtle.importKey(
+            format, new Uint8Array([1, 2, 3]), algorithm, true, ["sign"]
+          ));
+          await rejects("TypeError", () => crypto.subtle.exportKey(format, key));
+        }
+        "#,
+    );
+}
+
+#[cfg(feature = "crypto")]
+#[test]
 fn non_octet_hmac_generate_sign_and_export_round_trips() {
     let mut runtime = runtime();
     run_async(
