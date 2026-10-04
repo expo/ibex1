@@ -1139,15 +1139,41 @@ bool Adapter::deliver_one() {
   unsigned long long id = 0;
   Ibex2AbiValue value{IBEX2_TAG_UNDEFINED, 0, nullptr, 0};
   if (!ibex2_take_task(state_->queue, &kind, &id, &value, &is_error)) return false;
-  if (kind == 3) {
-    deliver_event(id, value);
-    return true;
-  }
-  if (kind != 1) {
+  if (kind != 1 && kind != 3) {
     ibex2_host_release(&value);
     throw jsi::JSError(*runtime_, "storage adapter received a non-settlement task");
   }
-  settle(id, value, is_error != 0);
+  // @ref LLP 0058.000.000#8-tasks-microtasks-timers-and-callbacks — borrowed-adapter task failures are reported like owning-pump failures
+  try {
+    if (kind == 3)
+      deliver_event(id, value);
+    else
+      settle(id, value, is_error != 0);
+  } catch (const jsi::JSError& error) {
+    try {
+      report_error(error.value());
+    } catch (...) {
+      std::string message = error.getMessage();
+      const std::string& stack = error.getStack();
+      if (!stack.empty()) {
+        message += "\n";
+        message += stack;
+      }
+      ibex2_report_uncaught(message.c_str());
+    }
+  } catch (const std::exception& error) {
+    try {
+      report_error(error.what());
+    } catch (...) {
+      ibex2_report_uncaught(error.what());
+    }
+  } catch (...) {
+    try {
+      report_error("uncaught native callback exception");
+    } catch (...) {
+      ibex2_report_uncaught("uncaught native callback exception");
+    }
+  }
   return true;
 }
 } // namespace ibex2::jsi_adapter

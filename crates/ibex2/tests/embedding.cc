@@ -154,6 +154,19 @@ unsigned long long storage_consumer_subscribe(void *h, const char *callback_name
     return 0;
   }
 }
+unsigned long long storage_consumer_subscribe_native_throw(void *h) {
+  auto *c = static_cast<Consumer *>(h);
+  try {
+    auto callback = jsi::Function::createFromHostFunction(
+        *c->runtime,
+        jsi::PropNameID::forAscii(*c->runtime, "throwNativeEvent"), 1,
+        [](jsi::Runtime&, const jsi::Value&, const jsi::Value*, size_t)
+            -> jsi::Value { throw std::runtime_error("native callback boom"); });
+    return c->adapter->subscribe(std::move(callback));
+  } catch (...) {
+    return 0;
+  }
+}
 void storage_consumer_detach(void *h) { static_cast<Consumer *>(h)->adapter.reset(); }
 void storage_consumer_destroy(void *h) { delete static_cast<Consumer *>(h); }
 void storage_consumer_free(char *s) { std::free(s); }

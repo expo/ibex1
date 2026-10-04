@@ -143,8 +143,9 @@ public:
   void report_error(const jsi::Value& error);
   void report_error(const char* message);
   // Takes at most one storage settlement or subscribed event. No timers or
-  // microtask checkpoints. Returns true if a task was delivered; throws for a
-  // timer task, which belongs to an owning runtime's driver.
+  // microtask checkpoints. Callback failures are reported through the EVENTS
+  // error path and do not escape. Returns true if a task was delivered; throws
+  // for a timer task, which belongs to an owning runtime's driver.
   bool deliver_one();
 private:
   struct State;

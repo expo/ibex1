@@ -59,6 +59,7 @@ extern "C" {
     ) -> i32;
     fn storage_consumer_step(h: *mut c_void, deliver: bool, out: *mut *mut c_char) -> i32;
     fn storage_consumer_subscribe(h: *mut c_void, callback_name: *const c_char) -> u64;
+    fn storage_consumer_subscribe_native_throw(h: *mut c_void) -> u64;
     fn storage_consumer_detach(h: *mut c_void);
     fn storage_consumer_destroy(h: *mut c_void);
     fn storage_consumer_free(s: *mut c_char);
@@ -563,6 +564,44 @@ fn borrowed_runtime_context_shutdown_cancels_queued_events_before_delivery() {
     assert_eq!(consumer.eval("String(eventCalls)"), "0");
     consumer.detach_and_drop_context();
     drop(state_keepalive);
+}
+
+#[test]
+fn borrowed_runtime_reports_callback_exceptions_instead_of_throwing_from_delivery() {
+    let consumer = BareConsumer::new(Groups::PURE | Groups::EVENTS);
+    let _ = ibex2::boundary_abi::drain_console();
+    consumer.eval(
+        r#"
+        globalThis.eventErrors = [];
+        addEventListener('error', function (event) {
+          eventErrors.push(event.message + ':' + event.isTrusted);
+          event.preventDefault();
+        });
+        globalThis.throwEvent = function () { throw new Error('javascript callback boom'); };
+        "#,
+    );
+    let callback = std::ffi::CString::new("throwEvent").unwrap();
+    let javascript = unsafe { storage_consumer_subscribe(consumer.handle, callback.as_ptr()) };
+    let native = unsafe { storage_consumer_subscribe_native_throw(consumer.handle) };
+    assert_ne!(javascript, 0);
+    assert_ne!(native, 0);
+
+    let state = consumer.context.as_ref().unwrap().state_ptr();
+    assert_eq!(unsafe { ibex2_test_publish_event(state, javascript) }, 1);
+    assert_eq!(consumer.step(true), 1);
+    assert_eq!(unsafe { ibex2_test_publish_event(state, native) }, 1);
+    assert_eq!(consumer.step(true), 1);
+
+    let observed = consumer.eval("eventErrors.join('|')");
+    assert!(
+        observed.contains("javascript callback boom:true"),
+        "{observed}"
+    );
+    assert!(observed.contains("native callback boom:true"), "{observed}");
+    assert!(
+        ibex2::boundary_abi::drain_console().is_empty(),
+        "preventDefault did not cancel host reporting"
+    );
 }
 
 #[test]
