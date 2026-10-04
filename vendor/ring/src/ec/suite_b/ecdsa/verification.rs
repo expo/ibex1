@@ -42,8 +42,6 @@ enum AlgorithmID {
     ECDSA_P256_SHA256_ASN1,
     ECDSA_P256_SHA256_FIXED,
     ECDSA_P256_SHA384_ASN1,
-    ECDSA_P256_SHA384_FIXED,
-    ECDSA_P256_SHA512_FIXED,
     ECDSA_P384_SHA256_ASN1,
     ECDSA_P384_SHA384_ASN1,
     ECDSA_P384_SHA384_FIXED,
@@ -203,24 +201,6 @@ pub static ECDSA_P256_SHA256_FIXED: EcdsaVerificationAlgorithm = EcdsaVerificati
     digest_alg: &digest::SHA256,
     split_rs: split_rs_fixed,
     id: AlgorithmID::ECDSA_P256_SHA256_FIXED,
-};
-
-/// Verification of fixed-length (PKCS#11 style) ECDSA signatures using the
-/// P-256 curve and SHA-384.
-pub static ECDSA_P256_SHA384_FIXED: EcdsaVerificationAlgorithm = EcdsaVerificationAlgorithm {
-    ops: &p256::PUBLIC_SCALAR_OPS,
-    digest_alg: &digest::SHA384,
-    split_rs: split_rs_fixed,
-    id: AlgorithmID::ECDSA_P256_SHA384_FIXED,
-};
-
-/// Verification of fixed-length (PKCS#11 style) ECDSA signatures using the
-/// P-256 curve and SHA-512.
-pub static ECDSA_P256_SHA512_FIXED: EcdsaVerificationAlgorithm = EcdsaVerificationAlgorithm {
-    ops: &p256::PUBLIC_SCALAR_OPS,
-    digest_alg: &digest::SHA512,
-    split_rs: split_rs_fixed,
-    id: AlgorithmID::ECDSA_P256_SHA512_FIXED,
 };
 
 /// Verification of fixed-length (PKCS#11 style) ECDSA signatures using the

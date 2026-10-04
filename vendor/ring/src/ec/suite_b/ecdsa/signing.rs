@@ -40,8 +40,6 @@ pub struct EcdsaSigningAlgorithm {
 #[derive(Debug, Eq, PartialEq)]
 enum AlgorithmID {
     ECDSA_P256_SHA256_FIXED_SIGNING,
-    ECDSA_P256_SHA384_FIXED_SIGNING,
-    ECDSA_P256_SHA512_FIXED_SIGNING,
     ECDSA_P384_SHA384_FIXED_SIGNING,
     ECDSA_P256_SHA256_ASN1_SIGNING,
     ECDSA_P384_SHA384_ASN1_SIGNING,
@@ -147,25 +145,6 @@ impl EcdsaKeyPair {
             untrusted::Input::from(public_key),
             cpu::features(),
         )?;
-        Self::new(alg, key_pair, rng)
-    }
-
-    /// Constructs an ECDSA key pair from private-key bytes, deriving the public
-    /// key from the private scalar.
-    ///
-    /// The private key must be encoded as a big-endian fixed-length integer.
-    /// This constructor is useful for PKCS#8 `ECPrivateKey` values in which the
-    /// optional public-key field is absent.
-    pub fn from_private_key(
-        alg: &'static EcdsaSigningAlgorithm,
-        private_key: &[u8],
-        rng: &dyn rand::SecureRandom,
-    ) -> Result<Self, error::KeyRejected> {
-        let cpu = cpu::features();
-        let seed = ec::Seed::from_bytes(alg.curve, untrusted::Input::from(private_key), cpu)
-            .map_err(|error::Unspecified| error::KeyRejected::invalid_component())?;
-        let key_pair = ec::KeyPair::derive(seed, cpu)
-            .map_err(|error::Unspecified| error::KeyRejected::unexpected_error())?;
         Self::new(alg, key_pair, rng)
     }
 
@@ -325,8 +304,8 @@ impl core::fmt::Debug for NonceRandom<'_> {
 impl rand::sealed::SecureRandom for NonceRandom<'_> {
     fn fill_impl(&self, dest: &mut [u8]) -> Result<(), error::Unspecified> {
         // Use the same digest algorithm that will be used to digest the
-        // message. For a digest wider than the curve order, use its leftmost
-        // bytes just as ECDSA's message-digest conversion does.
+        // message. The digest algorithm's output is exactly the right size;
+        // this is checked below.
         //
         // XXX(perf): The single iteration will require two digest block
         // operations because the amount of data digested is larger than one
@@ -354,9 +333,9 @@ impl rand::sealed::SecureRandom for NonceRandom<'_> {
 
         let nonce = ctx.finish();
 
-        let nonce = nonce.as_ref();
-        assert!(nonce.len() >= dest.len());
-        dest.copy_from_slice(&nonce[..dest.len()]);
+        // `copy_from_slice()` panics if the lengths differ, so we don't have
+        // to separately assert that the lengths are the same.
+        dest.copy_from_slice(nonce.as_ref());
 
         Ok(())
     }
@@ -484,30 +463,6 @@ pub static ECDSA_P256_SHA256_FIXED_SIGNING: EcdsaSigningAlgorithm = EcdsaSigning
     pkcs8_template: &EC_PUBLIC_KEY_P256_PKCS8_V1_TEMPLATE,
     format_rs: format_rs_fixed,
     id: AlgorithmID::ECDSA_P256_SHA256_FIXED_SIGNING,
-};
-
-/// Signing of fixed-length (PKCS#11 style) ECDSA signatures using the
-/// P-256 curve and SHA-384.
-pub static ECDSA_P256_SHA384_FIXED_SIGNING: EcdsaSigningAlgorithm = EcdsaSigningAlgorithm {
-    curve: &ec::suite_b::curve::P256,
-    private_scalar_ops: &p256::PRIVATE_SCALAR_OPS,
-    private_key_ops: &p256::PRIVATE_KEY_OPS,
-    digest_alg: &digest::SHA384,
-    pkcs8_template: &EC_PUBLIC_KEY_P256_PKCS8_V1_TEMPLATE,
-    format_rs: format_rs_fixed,
-    id: AlgorithmID::ECDSA_P256_SHA384_FIXED_SIGNING,
-};
-
-/// Signing of fixed-length (PKCS#11 style) ECDSA signatures using the
-/// P-256 curve and SHA-512.
-pub static ECDSA_P256_SHA512_FIXED_SIGNING: EcdsaSigningAlgorithm = EcdsaSigningAlgorithm {
-    curve: &ec::suite_b::curve::P256,
-    private_scalar_ops: &p256::PRIVATE_SCALAR_OPS,
-    private_key_ops: &p256::PRIVATE_KEY_OPS,
-    digest_alg: &digest::SHA512,
-    pkcs8_template: &EC_PUBLIC_KEY_P256_PKCS8_V1_TEMPLATE,
-    format_rs: format_rs_fixed,
-    id: AlgorithmID::ECDSA_P256_SHA512_FIXED_SIGNING,
 };
 
 /// Signing of fixed-length (PKCS#11 style) ECDSA signatures using the
