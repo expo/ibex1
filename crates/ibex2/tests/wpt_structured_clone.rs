@@ -97,7 +97,7 @@ fn run_wpt() -> Report {
             selected.push(description.to_string());
         }
     }
-    exclusions.insert("transferables unsupported in v1".to_string(), 15);
+    exclusions.insert("transferables unsupported in v1".to_string(), 14);
     runtime
         .eval(&format!(
             "const __ibex2_wpt_selected = new Set({}); structuredCloneBatteryOfTests = structuredCloneBatteryOfTests.filter(function (test) {{ return __ibex2_wpt_selected.has(test.description); }});",
@@ -128,7 +128,7 @@ fn run_wpt() -> Report {
         }
     }
     Report {
-        total_upstream: catalogue.len() + 15, // the separately pinned transfer battery
+        total_upstream: catalogue.len() + 14, // the separately pinned transfer battery
         selected: selected.len(),
         passed: results.len() - failures.len(),
         failures,
@@ -141,10 +141,10 @@ fn structured_clone_wpt_baseline_holds() {
     let report = run_wpt();
     println!("{report:#?}");
     assert_eq!(
-        report.total_upstream, 153,
+        report.total_upstream, 152,
         "the pinned upstream set changed"
     );
-    assert_eq!(report.exclusions.values().sum::<usize>(), 59);
+    assert_eq!(report.exclusions.values().sum::<usize>(), 58);
     assert_eq!(report.selected, report.passed + report.failures.len());
     assert!(
         report.failures.is_empty(),
