@@ -17,12 +17,11 @@ fn run_wpt() -> Report {
         .join("../../third_party/wpt/html/webappapis/structured-clone");
     let battery = std::fs::read_to_string(root.join("structured-clone-battery-of-tests.js"))
         .expect("pinned battery");
-    let harness = std::fs::read_to_string(
-        root.join("structured-clone-battery-of-tests-harness.js"),
-    )
-    .expect("pinned battery harness");
-    let entry = std::fs::read_to_string(root.join("structured-clone.any.js"))
-        .expect("pinned entry");
+    let harness =
+        std::fs::read_to_string(root.join("structured-clone-battery-of-tests-harness.js"))
+            .expect("pinned battery harness");
+    let entry =
+        std::fs::read_to_string(root.join("structured-clone.any.js")).expect("pinned entry");
 
     let mut runtime = Hermes::new(DynamicCode::Closed).expect("runtime");
     assert!(runtime.install_stdlib());
@@ -45,7 +44,9 @@ fn run_wpt() -> Report {
             "#,
         )
         .expect("test-only unavailable API shells");
-    runtime.eval(&battery).expect("unmodified battery evaluates");
+    runtime
+        .eval(&battery)
+        .expect("unmodified battery evaluates");
 
     let catalogue: Vec<serde_json::Value> = serde_json::from_str(
         &runtime
@@ -103,18 +104,19 @@ fn run_wpt() -> Report {
             serde_json::to_string(&selected).unwrap()
         ))
         .expect("filter unsupported WPT cases");
-    runtime.eval(&harness).expect("unmodified WPT harness evaluates");
-    runtime.eval(&entry).expect("unmodified WPT entry evaluates");
+    runtime
+        .eval(&harness)
+        .expect("unmodified WPT harness evaluates");
+    runtime
+        .eval(&entry)
+        .expect("unmodified WPT entry evaluates");
     // Every selected clone is synchronous, but the upstream runner wraps it in
     // promises and async functions. Drain that finite chain explicitly.
     runtime.drain_microtasks().expect("WPT microtasks");
 
-    let results: Vec<serde_json::Value> = serde_json::from_str(
-        &runtime
-            .eval("__ibex2_test_results()")
-            .expect("WPT results"),
-    )
-    .expect("WPT results json");
+    let results: Vec<serde_json::Value> =
+        serde_json::from_str(&runtime.eval("__ibex2_test_results()").expect("WPT results"))
+            .expect("WPT results json");
     let mut failures = Vec::new();
     for result in &results {
         if result["ok"] != true {
@@ -138,7 +140,10 @@ fn run_wpt() -> Report {
 fn structured_clone_wpt_baseline_holds() {
     let report = run_wpt();
     println!("{report:#?}");
-    assert_eq!(report.total_upstream, 153, "the pinned upstream set changed");
+    assert_eq!(
+        report.total_upstream, 153,
+        "the pinned upstream set changed"
+    );
     assert_eq!(report.exclusions.values().sum::<usize>(), 59);
     assert_eq!(report.selected, report.passed + report.failures.len());
     assert!(
