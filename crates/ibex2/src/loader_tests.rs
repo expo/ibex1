@@ -170,7 +170,7 @@ fn capability_names_are_parameters_and_not_globals() {
 }
 
 #[test]
-fn group_partition_covers_the_default_global_snapshot_exactly() {
+fn group_partition_covers_the_installable_global_snapshot_exactly() {
     let mut coverage = vec![0usize; DEFAULT_ADDED_GLOBALS.len()];
     for (_, members) in GLOBAL_PARTITION {
         for &index in *members {
@@ -184,6 +184,10 @@ fn group_partition_covers_the_default_global_snapshot_exactly() {
     assert!(
         coverage.iter().all(|count| *count == 1),
         "each snapshot name must belong to exactly one partition: {coverage:?}"
+    );
+    assert_eq!(
+        allowed_globals(crate::bindings::Groups::ALL),
+        DEFAULT_ADDED_GLOBALS
     );
     assert_eq!(
         allowed_globals(crate::bindings::Groups::DEFAULT),

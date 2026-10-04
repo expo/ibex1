@@ -8,24 +8,44 @@
 
   var results = [];
   var pending = 0;
+  var outstandingPromiseTests = 0;
+  var promiseTestTail = Promise.resolve();
 
   function record(name, error) {
     results.push({ name: name, ok: !error, message: error ? String(error && error.message || error) : "" });
   }
 
   function context(name, asynchronous) {
+    var cleanups = [];
     var finished = false;
     var firstError = null;
+    function cleanup(error) {
+      for (var i = cleanups.length - 1; i >= 0; i--) {
+        try { cleanups[i](); } catch (e) { if (!error) error = e; }
+      }
+      cleanups = [];
+      return error;
+    }
     function finish(error) {
       if (finished) return;
       finished = true;
       if (asynchronous) pending--;
-      record(name, error || firstError);
+      record(name, cleanup(error || firstError));
     }
     var t = {
+      add_cleanup: function (fn) { cleanups.push(fn); },
+      cleanup: cleanup,
+      step: function (fn) {
+        if (finished) return;
+        try { return fn.call(t); }
+        catch (error) {
+          if (!firstError) firstError = error;
+          if (asynchronous) finish(error);
+        }
+      },
       step_func: function (fn) {
         return function () {
-          try { return fn.apply(this, arguments); }
+          try { return fn.apply(t, arguments); }
           catch (error) {
             if (!firstError) firstError = error;
             if (asynchronous) finish(error);
@@ -34,7 +54,7 @@
       },
       step_func_done: function (fn) {
         return function () {
-          try { if (fn) fn.apply(this, arguments); finish(null); }
+          try { if (fn) fn.apply(t, arguments); finish(null); }
           catch (error) { finish(error); }
         };
       },
@@ -45,6 +65,7 @@
         return t.step_func(function () { fail("reached unreachable code", description); });
       },
       done: function () { finish(null); },
+      _finish: finish,
       _error: function () { return firstError; }
     };
     return t;
@@ -52,38 +73,44 @@
 
   global.test = function (fn, name) {
     var t = context(name, false);
+    var error = null;
     try {
-      fn(t);
-      record(name, t._error());
+      fn.call(t, t);
     } catch (e) {
-      record(name, e);
+      error = e;
     }
+    record(name, t.cleanup(error || t._error()));
   };
 
   global.async_test = function (fn, name) {
+    if (typeof fn !== "function") {
+      name = fn;
+      fn = null;
+    }
     pending++;
     var t = context(name, true);
-    try { fn(t); } catch (e) { t.step_func_done(function () { throw e; })(); }
+    if (fn) {
+      try { fn.call(t, t); } catch (e) { t._finish(e); }
+    }
     return t;
   };
 
   global.promise_test = function (fn, name) {
     pending++;
+    outstandingPromiseTests++;
     var t = context(name, true);
-    try {
-      var p = fn(t);
-      if (p && typeof p.then === "function") {
-        p.then(function () { t.done(); },
-               t.step_func_done(function (e) { throw e; }));
-        return p;
-      } else {
-        t.done();
-        return Promise.resolve();
-      }
-    } catch (e) {
-      t.step_func_done(function () { throw e; })();
-      return Promise.reject(e);
-    }
+    // WPT promise tests run in registration order. Besides matching the real
+    // harness, serialization keeps tests which temporarily delete an interface
+    // from perturbing unrelated cases that use it.
+    promiseTestTail = promiseTestTail.then(function () {
+      return fn.call(t, t);
+    }).then(function () {
+      t.done();
+      outstandingPromiseTests--;
+    }, function (e) {
+      t._finish(e);
+      outstandingPromiseTests--;
+    });
   };
 
   global.done = function () {};
@@ -105,6 +132,15 @@
     if (actual === expected) {
       fail("got disallowed value " + format(actual), description);
     }
+  };
+  global.assert_greater_than_equal = function (actual, expected, description) {
+    if (!(actual >= expected)) fail(format(actual) + " is not >= " + format(expected), description);
+  };
+  global.assert_less_than_equal = function (actual, expected, description) {
+    if (!(actual <= expected)) fail(format(actual) + " is not <= " + format(expected), description);
+  };
+  global.assert_less_than = function (actual, expected, description) {
+    if (!(actual < expected)) fail(format(actual) + " is not < " + format(expected), description);
   };
   global.assert_true = function (value, description) {
     if (value !== true) fail("expected true but got " + format(value), description);
@@ -196,12 +232,19 @@
     return String(value);
   }
 
+  global.format_value = format;
+
   global.__ibex2_test_results = function () {
     return JSON.stringify(results);
+  };
+  global.__ibex2_test_outstanding = function () {
+    return outstandingPromiseTests;
   };
   global.__ibex2_reset_results = function () {
     results = [];
     pending = 0;
+    outstandingPromiseTests = 0;
+    promiseTestTail = Promise.resolve();
   };
   global.__ibex2_pending_tests = function () { return pending; };
 

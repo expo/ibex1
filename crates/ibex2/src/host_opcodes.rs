@@ -64,6 +64,8 @@ pub(crate) mod inline {
     pub(crate) const CRYPTO_RANDOM_UUID: u32 = 70;
     pub(crate) const CRYPTO_GET_RANDOM_VALUES: u32 = 71;
     pub(crate) const FETCH_CONTROL: u32 = 72;
+    pub(crate) const MULTIPART_BOUNDARY: u32 = 73;
+    pub(crate) const MULTIPART_ENCODE: u32 = 74;
     pub(crate) const SQLITE_RESULT: u32 = 80;
 }
 
@@ -231,6 +233,8 @@ pub(crate) const ALL: &[Assignment] = &[
         Inline
     ),
     assignment!("fetch.control", inline::FETCH_CONTROL, Inline),
+    assignment!("multipart.boundary", inline::MULTIPART_BOUNDARY, Inline),
+    assignment!("multipart.encode", inline::MULTIPART_ENCODE, Inline),
     assignment!("sqlite.result", inline::SQLITE_RESULT, Inline),
     assignment!("intl.number.create", intl_number::CREATE, IntlNumber),
     assignment!("intl.number.format", intl_number::FORMAT, IntlNumber),
@@ -375,6 +379,16 @@ pub(crate) const JSI_SYNC_BINDINGS: &[JsiBinding] = &[
     binding!("console", "warn", inline::CONSOLE_WARN),
     binding!("console", "error", inline::CONSOLE_ERROR),
     binding!("global", "__ibex2_fetch_control", inline::FETCH_CONTROL),
+    binding!(
+        "global",
+        "__ibex2_multipart_boundary",
+        inline::MULTIPART_BOUNDARY
+    ),
+    binding!(
+        "global",
+        "__ibex2_multipart_encode",
+        inline::MULTIPART_ENCODE
+    ),
     binding!("global", "__ibex2_text_encode", inline::TEXT_ENCODE),
     binding!("global", "__ibex2_text_decode", inline::TEXT_DECODE),
     binding!(

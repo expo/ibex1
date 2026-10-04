@@ -142,6 +142,8 @@ const rows = [
     out.process_note ?? `min ${ms(out.process_start_min_ms)} · one module, spawn included · RSS ${kib(out.process_rss_kib)}`],
   ['sync host call', ns(out.sync_host_call_ns), 'performance.now() through its binding'],
   ['async host task round trip', us(out.async_fs_roundtrip_us), 'fs.readFile of one byte, back through the loop'],
+  ['BLOB install group', us(out.blob_floor_us),
+    `floor delta · ${kib(out.blob_bytecode_bytes / 1024)} bytecode (budgets 50 µs / 150 KiB: ${out.blob_floor_us <= 50 && out.blob_bytecode_bytes <= 150 * 1024 ? 'ok' : 'OVER'})`],
   ['binary', kib(out.binary_bytes / 1024), `run-only ${kib(out.binary_run_only_bytes / 1024)} · runtime ${out.runtime_lines} lines · JS bindings ${kib(out.bindings_js_bytes / 1024)}`],
 ];
 console.log(`ibex2 metrics — ${out.date}, ${out.commit}, warm build, medians (min where noise matters), load ${out.load1} on ${out.cores} cores${loaded ? ' — LOADED: do not read these as a trend' : ''}`);

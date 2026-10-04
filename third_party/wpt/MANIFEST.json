@@ -461,6 +461,125 @@
       "sha256": "1d72f2f1ce39a35ea0bf13c157e8e20bbc0b87c959af844ebc32d77b1eaed671",
       "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
       "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "FileAPI/blob/Blob-array-buffer.any.js",
+      "local": "third_party/wpt/FileAPI/blob/Blob-array-buffer.any.js",
+      "sha256": "eb5ac8ab115dfb3f91202132c144b33c1e530a456f463324066dbe11ade2f60b",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "FileAPI/blob/Blob-bytes.any.js",
+      "local": "third_party/wpt/FileAPI/blob/Blob-bytes.any.js",
+      "sha256": "a305534e59646650d71826a838e499a57da1c2ea60ebb3fdb899f1ea0d6a5964",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "FileAPI/blob/Blob-constructor.any.js",
+      "local": "third_party/wpt/FileAPI/blob/Blob-constructor.any.js",
+      "sha256": "7a09f45aa13c1634489425c08a0d77f69f92fc5da4bc2d3cf341e9e290aabe8b",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "FileAPI/blob/Blob-newobject.any.js",
+      "local": "third_party/wpt/FileAPI/blob/Blob-newobject.any.js",
+      "sha256": "64257c4adfd0ff059fb492605a62e921ff17b63c9b66c3a87d94c1626a9c3444",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "FileAPI/blob/Blob-slice-overflow.any.js",
+      "local": "third_party/wpt/FileAPI/blob/Blob-slice-overflow.any.js",
+      "sha256": "5da17f7ad6fa2e15a0ae6e8435f9cfd0413b64a39ea337bedd99e915048d8d5d",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "FileAPI/blob/Blob-slice.any.js",
+      "local": "third_party/wpt/FileAPI/blob/Blob-slice.any.js",
+      "sha256": "506fc067d18adb43b2b3b01fcc1123fadaaaf78bfed311b8e863c5f7edd64cda",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "FileAPI/blob/Blob-text.any.js",
+      "local": "third_party/wpt/FileAPI/blob/Blob-text.any.js",
+      "sha256": "e1fa952af9b0bb70c103d0aa63a9524142904b66d60481e25d4c957426e13101",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "FileAPI/support/Blob.js",
+      "local": "third_party/wpt/FileAPI/support/Blob.js",
+      "sha256": "a1152b82af45d952c56f8b6f82c3a87e9ac58f834114a9813778418bfa7df25d",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "xhr/formdata/append.any.js",
+      "local": "third_party/wpt/xhr/formdata/append.any.js",
+      "sha256": "0adedf9be59114773d698e6c2b90f87b33c15f633854e7b3a948bbcad03a7a41",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "xhr/formdata/constructor.any.js",
+      "local": "third_party/wpt/xhr/formdata/constructor.any.js",
+      "sha256": "a49b4e2e5f194f35e5a3fb626ad0665b45d6a02d09fbb5185b2ba9d0e6f6c391",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "xhr/formdata/delete.any.js",
+      "local": "third_party/wpt/xhr/formdata/delete.any.js",
+      "sha256": "8a83a4a9112522a7099924300bd5191d6879b33b1c1a7df390758a943088ff77",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "xhr/formdata/foreach.any.js",
+      "local": "third_party/wpt/xhr/formdata/foreach.any.js",
+      "sha256": "7b94892d20c70699c6b7be5858b643714b439e01e5ce9e1683c30b936b26536b",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "xhr/formdata/get.any.js",
+      "local": "third_party/wpt/xhr/formdata/get.any.js",
+      "sha256": "fd983b9ccc39eebc7f4f7591d78a7710f3d16b12e1c5024896dc97a127e61955",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "xhr/formdata/has.any.js",
+      "local": "third_party/wpt/xhr/formdata/has.any.js",
+      "sha256": "cbe1e781d18a5d8930a29ec7045c2876216b173eebbe9edac318bbc2b2eb0cc7",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "xhr/formdata/iteration.any.js",
+      "local": "third_party/wpt/xhr/formdata/iteration.any.js",
+      "sha256": "e98147f85dfe7aa744c7e4eb4c4a0111cc26a5999c3c242171bf3169fed21231",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "xhr/formdata/set-blob.any.js",
+      "local": "third_party/wpt/xhr/formdata/set-blob.any.js",
+      "sha256": "c5724281fc7f0b4d29a2acddb8a40081cb922c607acaf3987b96c7429b002c5c",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "xhr/formdata/set.any.js",
+      "local": "third_party/wpt/xhr/formdata/set.any.js",
+      "sha256": "a58a8a2393077834aac649dc52e0633578d5b63e1f7ae7cc2f51388f4ecbe92e",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
     }
   ],
   "exclusions": [
@@ -483,6 +602,34 @@
     {
       "upstream": "dom/abort/*.html",
       "reason": "HTML-only crash and timeout fixtures require Window/document harness behavior; the corresponding engine-independent .any.js algorithms are pinned."
+    },
+    {
+      "upstream": "FileAPI/blob/Blob-constructor-endings.any.js",
+      "reason": "Ibex v1 deliberately refuses endings=native; transparent is covered by Blob-constructor.any.js."
+    },
+    {
+      "upstream": "FileAPI/blob/Blob-constructor-detached-buffer.any.js",
+      "reason": "Hermes exposes no MessageChannel or transferable-buffer detachment API."
+    },
+    {
+      "upstream": "FileAPI/blob/Blob-stream.any.js and FileAPI/blob/Blob-textStream.any.js",
+      "reason": "Blob.stream() and general Streams are outside the v1 platform."
+    },
+    {
+      "upstream": "FileAPI/blob/*.{html,window.js,worker.js}",
+      "reason": "These fixtures require a DOM, synchronous XHR, or a Worker global."
+    },
+    {
+      "upstream": "xhr/formdata/*-formelement.html and xhr/formdata/*submitter*.html",
+      "reason": "The no-DOM FormData constructor intentionally has no HTML form or submitter overload."
+    },
+    {
+      "upstream": "FileAPI/blob/Blob-constructor.any.js :: Passing a FrozenArray as the blobParts array should work (FrozenArray<MessagePort>).",
+      "reason": "Hermes exposes no MessageChannel. The rest of this unmodified fixture still runs."
+    },
+    {
+      "upstream": "FileAPI/blob/Blob-newobject.any.js :: Blob.stream() returns [NewObject]",
+      "reason": "The fixture mixes the excluded Blob.stream() with supported Blob read methods; the latter still run unmodified."
     }
   ]
 }

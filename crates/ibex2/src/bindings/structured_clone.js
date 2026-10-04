@@ -1,5 +1,5 @@
 // The HTML structured clone algorithm over the value space Hermes exposes.
-// @ref LLP 0059.000#310-atob--btoa-structuredclone-blob-customevent--pure-ungated — clone stays inside the engine and v1 refuses transfer
+// @ref LLP 0059.000#310-atob--btoa-structuredclone-blob--file--formdata-customevent--pure-ungated — clone stays inside the engine and v1 refuses transfer
 (function (global) {
   "use strict";
 
@@ -125,6 +125,12 @@
     : null;
   var textDecoderEncoding = textDecoderEncodingDescriptor && textDecoderEncodingDescriptor.get
     ? uncurry(textDecoderEncodingDescriptor.get)
+    : null;
+  var intlNumberResolvedOptions = global.Intl && typeof global.Intl.NumberFormat === "function"
+    ? uncurry(global.Intl.NumberFormat.prototype.resolvedOptions)
+    : null;
+  var intlDateTimeResolvedOptions = global.Intl && typeof global.Intl.DateTimeFormat === "function"
+    ? uncurry(global.Intl.DateTimeFormat.prototype.resolvedOptions)
     : null;
 
   // Engine Intl objects are platform objects too (not serializable), but only
@@ -289,6 +295,11 @@
         mapSet(memory, value, quotaResult);
         return quotaResult;
       }
+      if (platform.kind === "Blob" || platform.kind === "File") {
+        var blobResult = platform.data.clone();
+        mapSet(memory, value, blobResult);
+        return blobResult;
+      }
       dataCloneError("This platform object cannot be cloned");
     }
 
@@ -407,8 +418,10 @@
       dataCloneError("Weak collections and references cannot be cloned");
     }
     if (hasBrand(textEncoderEncode, value) ||
-        hasBrand(textDecoderEncoding, value)) {
-      dataCloneError("Text codec objects cannot be cloned");
+        hasBrand(textDecoderEncoding, value) ||
+        hasBrand(intlNumberResolvedOptions, value) ||
+        hasBrand(intlDateTimeResolvedOptions, value)) {
+      dataCloneError("Engine platform objects cannot be cloned");
     }
     for (var c = 0; c < intlChecks.length; c++) {
       if (hasBrand(intlChecks[c], value)) dataCloneError("Intl objects cannot be cloned");

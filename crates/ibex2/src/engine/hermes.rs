@@ -167,6 +167,10 @@ fn compiled_binding(name: &str) -> CompiledScript {
             b"abort\0",
             include_bytes!(concat!(env!("OUT_DIR"), "/abort.hbc")),
         ),
+        "blob" => (
+            b"blob\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/blob.hbc")),
+        ),
         "structured_clone" => (
             b"structured_clone\0",
             include_bytes!(concat!(env!("OUT_DIR"), "/structured_clone.hbc")),

@@ -148,6 +148,8 @@ pub enum Op {
     CryptoRandomUuid = host_opcodes::inline::CRYPTO_RANDOM_UUID,
     CryptoGetRandomValues = host_opcodes::inline::CRYPTO_GET_RANDOM_VALUES,
     FetchControl = host_opcodes::inline::FETCH_CONTROL,
+    MultipartBoundary = host_opcodes::inline::MULTIPART_BOUNDARY,
+    MultipartEncode = host_opcodes::inline::MULTIPART_ENCODE,
     SqliteResult = host_opcodes::inline::SQLITE_RESULT,
     SubtleDigest = host_opcodes::subtle::DIGEST,
     SubtleImportKey = host_opcodes::subtle::IMPORT_KEY,
@@ -204,6 +206,8 @@ impl Op {
             host_opcodes::inline::CRYPTO_RANDOM_UUID => Op::CryptoRandomUuid,
             host_opcodes::inline::CRYPTO_GET_RANDOM_VALUES => Op::CryptoGetRandomValues,
             host_opcodes::inline::FETCH_CONTROL => Op::FetchControl,
+            host_opcodes::inline::MULTIPART_BOUNDARY => Op::MultipartBoundary,
+            host_opcodes::inline::MULTIPART_ENCODE => Op::MultipartEncode,
             host_opcodes::inline::SQLITE_RESULT => Op::SqliteResult,
             host_opcodes::subtle::DIGEST => Op::SubtleDigest,
             host_opcodes::subtle::IMPORT_KEY => Op::SubtleImportKey,
@@ -321,6 +325,10 @@ fn dispatch(
 
     match op {
         Op::CryptoRandomUuid => crypto::random_uuid().map(HostValue::Str),
+        Op::MultipartBoundary => crate::stdlib::multipart::generate_boundary()
+            .map(HostValue::Str)
+            .map_err(|error| HostError::Failed(format!("TypeError: {error}"))),
+        Op::MultipartEncode => encode_multipart(args),
         Op::SqliteResult => crate::sqlite_abi::result_field(args, state),
         Op::FetchControl => {
             let state = state.ok_or_else(|| HostError::Failed("no runtime state".into()))?;
@@ -448,8 +456,43 @@ fn dispatch(
         | Op::SubtleDecrypt
         | Op::SubtleDeriveBits
         | Op::SubtleDeriveKey => unreachable!("handled by subtle_abi above"),
-        _ => unreachable!("console ops returned above"),
+        _ => unreachable!("console and special ops returned above"),
     }
+}
+
+fn encode_multipart(args: &[HostArg<'_>]) -> Result<HostValue, HostError> {
+    use crate::stdlib::multipart::{BorrowedFormData, EncodedMultipart};
+
+    let invalid = || {
+        HostError::InvalidArgument(
+            "multipart encode expects a boundary and name/kind/value/filename/type tuples".into(),
+        )
+    };
+    let boundary = args.first().and_then(HostArg::as_str).ok_or_else(invalid)?;
+    if !(args.len() - 1).is_multiple_of(5) {
+        return Err(invalid());
+    }
+    let mut form = BorrowedFormData::new();
+    for part in args[1..].chunks_exact(5) {
+        let name = part[0].as_str().ok_or_else(invalid)?;
+        match &part[1] {
+            HostArg::Number(0.0) => {
+                form.append_text(name, part[2].as_str().ok_or_else(invalid)?);
+            }
+            HostArg::Number(1.0) => {
+                form.append_file(
+                    name,
+                    part[2].as_bytes().ok_or_else(invalid)?,
+                    part[3].as_str().ok_or_else(invalid)?,
+                    part[4].as_str().ok_or_else(invalid)?,
+                );
+            }
+            _ => return Err(invalid()),
+        }
+    }
+    EncodedMultipart::with_borrowed_boundary(&form, boundary)
+        .map(|encoded| HostValue::Bytes(encoded.into_bytes()))
+        .map_err(|error| HostError::Failed(format!("TypeError: {error}")))
 }
 
 /// The single host-call entry point.

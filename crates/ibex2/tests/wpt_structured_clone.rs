@@ -26,23 +26,23 @@ fn run_wpt() -> Report {
     let mut runtime = Hermes::new(DynamicCode::Closed).expect("runtime");
     let context = ibex2::bindings::Context::new(ibex2::grant::GrantSet::none());
     runtime
-        .install_runtime(ibex2::bindings::Groups::DEFAULT, &context)
+        .install_runtime(
+            ibex2::bindings::Groups::DEFAULT | ibex2::bindings::Groups::BLOB,
+            &context,
+        )
         .expect("bindings");
-    runtime.harden().expect("harden");
     runtime.install_test_harness().expect("test harness");
     runtime
         .eval(
             r#"
             globalThis.self = globalThis;
-            // The upstream battery eagerly constructs Blob/File values while
-            // registering tests. Ibex deliberately does not expose those APIs,
-            // so inert test-only shells let the unmodified file register; every
-            // test involving them is excluded before the battery runs.
-            globalThis.Blob = function Blob() {};
-            globalThis.File = function File() { Blob.call(this); };
-            File.prototype = Object.create(Blob.prototype);
-            File.prototype.constructor = File;
-            globalThis.Response = function Response() {};
+            // The battery uses the browser Response constructor only to read
+            // Blob bytes. Ibex deliberately has no public Response constructor,
+            // so this test-only adapter supplies that comparison helper while
+            // the real Blob and File implementations run unmodified.
+            globalThis.Response = function Response(body) {
+              this.arrayBuffer = function () { return body.arrayBuffer(); };
+            };
             "#,
         )
         .expect("test-only unavailable API shells");
@@ -65,9 +65,6 @@ fn run_wpt() -> Report {
         if requires_document {
             return Some("document-only FileList/ImageData/ImageBitmap");
         }
-        if description.contains("Blob") || description.contains("File") {
-            return Some("Blob/File are outside v1");
-        }
         if description.contains("Resizable")
             || description.contains("Growable")
             || description.contains("Length-tracking")
@@ -77,11 +74,6 @@ fn run_wpt() -> Report {
         }
         if description == "Serializing a non-serializable platform object fails" {
             return Some("WPT requires a browser Response constructor");
-        }
-        if description.contains("interface is deleted from the global")
-            || description.contains("closest serializable superclass")
-        {
-            return Some("requires Blob/File platform serialization");
         }
         None
     }
@@ -146,7 +138,7 @@ fn structured_clone_wpt_baseline_holds() {
         report.total_upstream, 152,
         "the pinned upstream set changed"
     );
-    assert_eq!(report.exclusions.values().sum::<usize>(), 58);
+    assert_eq!(report.exclusions.values().sum::<usize>(), 36);
     assert_eq!(report.selected, report.passed + report.failures.len());
     assert!(
         report.failures.is_empty(),

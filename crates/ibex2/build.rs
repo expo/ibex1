@@ -213,6 +213,7 @@ fn main() {
         "crypto",
         "events",
         "abort",
+        "blob",
         "fetch",
         "sqlite",
         "harden",

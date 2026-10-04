@@ -983,7 +983,6 @@ pub const DEFAULT_ADDED_GLOBALS: &[&str] = &[
     "crypto",
     "URL",
     "URLSearchParams",
-    "structuredClone",
     "Event",
     "EventTarget",
     "CustomEvent",
@@ -998,6 +997,12 @@ pub const DEFAULT_ADDED_GLOBALS: &[&str] = &[
     "onerror",
     "onunhandledrejection",
     "onrejectionhandled",
+    "Blob",
+    "File",
+    "FormData",
+    "Request",
+    "Response",
+    "structuredClone",
 ];
 
 const GLOBAL_PARTITION: &[(Option<crate::bindings::Groups>, &[usize])] = &[
@@ -1009,13 +1014,18 @@ const GLOBAL_PARTITION: &[(Option<crate::bindings::Groups>, &[usize])] = &[
     (Some(crate::bindings::Groups::CONSOLE), &[4]),
     (
         Some(crate::bindings::Groups::PURE),
-        &[11, 12, 13, 20, 21, 22],
+        &[11, 12, 13, 20, 21, 41],
     ),
     (Some(crate::bindings::Groups::CRYPTO), &[14, 15, 16, 19]),
     (Some(crate::bindings::Groups::ABORT), &[17, 18]),
     (
         Some(crate::bindings::Groups::EVENTS),
-        &[23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36],
+        &[22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35],
+    ),
+    (Some(crate::bindings::Groups::BLOB), &[36, 37, 38]),
+    (
+        Some(crate::bindings::Groups::BLOB.union(crate::bindings::Groups::FETCH)),
+        &[39, 40],
     ),
 ];
 

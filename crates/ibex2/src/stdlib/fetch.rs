@@ -19,6 +19,7 @@ use super::abort::AbortSignal;
 pub use super::fetch_body::{Body, BodySource, StreamingResponse};
 use crate::boundary::HostError;
 use crate::grant::{GrantSet, Operation, Origin};
+use crate::stdlib::multipart::{EncodedMultipart, FormData};
 
 /// How many redirects to follow before giving up. The web platform's limit.
 pub const MAX_REDIRECTS: u32 = 20;
@@ -233,6 +234,10 @@ pub struct Request {
     pub url: String,
     pub headers: Headers,
     pub body: Option<Vec<u8>>,
+    /// An engine-free `FormData` request body. Prefer [`Request::set_body`]
+    /// when constructing one; this field remains public to match the rest of
+    /// the request value. It is encoded exactly once before the first hop.
+    pub form_data: Option<FormData>,
     pub redirect: RedirectMode,
     /// The largest response body this request will accept, in bytes;
     /// [`DEFAULT_MAX_BODY`] when `None`.
@@ -255,6 +260,7 @@ impl Request {
             url: url.into(),
             headers: Headers::new(),
             body: None,
+            form_data: None,
             redirect: RedirectMode::Follow,
             max_body: None,
         }
@@ -263,6 +269,50 @@ impl Request {
     /// The ceiling this request asked for, resolved.
     pub fn body_limit(&self) -> usize {
         self.max_body.unwrap_or(DEFAULT_MAX_BODY)
+    }
+
+    /// Set bytes or an ordered [`FormData`] entry list as this request's body.
+    pub fn set_body(&mut self, body: impl Into<RequestBody>) {
+        match body.into() {
+            RequestBody::Bytes(bytes) => {
+                self.body = Some(bytes);
+                self.form_data = None;
+            }
+            RequestBody::FormData(form) => {
+                self.body = None;
+                self.form_data = Some(form);
+            }
+        }
+    }
+
+    pub fn with_body(mut self, body: impl Into<RequestBody>) -> Self {
+        self.set_body(body);
+        self
+    }
+}
+
+/// The body kinds a Rust consumer can hand to [`Request::set_body`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RequestBody {
+    Bytes(Vec<u8>),
+    FormData(FormData),
+}
+
+impl From<Vec<u8>> for RequestBody {
+    fn from(value: Vec<u8>) -> Self {
+        Self::Bytes(value)
+    }
+}
+
+impl From<&[u8]> for RequestBody {
+    fn from(value: &[u8]) -> Self {
+        Self::Bytes(value.to_vec())
+    }
+}
+
+impl From<FormData> for RequestBody {
+    fn from(value: FormData) -> Self {
+        Self::FormData(value)
     }
 }
 
@@ -342,7 +392,7 @@ pub fn fetch_stream(
     request: Request,
     signal: &AbortSignal,
 ) -> Result<StreamingResponse, HostError> {
-    let mut current = request;
+    let mut current = prepare_body(request)?;
     let mut redirects = 0;
     let mut redirected = false;
 
@@ -421,6 +471,24 @@ pub fn fetch_stream(
         current.url = next.to_string();
         redirected = true;
     }
+}
+
+fn prepare_body(mut request: Request) -> Result<Request, HostError> {
+    let Some(form) = request.form_data.take() else {
+        return Ok(request);
+    };
+    if request.body.is_some() {
+        return Err(HostError::InvalidArgument(
+            "request has both byte and FormData bodies".into(),
+        ));
+    }
+    let encoded = EncodedMultipart::new(&form)
+        .map_err(|error| HostError::Failed(format!("TypeError: {error}")))?;
+    if !request.headers.has("content-type") {
+        request.headers.set("Content-Type", &encoded.content_type());
+    }
+    request.body = Some(encoded.into_bytes());
+    Ok(request)
 }
 
 #[cfg(test)]

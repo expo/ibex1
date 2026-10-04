@@ -3,12 +3,10 @@
 
 use ibex2::engine::hermes::{DynamicCode, Hermes};
 
-fn check(body: &str) {
+fn check_with_groups(body: &str, groups: ibex2::bindings::Groups) {
     let mut runtime = Hermes::new(DynamicCode::Closed).expect("runtime");
     let context = ibex2::bindings::Context::new(ibex2::grant::GrantSet::none());
-    runtime
-        .install_runtime(ibex2::bindings::Groups::DEFAULT, &context)
-        .expect("bindings");
+    runtime.install_runtime(groups, &context).expect("bindings");
     runtime.harden().expect("harden");
     runtime
         .eval(&format!(
@@ -28,6 +26,36 @@ fn check(body: &str) {
             }})()"#
         ))
         .unwrap_or_else(|error| panic!("{body}\n{error}"));
+}
+
+fn check(body: &str) {
+    check_with_groups(body, ibex2::bindings::Groups::DEFAULT);
+}
+
+#[test]
+fn blob_and_file_clone_while_other_l6_platform_objects_are_refused() {
+    check_with_groups(
+        r#"
+        const blob = new Blob([new Uint8Array([1, 2, 3])], { type: "TEXT/PLAIN" });
+        const blobClone = structuredClone(blob);
+        assert(blobClone !== blob && blobClone instanceof Blob, "Blob identity or brand");
+        assert(blobClone.size === 3 && blobClone.type === "text/plain", "Blob state");
+
+        const file = new File([blob], "name.txt", { type: "text/custom", lastModified: 42 });
+        Object.setPrototypeOf(file, null);
+        const fileClone = structuredClone(file);
+        assert(fileClone !== file && fileClone instanceof File, "File identity or brand");
+        assert(fileClone instanceof Blob, "File Blob inheritance");
+        assert(fileClone.size === 3 && fileClone.type === "text/custom", "File Blob state");
+        assert(fileClone.name === "name.txt" && fileClone.lastModified === 42, "File state");
+
+        const form = new FormData();
+        dataCloneError(() => structuredClone(form), "FormData");
+        dataCloneError(() => structuredClone(form.entries()), "FormData iterator");
+        dataCloneError(() => structuredClone(new Request("https://example.com/")), "Request");
+        "#,
+        ibex2::bindings::Groups::DEFAULT | ibex2::bindings::Groups::BLOB,
+    );
 }
 
 #[test]

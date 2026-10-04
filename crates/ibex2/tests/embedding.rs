@@ -96,6 +96,10 @@ fn compiled_script(name: &str) -> CompiledScript {
             b"abort\0",
             include_bytes!(concat!(env!("OUT_DIR"), "/abort.hbc")),
         ),
+        "blob" => (
+            b"blob\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/blob.hbc")),
+        ),
         "structured_clone" => (
             b"structured_clone\0",
             include_bytes!(concat!(env!("OUT_DIR"), "/structured_clone.hbc")),
@@ -432,6 +436,20 @@ fn fetch_group_does_not_install_timers_or_crypto() {
 }
 
 #[test]
+fn blob_group_installs_only_its_globals_and_requires_pure() {
+    let baseline = global_names(&BareConsumer::new(Groups::empty()));
+    let installed = global_names(&BareConsumer::new(Groups::PURE | Groups::BLOB));
+    let pure = global_names(&BareConsumer::new(Groups::PURE));
+    let added: std::collections::BTreeSet<_> = installed.difference(&pure).cloned().collect();
+    let expected = ["Blob", "File", "FormData"]
+        .into_iter()
+        .map(str::to_string)
+        .filter(|name| !baseline.contains(name))
+        .collect();
+    assert_eq!(added, expected);
+}
+
+#[test]
 fn omitted_crypto_group_exposes_no_crypto_surface_or_subtle_ops() {
     let consumer = BareConsumer::new(Groups::PURE);
     assert_eq!(
@@ -498,6 +516,7 @@ fn rust_and_cpp_group_validation_tables_agree() {
         Groups::KV,
         Groups::INTL,
         Groups::EVENTS,
+        Groups::BLOB,
     ];
     for mask in 0..(1usize << group_bits.len()) {
         let mut groups = Groups::empty();

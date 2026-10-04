@@ -149,6 +149,11 @@ fn all_groups_preserve_the_shipping_global_insertion_order() {
             "onrejectionhandled",
             "AbortSignal",
             "AbortController",
+            "Blob",
+            "File",
+            "FormData",
+            "Request",
+            "Response",
             "structuredClone",
         ]
     );
