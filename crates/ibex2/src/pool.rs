@@ -126,6 +126,30 @@ mod tests {
 
     #[test]
     fn blocked_host_jobs_cannot_starve_body_reads() {
+        // This deliberately occupies every process-wide host worker. Run its
+        // real run/run_body routing in a fresh test process: other Hermes tests
+        // may themselves be waiting for jobs in this same pool. Private pools
+        // would avoid contention but would not catch a misrouted run_body.
+        const CHILD: &str = "IBEX2_TEST_ISOLATED_BODY_POOL";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "pool::tests::blocked_host_jobs_cannot_starve_body_reads",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(output.status.success(), "{stdout}\n{stderr}");
+            assert!(
+                stderr.contains("body pool isolation checked"),
+                "child did not run the saturation assertion: {stdout}\n{stderr}"
+            );
+            return;
+        }
         let wake = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
         let (entered, waiting) = mpsc::channel();
         let (finished, finish) = mpsc::channel();
@@ -159,6 +183,7 @@ mod tests {
         for _ in finish {}
         assert!(all_entered, "could not occupy host workers");
         assert!(progressed, "body read starved behind blocked fetch opens");
+        eprintln!("body pool isolation checked");
     }
 
     #[test]
