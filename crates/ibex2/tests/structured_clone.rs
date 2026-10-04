@@ -257,8 +257,11 @@ fn platform_identity_is_private_and_unsupported_values_throw_data_clone_error() 
         const forgedMap = Object.create(Map.prototype); forgedMap.x = 1;
         assert(structuredClone(forgedMap).x === 1, "forged Map prototype is ordinary");
         // Hermes represents Promise state in ordinary JavaScript fields and
-        // exposes no non-mutating internal-slot predicate. Pin the documented
-        // false negative after deliberately severing the captured prototype.
+        // exposes no non-mutating internal-slot predicate. Pin both documented
+        // prototype-check limits: a forged prototype is a false positive, and
+        // severing a real Promise's prototype is a false negative.
+        dataCloneError(() => structuredClone(Object.create(Promise.prototype)),
+          "forged Promise prototype");
         const severedPromise = Promise.resolve(1);
         Object.setPrototypeOf(severedPromise, null);
         assert(typeof structuredClone(severedPromise) === "object");
