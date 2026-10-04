@@ -138,6 +138,10 @@ public:
   void unsubscribe(uint64_t subscription);
   // Deliver one already-reserved event, taking/releasing its payload.
   void deliver_event(uint64_t subscription, Ibex2AbiValue&);
+  // Route an uncaught callback/timer failure through the EVENTS error event;
+  // without EVENTS these fall back to the host console reporter.
+  void report_error(const jsi::Value& error);
+  void report_error(const char* message);
   // Takes at most one storage settlement or subscribed event. No timers or
   // microtask checkpoints. Returns true if a task was delivered; throws for a
   // timer task, which belongs to an owning runtime's driver.

@@ -92,7 +92,15 @@ struct Ibex2Runtime {
 
 // An error that escaped a callback, to the console at error level with its
 // stack, so the application hears about it.
-void report_uncaught(const jsi::JSError &err) {
+void report_uncaught(Ibex2Runtime *runtime, const jsi::JSError &err) {
+  if (runtime != nullptr && runtime->bindings != nullptr) {
+    try {
+      runtime->bindings->report_error(err.value());
+      return;
+    } catch (...) {
+      // Error reporting must not replace the original uncaught failure.
+    }
+  }
   std::string text = err.getMessage();
   const std::string &stack = err.getStack();
   if (!stack.empty()) {
@@ -253,12 +261,16 @@ bool checkpoint(Ibex2Runtime &rt, const Entrance &entrance) {
       if (entrance.expired()) {
         return false;
       }
-      report_uncaught(err);
+      report_uncaught(&rt, err);
     } catch (const std::exception &err) {
       if (entrance.expired()) {
         return false;
       }
-      ibex2_report_uncaught(err.what());
+      try {
+        rt.bindings->report_error(err.what());
+      } catch (...) {
+        ibex2_report_uncaught(err.what());
+      }
     }
   }
 }
@@ -557,7 +569,7 @@ int ibex2_hermes_pump(void *handle, int *out_ran) {
     // A throwing callback does not stop the tasks behind it, exactly as an
     // unhandled error in one task does not cancel the next — but it is
     // reported, as a console error, rather than lost.
-    report_uncaught(err);
+    report_uncaught(rt, err);
   } catch (const std::exception &err) {
     // The same for what the engine or the adapter throws natively — a
     // JSINativeException out of `call`, a settlement that cannot be built —
@@ -568,7 +580,11 @@ int ibex2_hermes_pump(void *handle, int *out_ran) {
     if (entrance.expired()) {
       return IBEX2_STATUS_DEADLINE;
     }
-    ibex2_report_uncaught(err.what());
+    try {
+      rt->bindings->report_error(err.what());
+    } catch (...) {
+      ibex2_report_uncaught(err.what());
+    }
   }
 
   // 5. PostCheckpoint.

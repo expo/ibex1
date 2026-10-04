@@ -180,6 +180,7 @@ fn main() {
         "url",
         "domexception",
         "crypto",
+        "events",
         "abort",
         "fetch",
         "sqlite",

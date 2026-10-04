@@ -46,6 +46,7 @@ impl Groups {
     pub const SECRETS: Self = Self(1 << 8);
     pub const KV: Self = Self(1 << 9);
     pub const INTL: Self = Self(1 << 10);
+    pub const EVENTS: Self = Self(1 << 11);
 
     const PORTABLE_ALL: Self = Self(
         Self::PURE.0
@@ -57,7 +58,8 @@ impl Groups {
             | Self::STORAGE.0
             | Self::ENV.0
             | Self::SECRETS.0
-            | Self::KV.0,
+            | Self::KV.0
+            | Self::EVENTS.0,
     );
 
     /// The groups Ibex's runtime installs today.
@@ -94,6 +96,7 @@ impl Groups {
             (Self::ABORT, Self::PURE),
             (Self::CRYPTO, Self::PURE),
             (Self::FETCH, Self(Self::PURE.0 | Self::ABORT.0)),
+            (Self::EVENTS, Self::PURE),
         ];
         for (group, required) in requirements {
             if self.contains(group) && !self.contains(required) {
@@ -114,7 +117,7 @@ impl Groups {
     }
 
     fn names(self) -> impl Iterator<Item = &'static str> {
-        const NAMES: [(Groups, &str); 11] = [
+        const NAMES: [(Groups, &str); 12] = [
             (Groups::PURE, "PURE"),
             (Groups::CONSOLE, "CONSOLE"),
             (Groups::TIMERS, "TIMERS"),
@@ -126,6 +129,7 @@ impl Groups {
             (Groups::SECRETS, "SECRETS"),
             (Groups::KV, "KV"),
             (Groups::INTL, "INTL"),
+            (Groups::EVENTS, "EVENTS"),
         ];
         NAMES
             .into_iter()
@@ -206,6 +210,7 @@ pub fn scripts(groups: Groups) -> Result<Vec<Script>, GroupError> {
         }
         "crypto" => concat!(env!("CARGO_MANIFEST_DIR"), "/src/bindings/crypto.js"),
         "abort" => concat!(env!("CARGO_MANIFEST_DIR"), "/src/bindings/abort.js"),
+        "events" => concat!(env!("CARGO_MANIFEST_DIR"), "/src/bindings/events.js"),
         "fetch" => concat!(env!("CARGO_MANIFEST_DIR"), "/src/bindings/fetch.js"),
         "sqlite" => SQLITE_SOURCE,
         #[cfg(target_os = "linux")]
@@ -240,6 +245,9 @@ pub fn scripts(groups: Groups) -> Result<Vec<Script>, GroupError> {
     }
     if groups.contains(Groups::CRYPTO) {
         push("crypto");
+    }
+    if groups.contains(Groups::EVENTS) {
+        push("events");
     }
     if groups.contains(Groups::ABORT) {
         push("abort");
@@ -508,6 +516,7 @@ mod tests {
             "url",
             "domexception",
             "crypto",
+            "events",
             "abort",
         ];
         #[cfg(target_os = "linux")]

@@ -26,6 +26,7 @@ extern "C" int ibex2_response_field(const void*, double, uint32_t,
 extern "C" size_t ibex2_grants_env_count(const void*);
 extern "C" int ibex2_grants_env_at(const void*, size_t, char**, char**);
 extern "C" void ibex2_string_free(char*);
+extern "C" void ibex2_report_uncaught(const char*);
 extern "C" void* ibex2_subscription_create(const void*, uint64_t*);
 extern "C" void ibex2_subscription_destroy(void*);
 
@@ -362,6 +363,9 @@ struct Adapter::State {
   std::shared_ptr<Lifetime> lifetime;
   jsi::Value fetch_factory;
   jsi::Value sqlite_factory;
+  jsi::Value event_reporter;
+  jsi::Value rejection_unhandled;
+  jsi::Value rejection_handled;
   std::unique_ptr<Integrity> integrity;
   State(jsi::Runtime& rt, const void* value, uint32_t version,
         std::shared_ptr<Lifetime> lifetime_value)
@@ -401,6 +405,9 @@ void Adapter::detach() {
   state_->pending.clear();
   state_->fetch_factory = jsi::Value::undefined();
   state_->sqlite_factory = jsi::Value::undefined();
+  state_->event_reporter = jsi::Value::undefined();
+  state_->rejection_unhandled = jsi::Value::undefined();
+  state_->rejection_handled = jsi::Value::undefined();
   state_->integrity.reset();
   state_->queue = nullptr;
   runtime_ = nullptr;
@@ -411,7 +418,7 @@ void freeze(jsi::Runtime&, const jsi::Object&);
 
 constexpr Groups kKnownGroups = GROUP_PURE | GROUP_CONSOLE | GROUP_TIMERS |
     GROUP_ABORT | GROUP_CRYPTO | GROUP_FETCH | GROUP_STORAGE | GROUP_ENV |
-    GROUP_SECRETS | GROUP_KV | GROUP_INTL;
+    GROUP_SECRETS | GROUP_KV | GROUP_INTL | GROUP_EVENTS;
 
 bool has(Groups groups, Groups group) { return (groups & group) == group; }
 
@@ -424,6 +431,7 @@ void validate_groups_impl(Groups groups) {
       {GROUP_ABORT, GROUP_PURE},
       {GROUP_CRYPTO, GROUP_PURE},
       {GROUP_FETCH, GROUP_PURE | GROUP_ABORT},
+      {GROUP_EVENTS, GROUP_PURE},
   };
   for (const auto& requirement : requirements) {
     if (has(groups, requirement.group) && !has(groups, requirement.required))
@@ -444,6 +452,7 @@ std::vector<const char*> expected_scripts_impl(Groups groups) {
     result.push_back("domexception");
   }
   if (has(groups, GROUP_CRYPTO)) result.push_back("crypto");
+  if (has(groups, GROUP_EVENTS)) result.push_back("events");
   if (has(groups, GROUP_ABORT)) result.push_back("abort");
 #if defined(IBEX2_JSI_HAS_INTL)
   if (has(groups, GROUP_INTL)) {
@@ -523,6 +532,21 @@ void install_console(jsi::Runtime& rt,
   set_group_binding(rt, console, "warn", 4, lifetime);
   set_group_binding(rt, console, "error", 5, lifetime);
   rt.global().setProperty(rt, "console", std::move(console));
+}
+
+void install_events(jsi::Runtime& rt,
+                    const std::shared_ptr<Lifetime>& lifetime) {
+  auto report = jsi::Function::createFromHostFunction(
+      rt, jsi::PropNameID::forAscii(rt, "__ibex2_report_error"), 1,
+      [lifetime](jsi::Runtime& r, const jsi::Value&,
+                 const jsi::Value* args, size_t count) -> jsi::Value {
+        lifetime->require(r);
+        std::string message = count == 0 ? "uncaught error"
+            : args[0].toString(r).utf8(r);
+        ibex2_report_uncaught(message.c_str());
+        return jsi::Value::undefined();
+      });
+  rt.global().setProperty(rt, "__ibex2_report_error", std::move(report));
 }
 
 void install_pure(jsi::Runtime& rt,
@@ -714,6 +738,7 @@ void Adapter::install(Groups groups, const Ibex2Bindings* bindings,
     if (has(groups, GROUP_PURE)) install_pure(rt, state_->lifetime);
     if (has(groups, GROUP_TIMERS)) install_timers(rt, state_->lifetime);
     if (has(groups, GROUP_CRYPTO)) install_crypto(rt, state_->lifetime);
+    if (has(groups, GROUP_EVENTS)) install_events(rt, state_->lifetime);
     if (has(groups, GROUP_FETCH)) install_fetch(rt, *this, state_->lifetime);
 #if defined(IBEX2_JSI_HAS_INTL)
     if (has(groups, GROUP_INTL)) {
@@ -738,6 +763,21 @@ void Adapter::install(Groups groups, const Ibex2Bindings* bindings,
         state_->sqlite_factory = jsi::Value(rt, value);
         continue;
       }
+      if (std::strcmp(script.name, "events") == 0) {
+        if (!value.isObject())
+          throw jsi::JSError(rt, "events binding did not return its engine hooks");
+        auto hooks = value.getObject(rt);
+        auto capture = [&](const char* name, jsi::Value& slot) {
+          auto hook = hooks.getProperty(rt, name);
+          if (!hook.isObject() || !hook.getObject(rt).isFunction(rt))
+            throw jsi::JSError(rt, "events binding returned an invalid engine hook");
+          slot = jsi::Value(rt, hook);
+        };
+        capture("reportException", state_->event_reporter);
+        capture("onUnhandled", state_->rejection_unhandled);
+        capture("onHandled", state_->rejection_handled);
+        continue;
+      }
 #if defined(IBEX2_JSI_HAS_INTL)
       if (std::strcmp(script.name, "intl_datetime") == 0) {
         if (!value.isObject() || !value.getObject(rt).isFunction(rt))
@@ -748,6 +788,32 @@ void Adapter::install(Groups groups, const Ibex2Bindings* bindings,
             rt, static_cast<const jsi::Value*>(arguments.data()), arguments.size());
       }
 #endif
+    }
+
+    // @ref LLP 0057.000#l3--events-abort-and-the-second-direction — vanilla Hermes has delayed tracker callbacks, not the patched checkpoint hook
+    // Stock Hermes exposes its JavaScript Promise rejection tracker through
+    // HermesInternal. The upstream tracker uses setTimeout (100 ms for the
+    // standard programmer-error classes, two seconds otherwise), so EVENTS
+    // remains independent and tracking is enabled only when TIMERS was also
+    // selected. Engines without this optional intrinsic simply omit the two
+    // rejection events; ordinary EventTarget and reportError still work.
+    if (has(groups, GROUP_EVENTS) && has(groups, GROUP_TIMERS)) {
+      auto internal_value = rt.global().getProperty(rt, "HermesInternal");
+      if (internal_value.isObject()) {
+        auto internal = internal_value.getObject(rt);
+        auto enable = internal.getProperty(rt, "enablePromiseRejectionTracker");
+        if (enable.isObject() && enable.getObject(rt).isFunction(rt) &&
+            state_->rejection_unhandled.isObject() &&
+            state_->rejection_handled.isObject()) {
+          jsi::Object options(rt);
+          options.setProperty(rt, "allRejections", true);
+          options.setProperty(rt, "onUnhandled",
+                              jsi::Value(rt, state_->rejection_unhandled));
+          options.setProperty(rt, "onHandled",
+                              jsi::Value(rt, state_->rejection_handled));
+          enable.getObject(rt).getFunction(rt).callWithThis(rt, internal, options);
+        }
+      }
     }
 
 #if defined(IBEX2_JSI_HAS_INTL)
@@ -1009,6 +1075,31 @@ void Adapter::deliver_event(uint64_t id, Ibex2AbiValue& value) {
   if (!state_->alive || found == state_->subscriptions.end()) return;
   auto payload = from_abi(*runtime_, value);
   found->second.callback.call(*runtime_, payload);
+}
+
+void Adapter::report_error(const jsi::Value& error) {
+  if (!runtime_) throw std::logic_error("Ibex2 bindings are detached");
+  auto& rt = *runtime_;
+  if (state_->event_reporter.isObject() &&
+      state_->event_reporter.getObject(rt).isFunction(rt)) {
+    state_->event_reporter.getObject(rt).getFunction(rt).call(rt, error);
+    return;
+  }
+  auto message = error.toString(rt).utf8(rt);
+  ibex2_report_uncaught(message.c_str());
+}
+
+void Adapter::report_error(const char* message) {
+  if (!runtime_) throw std::logic_error("Ibex2 bindings are detached");
+  auto& rt = *runtime_;
+  if (state_->event_reporter.isObject() &&
+      state_->event_reporter.getObject(rt).isFunction(rt)) {
+    auto error = rt.global().getPropertyAsFunction(rt, "Error")
+        .callAsConstructor(rt, message == nullptr ? "uncaught error" : message);
+    state_->event_reporter.getObject(rt).getFunction(rt).call(rt, error);
+    return;
+  }
+  ibex2_report_uncaught(message);
 }
 
 bool Adapter::deliver_one() {

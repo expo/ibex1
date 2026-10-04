@@ -85,6 +85,10 @@ fn compiled_script(name: &str) -> CompiledScript {
             b"crypto\0",
             include_bytes!(concat!(env!("OUT_DIR"), "/crypto.hbc")),
         ),
+        "events" => (
+            b"events\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/events.hbc")),
+        ),
         "abort" => (
             b"abort\0",
             include_bytes!(concat!(env!("OUT_DIR"), "/abort.hbc")),
@@ -445,6 +449,7 @@ fn rust_and_cpp_group_validation_tables_agree() {
         Groups::SECRETS,
         Groups::KV,
         Groups::INTL,
+        Groups::EVENTS,
     ];
     for mask in 0..(1usize << group_bits.len()) {
         let mut groups = Groups::empty();

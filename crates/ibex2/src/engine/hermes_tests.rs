@@ -117,6 +117,20 @@ fn all_groups_preserve_the_shipping_global_insertion_order() {
             "DOMException",
             "Crypto",
             "crypto",
+            "Event",
+            "EventTarget",
+            "CustomEvent",
+            "ErrorEvent",
+            "PromiseRejectionEvent",
+            "reportError",
+            "self",
+            "navigator",
+            "addEventListener",
+            "removeEventListener",
+            "dispatchEvent",
+            "onerror",
+            "onunhandledrejection",
+            "onrejectionhandled",
             "AbortSignal",
             "AbortController",
         ]
@@ -172,6 +186,155 @@ fn console_number_formatting_is_rust_owned() {
     rt.eval("console.log(1.0, 1.5, NaN, Infinity, -0)").unwrap();
     let records = rt.drain_console();
     assert_eq!(records[0].message, "1 1.5 NaN Infinity 0");
+}
+
+#[test]
+fn event_target_observes_dom_listener_list_semantics() {
+    let mut rt = with_stdlib();
+    let observed = rt
+        .eval(
+            r#"
+            var target = new EventTarget();
+            var order = [];
+            var removed = function () { order.push('removed'); };
+            target.addEventListener('go', function () { order.push('capture'); }, true);
+            target.addEventListener('go', function () {
+              order.push('first');
+              target.addEventListener('go', function () { order.push('added'); });
+              target.removeEventListener('go', removed);
+            });
+            target.addEventListener('go', removed);
+            target.addEventListener('go', function () { order.push('once'); }, { once: true });
+            var first = new Event('go', { cancelable: true });
+            var firstReturn = target.dispatchEvent(first);
+            target.dispatchEvent(new Event('go'));
+
+            var stopped = new EventTarget();
+            stopped.addEventListener('stop', function (event) {
+              order.push('stop');
+              event.stopImmediatePropagation();
+            });
+            stopped.addEventListener('stop', function () { order.push('after-stop'); });
+            stopped.dispatchEvent(new Event('stop'));
+
+            var passive = new Event('passive', { cancelable: true });
+            target.addEventListener('passive', function (event) { event.preventDefault(); }, { passive: true });
+            var passiveReturn = target.dispatchEvent(passive);
+            [order.join(','), firstReturn, first.target === target,
+             first.currentTarget === null, first.eventPhase,
+             passiveReturn, passive.defaultPrevented].join('|')
+            "#,
+        )
+        .unwrap();
+    assert_eq!(
+        observed,
+        "capture,first,once,capture,first,added,stop|true|true|true|0|true|false"
+    );
+}
+
+#[test]
+fn listener_exceptions_become_error_events_and_do_not_escape_dispatch() {
+    let mut rt = with_stdlib();
+    let observed = rt
+        .eval(
+            r#"
+            var observedErrors = [], continued = false;
+            addEventListener('error', function (event) {
+              observedErrors.push(event.message);
+              event.preventDefault();
+            });
+            var target = new EventTarget();
+            target.addEventListener('go', function () { throw new Error('listener boom'); });
+            target.addEventListener('go', function () { continued = true; });
+            var returned = target.dispatchEvent(new Event('go'));
+            [returned, continued, observedErrors.join(',')].join('|')
+            "#,
+        )
+        .unwrap();
+    assert_eq!(observed, "true|true|listener boom");
+    assert!(rt.drain_console().is_empty());
+}
+
+#[test]
+fn abort_signal_uses_event_target_when_events_are_installed() {
+    let mut rt = with_stdlib();
+    let observed = rt
+        .eval(
+            r#"
+            var controller = new AbortController();
+            var signal = controller.signal;
+            var target = new EventTarget();
+            var seen = [];
+            signal.addEventListener('abort', function (event) {
+              seen.push(event instanceof Event, event.type, event.target === signal,
+                        event.currentTarget === signal, event.eventPhase);
+            }, { once: true });
+            target.addEventListener('go', function () { seen.push('removed-failed'); }, { signal: signal });
+            controller.abort('because');
+            target.dispatchEvent(new Event('go'));
+            var source = new AbortController();
+            var dependent = AbortSignal.any([source.signal]);
+            source.abort('any-reason');
+            [signal instanceof EventTarget, signal.aborted, signal.reason,
+             dependent.aborted, dependent.reason, seen.join(',')].join('|')
+            "#,
+        )
+        .unwrap();
+    assert_eq!(
+        observed,
+        "true|true|because|true|any-reason|true,abort,true,true,2"
+    );
+}
+
+#[test]
+fn abort_without_events_keeps_its_standalone_listener_and_timeout_refuses_without_timers() {
+    let mut rt = Hermes::new(DynamicCode::Closed).expect("runtime");
+    let context = crate::bindings::Context::new(crate::grant::GrantSet::none());
+    rt.install(
+        crate::bindings::Groups::PURE | crate::bindings::Groups::ABORT,
+        &context,
+    )
+    .unwrap();
+    assert_eq!(
+        rt.eval(
+            r#"
+            var controller = new AbortController(), seen = [];
+            controller.signal.addEventListener('abort', function (event) {
+              seen.push(event.type, event.target === controller.signal);
+            });
+            controller.abort();
+            var timeoutName = '';
+            try { AbortSignal.timeout(1); } catch (error) { timeoutName = error.name; }
+            [typeof EventTarget, seen.join(','), timeoutName].join('|')
+            "#,
+        )
+        .unwrap(),
+        "undefined|abort,true|NotSupportedError"
+    );
+}
+
+#[test]
+fn report_error_dispatches_and_uses_console_only_when_not_canceled() {
+    let mut rt = with_stdlib();
+    let _ = rt.drain_console();
+    assert_eq!(
+        rt.eval(
+            r#"
+            var caught = [];
+            function cancel(event) { caught.push(event.message); event.preventDefault(); }
+            addEventListener('error', cancel);
+            reportError(new Error('quiet'));
+            removeEventListener('error', cancel);
+            reportError(new Error('loud'));
+            [self === globalThis, navigator.userAgent, caught.join(',')].join('|')
+            "#,
+        )
+        .unwrap(),
+        "true|Ibex/0.1.0|quiet"
+    );
+    let console = rt.drain_console();
+    assert_eq!(console.len(), 1);
+    assert!(console[0].message.contains("loud"));
 }
 
 #[test]
@@ -1409,6 +1572,52 @@ fn pump_for(rt: &mut Hermes, millis: u64) {
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
     rt.pump().unwrap();
+}
+
+#[test]
+fn timer_exceptions_are_dispatched_to_onerror() {
+    let mut rt = timer_rt();
+    let _ = rt.drain_console();
+    rt.eval(
+        "globalThis.timerError = ''; onerror = function (message) { timerError = message; return true; }; setTimeout(function () { throw new Error('timer boom'); }, 0)",
+    )
+    .unwrap();
+    pump_for(&mut rt, 5);
+    assert_eq!(rt.eval("timerError").unwrap(), "timer boom");
+    assert!(rt.drain_console().is_empty());
+}
+
+#[test]
+fn hermes_rejection_tracker_dispatches_unhandled_and_handled_events() {
+    let mut rt = timer_rt();
+    let _ = rt.drain_console();
+    rt.eval(
+        r#"
+        globalThis.rejections = [];
+        globalThis.latePromise = Promise.reject(new TypeError('late rejection'));
+        onunhandledrejection = function (event) {
+          rejections.push(event.type + ':' + event.reason.message + ':' + (event.promise === latePromise));
+          return false;
+        };
+        onrejectionhandled = function (event) {
+          rejections.push(event.type + ':' + event.reason.message + ':' + (event.promise === latePromise));
+        };
+        "#,
+    )
+    .unwrap();
+    pump_for(&mut rt, 150);
+    assert_eq!(
+        rt.eval("rejections.join('|')").unwrap(),
+        "unhandledrejection:late rejection:true"
+    );
+    assert!(rt.drain_console().is_empty());
+
+    rt.eval("latePromise.catch(function () {});").unwrap();
+    rt.drain_microtasks().unwrap();
+    assert_eq!(
+        rt.eval("rejections.join('|')").unwrap(),
+        "unhandledrejection:late rejection:true|rejectionhandled:late rejection:true"
+    );
 }
 
 #[test]

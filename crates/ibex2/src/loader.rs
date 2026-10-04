@@ -981,6 +981,20 @@ pub const DEFAULT_ADDED_GLOBALS: &[&str] = &[
     "crypto",
     "URL",
     "URLSearchParams",
+    "Event",
+    "EventTarget",
+    "CustomEvent",
+    "ErrorEvent",
+    "PromiseRejectionEvent",
+    "reportError",
+    "self",
+    "navigator",
+    "addEventListener",
+    "removeEventListener",
+    "dispatchEvent",
+    "onerror",
+    "onunhandledrejection",
+    "onrejectionhandled",
 ];
 
 const GLOBAL_PARTITION: &[(Option<crate::bindings::Groups>, &[usize])] = &[
@@ -993,6 +1007,10 @@ const GLOBAL_PARTITION: &[(Option<crate::bindings::Groups>, &[usize])] = &[
     (Some(crate::bindings::Groups::PURE), &[11, 12, 13, 18, 19]),
     (Some(crate::bindings::Groups::CRYPTO), &[14, 17]),
     (Some(crate::bindings::Groups::ABORT), &[15, 16]),
+    (
+        Some(crate::bindings::Groups::EVENTS),
+        &[20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33],
+    ),
 ];
 
 /// The global names a module may see for one installed group set. Anything

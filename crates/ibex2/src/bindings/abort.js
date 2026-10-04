@@ -2,6 +2,7 @@
 (function (global) {
   "use strict";
   var signals = new WeakMap(), controllers = new WeakMap();
+  var useEvents = typeof global.EventTarget === "function" && typeof global.Event === "function";
   var report = global.console && typeof global.console.error === "function"
     ? global.console.error
     : function () {};
@@ -11,7 +12,13 @@
     return state;
   }
   function create() {
-    var signal = Object.create(AbortSignal.prototype);
+    var signal;
+    if (useEvents) {
+      signal = new global.EventTarget();
+      Object.setPrototypeOf(signal, AbortSignal.prototype);
+    } else {
+      signal = Object.create(AbortSignal.prototype);
+    }
     signals.set(signal, { aborted: false, reason: undefined, listeners: [], hooks: [], dependents: [], sources: null, onabort: null, onabortEntry: null });
     return signal;
   }
@@ -42,6 +49,10 @@
     pending.forEach(function (current) {
       var state = own(current), stopped = false;
       state.hooks.splice(0).forEach(function (hook) { if (!hook.alive || hook.alive()) hook.callback(); });
+      if (useEvents) {
+        current.dispatchEvent(new global.Event("abort"));
+        return;
+      }
       var event = { type: "abort", target: current, currentTarget: current,
         bubbles: false, cancelable: false, defaultPrevented: false,
         stopImmediatePropagation: function () { stopped = true; },
@@ -66,6 +77,11 @@
     };
   }
   function AbortSignal() { throw new TypeError("Illegal constructor"); }
+  if (useEvents) {
+    AbortSignal.prototype = Object.create(global.EventTarget.prototype, {
+      constructor: { value: AbortSignal, writable: true, configurable: true }
+    });
+  }
   Object.defineProperties(AbortSignal.prototype, {
     aborted: { get: function () { return own(this).aborted; }, enumerable: true },
     reason: { get: function () { return own(this).reason; }, enumerable: true },
@@ -73,29 +89,33 @@
       var signal = this, state = own(signal);
       state.onabort = typeof v === "function" ? v : null;
       if (state.onabort && !state.onabortEntry) {
-        state.onabortEntry = { callback: function (event) { state.onabort.call(signal, event); } };
-        state.listeners.push(state.onabortEntry);
+        state.onabortEntry = function (event) { state.onabort.call(signal, event); };
+        if (useEvents) signal.addEventListener("abort", state.onabortEntry);
+        else state.listeners.push({ callback: state.onabortEntry });
       } else if (!state.onabort && state.onabortEntry) {
-        state.listeners.splice(state.listeners.indexOf(state.onabortEntry), 1);
+        if (useEvents) signal.removeEventListener("abort", state.onabortEntry);
+        else state.listeners = state.listeners.filter(function (entry) { return entry.callback !== state.onabortEntry; });
         state.onabortEntry = null;
       }
     }, enumerable: true }
   });
   AbortSignal.prototype.throwIfAborted = function () { var state = own(this); if (state.aborted) throw state.reason; };
-  AbortSignal.prototype.addEventListener = function (type, callback, options) {
-    var state = own(this);
-    if (String(type) !== "abort" || callback == null) return;
-    if (typeof callback !== "function" && typeof callback !== "object") throw new TypeError("invalid event listener");
-    var capture = typeof options === "boolean" ? options : !!(options && options.capture);
-    if (state.listeners.some(function (e) { return e.callback === callback && e.capture === capture; })) return;
-    state.listeners.push({ callback: callback, capture: capture, once: !!(options && options.once) });
-  };
-  AbortSignal.prototype.removeEventListener = function (type, callback, options) {
-    var state = own(this);
-    if (String(type) !== "abort") return;
-    var capture = typeof options === "boolean" ? options : !!(options && options.capture);
-    state.listeners = state.listeners.filter(function (e) { return e.callback !== callback || e.capture !== capture; });
-  };
+  if (!useEvents) {
+    AbortSignal.prototype.addEventListener = function (type, callback, options) {
+      var state = own(this);
+      if (String(type) !== "abort" || callback == null) return;
+      if (typeof callback !== "function" && typeof callback !== "object") throw new TypeError("invalid event listener");
+      var capture = typeof options === "boolean" ? options : !!(options && options.capture);
+      if (state.listeners.some(function (e) { return e.callback === callback && e.capture === capture; })) return;
+      state.listeners.push({ callback: callback, capture: capture, once: !!(options && options.once) });
+    };
+    AbortSignal.prototype.removeEventListener = function (type, callback, options) {
+      var state = own(this);
+      if (String(type) !== "abort") return;
+      var capture = typeof options === "boolean" ? options : !!(options && options.capture);
+      state.listeners = state.listeners.filter(function (e) { return e.callback !== callback || e.capture !== capture; });
+    };
+  }
   AbortSignal.abort = function (reason) { var signal = create(); abort(signal, reason); return signal; };
   AbortSignal.timeout = function (milliseconds) {
     var delay = +milliseconds;

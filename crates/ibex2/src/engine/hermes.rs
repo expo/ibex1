@@ -159,6 +159,10 @@ fn compiled_binding(name: &str) -> CompiledScript {
             b"crypto\0",
             include_bytes!(concat!(env!("OUT_DIR"), "/crypto.hbc")),
         ),
+        "events" => (
+            b"events\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/events.hbc")),
+        ),
         "abort" => (
             b"abort\0",
             include_bytes!(concat!(env!("OUT_DIR"), "/abort.hbc")),
