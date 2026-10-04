@@ -3,8 +3,8 @@
   "use strict";
   var signals = new WeakMap(), controllers = new WeakMap();
   var useEvents = typeof global.EventTarget === "function" && typeof global.Event === "function";
-  var createTrustedEvent = global.__ibex2_create_trusted_event;
-  delete global.__ibex2_create_trusted_event;
+  var fireTrustedEvent = global.__ibex2_fire_trusted_event;
+  delete global.__ibex2_fire_trusted_event;
   var report = global.console && typeof global.console.error === "function"
     ? global.console.error
     : function () {};
@@ -52,12 +52,11 @@
       var state = own(current), stopped = false;
       state.hooks.splice(0).forEach(function (hook) { if (!hook.alive || hook.alive()) hook.callback(); });
       if (useEvents) {
-        // The private factory exists only while the native installer moves
+        // The private firing path exists only while the native installer moves
         // from events.js to abort.js. Application code never receives it.
-        var event = typeof createTrustedEvent === "function"
-          ? createTrustedEvent("abort")
-          : new global.Event("abort");
-        current.dispatchEvent(event);
+        var event = new global.Event("abort");
+        if (typeof fireTrustedEvent === "function") fireTrustedEvent(current, event);
+        else current.dispatchEvent(event);
         return;
       }
       var event = { type: "abort", target: current, currentTarget: current,

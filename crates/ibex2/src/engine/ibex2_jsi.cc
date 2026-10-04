@@ -777,7 +777,7 @@ void Adapter::install(Groups groups, const Ibex2Bindings* bindings,
         capture("onUnhandled", state_->rejection_unhandled);
         capture("onHandled", state_->rejection_handled);
         if (has(groups, GROUP_ABORT)) {
-          auto trusted_event = hooks.getProperty(rt, "createTrustedEvent");
+          auto trusted_event = hooks.getProperty(rt, "fireTrustedEvent");
           if (!trusted_event.isObject() ||
               !trusted_event.getObject(rt).isFunction(rt))
             throw jsi::JSError(
@@ -785,7 +785,7 @@ void Adapter::install(Groups groups, const Ibex2Bindings* bindings,
           // The hook crosses only the next installation step. abort.js takes
           // and deletes it before any application entrance can run.
           rt.global().setProperty(
-              rt, "__ibex2_create_trusted_event", std::move(trusted_event));
+              rt, "__ibex2_fire_trusted_event", std::move(trusted_event));
         }
         continue;
       }
@@ -802,7 +802,7 @@ void Adapter::install(Groups groups, const Ibex2Bindings* bindings,
     }
 
     if (has(groups, GROUP_EVENTS) && has(groups, GROUP_ABORT))
-      remove_global(rt, rt.global(), "__ibex2_create_trusted_event");
+      remove_global(rt, rt.global(), "__ibex2_fire_trusted_event");
 
     // @ref LLP 0057.000#l3--events-abort-and-the-second-direction — vanilla Hermes has delayed tracker callbacks, not the patched checkpoint hook
     // Stock Hermes exposes its JavaScript Promise rejection tracker through

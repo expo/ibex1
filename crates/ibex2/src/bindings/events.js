@@ -109,6 +109,14 @@
     state.cancelable = !!cancelable;
     state.composed = false;
     state.canceled = false;
+    state.stop = false;
+    state.stopImmediate = false;
+    state.passive = false;
+    state.target = null;
+    state.currentTarget = null;
+    state.phase = Event.NONE;
+    state.path = [];
+    state.trusted = false;
   };
 
   [["NONE", 0], ["CAPTURING_PHASE", 1], ["AT_TARGET", 2], ["BUBBLING_PHASE", 3]]
@@ -268,13 +276,14 @@
     }
   }
 
-  EventTarget.prototype.dispatchEvent = function (event) {
-    var target = this;
+  // @ref LLP 0057.000#l3--events-abort-and-the-second-direction — only the captured host path may assert event trust
+  function dispatch(target, event, trusted) {
     targetState(target);
     var state = eventState(event);
     if (state.dispatching || state.type === "") {
       throw new DOMException("The event is already being dispatched or has no type", "InvalidStateError");
     }
+    state.trusted = trusted;
     state.dispatching = true;
     state.target = target;
     state.currentTarget = target;
@@ -293,6 +302,12 @@
       state.stopImmediate = false;
       state.passive = false;
     }
+  }
+
+  EventTarget.prototype.dispatchEvent = function (event) {
+    // Public redispatch is always application dispatch, even when the event
+    // was originally created and fired by the host.
+    return dispatch(this, event, false);
   };
 
   function errorText(error) {
@@ -318,7 +333,7 @@
         message: error && typeof error.message === "string" ? error.message : text,
         error: error
       });
-      if (EventTarget.prototype.dispatchEvent.call(global, event)) nativeReport(text);
+      if (dispatch(global, event, true)) nativeReport(text);
     } finally {
       reportingException = false;
     }
@@ -328,10 +343,8 @@
     reportException(error);
   }
 
-  function createTrustedEvent(type) {
-    var event = new Event(type);
-    eventState(event).trusted = true;
-    return event;
+  function fireTrustedEvent(target, event) {
+    return dispatch(target, event, true);
   }
 
   function defineEventHandler(name, type, errorHandler) {
@@ -394,16 +407,16 @@
 
   return {
     reportException: reportException,
-    createTrustedEvent: createTrustedEvent,
+    fireTrustedEvent: fireTrustedEvent,
     onUnhandled: function (_, reason, promise) {
       var event = new PromiseRejectionEvent("unhandledrejection", {
         cancelable: true, promise: promise, reason: reason
       });
-      if (EventTarget.prototype.dispatchEvent.call(global, event)) nativeReport(errorText(reason));
+      if (dispatch(global, event, true)) nativeReport(errorText(reason));
     },
     onHandled: function (_, reason, promise) {
-      EventTarget.prototype.dispatchEvent.call(global,
-        new PromiseRejectionEvent("rejectionhandled", { promise: promise, reason: reason }));
+      dispatch(global,
+        new PromiseRejectionEvent("rejectionhandled", { promise: promise, reason: reason }), true);
     }
   };
 })(globalThis);

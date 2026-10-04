@@ -278,8 +278,9 @@ fn abort_signal_uses_event_target_when_events_are_installed() {
             var controller = new AbortController();
             var signal = controller.signal;
             var target = new EventTarget();
-            var seen = [];
+            var seen = [], captured;
             signal.addEventListener('abort', function (event) {
+              captured = event;
               seen.push(event instanceof Event, event.type, event.target === signal,
                         event.currentTarget === signal, event.eventPhase, event.isTrusted);
             }, { once: true });
@@ -305,10 +306,17 @@ fn abort_signal_uses_event_target_when_events_are_installed() {
              var changed; \
              try { Object.defineProperty(e, 'isTrusted', { value: true }); changed = true; } \
              catch (_) { changed = false; } \
-             [before, changed, e.isTrusted, typeof __ibex2_create_trusted_event].join('|')"
+             var redispatched = []; \
+             var other = new EventTarget(); \
+             other.addEventListener('abort', function (event) { redispatched.push(event.isTrusted); }); \
+             other.dispatchEvent(captured); \
+             captured.stopPropagation(); \
+             captured.initEvent('abort', false, false); \
+             var reset = [captured.isTrusted, captured.target === null, captured.cancelBubble].join(','); \
+             [before, changed, e.isTrusted, typeof __ibex2_fire_trusted_event, reset, redispatched.join(',')].join('|')"
         )
         .unwrap(),
-        "false|false|false|undefined"
+        "false|false|false|undefined|false,true,false|false"
     );
 }
 
@@ -347,7 +355,7 @@ fn report_error_dispatches_and_uses_console_only_when_not_canceled() {
         rt.eval(
             r#"
             var caught = [];
-            function cancel(event) { caught.push(event.message); event.preventDefault(); }
+            function cancel(event) { caught.push(event.message + ':' + event.isTrusted); event.preventDefault(); }
             addEventListener('error', cancel);
             reportError(new Error('quiet'));
             removeEventListener('error', cancel);
@@ -356,7 +364,7 @@ fn report_error_dispatches_and_uses_console_only_when_not_canceled() {
             "#,
         )
         .unwrap(),
-        "true|Ibex/0.1.0|quiet"
+        "true|Ibex/0.1.0|quiet:true"
     );
     let console = rt.drain_console();
     assert_eq!(console.len(), 1);
@@ -1622,11 +1630,11 @@ fn hermes_rejection_tracker_dispatches_unhandled_and_handled_events() {
         globalThis.rejections = [];
         globalThis.latePromise = Promise.reject(new TypeError('late rejection'));
         onunhandledrejection = function (event) {
-          rejections.push(event.type + ':' + event.reason.message + ':' + (event.promise === latePromise));
+          rejections.push(event.type + ':' + event.reason.message + ':' + (event.promise === latePromise) + ':' + event.isTrusted);
           return false;
         };
         onrejectionhandled = function (event) {
-          rejections.push(event.type + ':' + event.reason.message + ':' + (event.promise === latePromise));
+          rejections.push(event.type + ':' + event.reason.message + ':' + (event.promise === latePromise) + ':' + event.isTrusted);
         };
         "#,
     )
@@ -1634,7 +1642,7 @@ fn hermes_rejection_tracker_dispatches_unhandled_and_handled_events() {
     pump_for(&mut rt, 150);
     assert_eq!(
         rt.eval("rejections.join('|')").unwrap(),
-        "unhandledrejection:late rejection:true"
+        "unhandledrejection:late rejection:true:true"
     );
     assert!(rt.drain_console().is_empty());
 
@@ -1642,7 +1650,7 @@ fn hermes_rejection_tracker_dispatches_unhandled_and_handled_events() {
     rt.drain_microtasks().unwrap();
     assert_eq!(
         rt.eval("rejections.join('|')").unwrap(),
-        "unhandledrejection:late rejection:true|rejectionhandled:late rejection:true"
+        "unhandledrejection:late rejection:true:true|rejectionhandled:late rejection:true:true"
     );
 }
 
