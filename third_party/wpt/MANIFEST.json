@@ -139,6 +139,188 @@
       "sha256": "2459485339b8f8096e9c39f280cfa9ea6fdf2e62291ad28681fa2b9da00866f2",
       "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
       "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "websockets/Close-1000-reason.any.js",
+      "local": "third_party/wpt/websockets/Close-1000-reason.any.js",
+      "sha256": "3cce8e620f18b3b3bc26b388a9de222869457243f417853c415455c258d1264d",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "websockets/Close-2999-reason.any.js",
+      "local": "third_party/wpt/websockets/Close-2999-reason.any.js",
+      "sha256": "54f3ee0a2057ac102149a64426c2d61a6d63cae7a2d1ea3a37e8bcb668a5d894",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "websockets/Close-3000-reason.any.js",
+      "local": "third_party/wpt/websockets/Close-3000-reason.any.js",
+      "sha256": "17027959f299d950f056eef4072a39e0aac34ef9be0be5f07ab8711891f11622",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "websockets/Close-Reason-124Bytes.any.js",
+      "local": "third_party/wpt/websockets/Close-Reason-124Bytes.any.js",
+      "sha256": "06333bc7acdc6ab37a565133e9af85348759d875030a2df5052039b1d437b74d",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "websockets/Close-onlyReason.any.js",
+      "local": "third_party/wpt/websockets/Close-onlyReason.any.js",
+      "sha256": "90522f76f65f47ae9e34bd257f86cc7c01bb08e3dec7e663353121806bfaff95",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "websockets/Close-readyState-Closed.any.js",
+      "local": "third_party/wpt/websockets/Close-readyState-Closed.any.js",
+      "sha256": "9a589672f69c3fae7cdfc8ffb3d38a89ce48c6eb41e852205e97f8198c8ea560",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "websockets/Close-readyState-Closing.any.js",
+      "local": "third_party/wpt/websockets/Close-readyState-Closing.any.js",
+      "sha256": "1b0c47123d3302c8583ecf49d2d376fd83c403e281b2e526a42ac20ac0c99e5a",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "websockets/Close-undefined.any.js",
+      "local": "third_party/wpt/websockets/Close-undefined.any.js",
+      "sha256": "963aebb3f03609ea6befa04d6bda8116c0c9e00efa61c809cfc31881980b8465",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "websockets/Create-asciiSep-protocol-string.any.js",
+      "local": "third_party/wpt/websockets/Create-asciiSep-protocol-string.any.js",
+      "sha256": "781127049587d78712ce1efd48b345f1158d52cc5e0472ab8a588056b0077f0b",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "websockets/Create-extensions-empty.any.js",
+      "local": "third_party/wpt/websockets/Create-extensions-empty.any.js",
+      "sha256": "9efcc0772d053408c324d55f0cc32589a2a5c267a3229c281ad6887c825ab217",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "websockets/Create-http-urls.any.js",
+      "local": "third_party/wpt/websockets/Create-http-urls.any.js",
+      "sha256": "6baf579c7e11981955e6211037047907a3dba699f9a29ee83c855500abe7c70b",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "websockets/Create-invalid-urls.any.js",
+      "local": "third_party/wpt/websockets/Create-invalid-urls.any.js",
+      "sha256": "168e07a04c70d6258fabb8fa36cfcbaad860b248f41e5eddc6d341dc9ea80771",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "websockets/Create-nonAscii-protocol-string.any.js",
+      "local": "third_party/wpt/websockets/Create-nonAscii-protocol-string.any.js",
+      "sha256": "f079c77dc5b76950682d4232fd7a5deb2b85e7088c0d7049caeb509415fbb513",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "websockets/Create-protocol-with-space.any.js",
+      "local": "third_party/wpt/websockets/Create-protocol-with-space.any.js",
+      "sha256": "f01f5bb190f856c77c10cd8661f7aa2a47e13f7f50f2fa5c65fc3aa2637bdc7f",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "websockets/Create-protocols-repeated-case-insensitive.any.js",
+      "local": "third_party/wpt/websockets/Create-protocols-repeated-case-insensitive.any.js",
+      "sha256": "ef416b192b006a9dbc07c25b5eda352ff62b933668c1c5f78a884a6439ca47f2",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "websockets/Create-protocols-repeated.any.js",
+      "local": "third_party/wpt/websockets/Create-protocols-repeated.any.js",
+      "sha256": "45a8117d642c6ce9730e2264c4745f9927f182c05f9a3597f76eae73e6bc2ca0",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "websockets/Create-valid-url-array-protocols.any.js",
+      "local": "third_party/wpt/websockets/Create-valid-url-array-protocols.any.js",
+      "sha256": "ce9f1bd14125fc389e97320ae9f5420059f2f98a6d4ccbe775782d09a5402f00",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "websockets/Create-valid-url-binaryType-blob.any.js",
+      "local": "third_party/wpt/websockets/Create-valid-url-binaryType-blob.any.js",
+      "sha256": "c1269f98bad1657d33d1dac45fe34f024526cf0e7ffdd25a648af819cfa1038d",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "websockets/Create-valid-url-protocol-empty.any.js",
+      "local": "third_party/wpt/websockets/Create-valid-url-protocol-empty.any.js",
+      "sha256": "85f25800907f0a9983307033e37f40b165d14d77d3d25a2b64a5ae6020817741",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "websockets/Create-valid-url-protocol-setCorrectly.any.js",
+      "local": "third_party/wpt/websockets/Create-valid-url-protocol-setCorrectly.any.js",
+      "sha256": "f10f64f2832d663ecccb4bfdbab9cc86cfcd561dcca86db9e0dc592a048a6250",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "websockets/Create-valid-url.any.js",
+      "local": "third_party/wpt/websockets/Create-valid-url.any.js",
+      "sha256": "19d7ccf8455d50dd862024a32d1f845d5a9cbdd5317930baa18ddc70d13810c5",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "websockets/Send-before-open.any.js",
+      "local": "third_party/wpt/websockets/Send-before-open.any.js",
+      "sha256": "b5bddd0e3a18bee2475706b39d5e6bb324d266d9c36d9b086a91b1fdc2c5af47",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "websockets/binaryType-wrong-value.any.js",
+      "local": "third_party/wpt/websockets/binaryType-wrong-value.any.js",
+      "sha256": "d4a0895bd95bdbdeecc131553a29ea9524570f89b372d90c40788572f3519bbf",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "websockets/close-invalid.any.js",
+      "local": "third_party/wpt/websockets/close-invalid.any.js",
+      "sha256": "e2f2d127042a96ef36b928be92ae780fbdb97fe63eb954b3afde09df3a322e37",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "websockets/constructor.any.js",
+      "local": "third_party/wpt/websockets/constructor.any.js",
+      "sha256": "fad7847f89c01de2f2a32c96d337234ac0e7f2da6b8811cdad877dea6c3357b4",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "websockets/eventhandlers.any.js",
+      "local": "third_party/wpt/websockets/eventhandlers.any.js",
+      "sha256": "f465b8ba9fe7bfa5253af94034fbf6d95267d8fcc92e3faab1dcba6af94f29b8",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
     }
   ],
   "exclusions": [
@@ -161,6 +343,30 @@
     {
       "upstream": "dom/abort/*.html",
       "reason": "HTML-only crash and timeout fixtures require Window/document harness behavior; the corresponding engine-independent .any.js algorithms are pinned."
+    },
+    {
+      "upstream": "websockets/**/*.any.js?variant=wss|wpt_flags=h2",
+      "reason": "The secure and HTTP/2 variants depend on WPT host/port substitution, its certificate authority, and its Python handlers. Ibex covers local rustls TLS separately; the pinned default fixtures use the local plaintext echo peer."
+    },
+    {
+      "upstream": "websockets/Send-*.any.js (except Send-before-open.any.js)",
+      "reason": "The payload fixtures depend on WPT echo and binary-message handlers, including Blob and Float16Array cases outside the installed PURE/EVENTS/WEBSOCKET groups. Ibex's native lifecycle suite covers text, ArrayBuffer and typed-array echo, fragmentation, backpressure, and post-close send."
+    },
+    {
+      "upstream": "websockets/Close-*-verify-code.any.js and Close-server-initiated-close.any.js",
+      "reason": "These assert WPT Python close handlers and server-selected close frames. The local transport and JavaScript lifecycle suites cover the client closing handshake, code, reason, clean close, and abnormal close."
+    },
+    {
+      "upstream": "websockets/Create-non-absolute-url.any.js",
+      "reason": "It resolves against the WPT Window/Worker location. Ibex has no ambient Document or worker base URL, so relative socket URLs have no host-defined base."
+    },
+    {
+      "upstream": "websockets/opening-handshake/**, closing-handshake/**, handlers/**, binary/**, cookies/**, security/**",
+      "reason": "These suites require WPT's HTTP/WebSocket Python handlers, generated domains, cookies, authentication, raw handshake mutation, or policy-bearing Window globals rather than a standalone echo peer."
+    },
+    {
+      "upstream": "websockets/*.html, *.window.js, *.worker.js",
+      "reason": "These fixtures require generated HTML/worker wrappers, Window/document lifecycle, sync XHR, back-forward cache, or WPT server substitution; Ibex adopts the engine-independent .any.js subset."
     }
   ]
 }

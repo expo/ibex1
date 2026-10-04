@@ -53,7 +53,7 @@
   global.test = function (fn, name) {
     var t = context(name, false);
     try {
-      fn(t);
+      fn.call(t, t);
       record(name, t._error());
     } catch (e) {
       record(name, e);
@@ -61,9 +61,16 @@
   };
 
   global.async_test = function (fn, name) {
+    // WPT's common declaration-only overload is async_test(name); callbacks
+    // retained from the returned object complete it later.
+    if (typeof fn === "string" && name === undefined) {
+      name = fn;
+      fn = null;
+    }
     pending++;
     var t = context(name, true);
-    try { fn(t); } catch (e) { t.step_func_done(function () { throw e; })(); }
+    try { if (typeof fn === "function") fn.call(t, t); }
+    catch (e) { t.step_func_done(function () { throw e; })(); }
     return t;
   };
 
@@ -136,6 +143,12 @@
     fail("did not throw", description);
   };
   global.assert_throws_dom = function (name, fn, description) {
+    var legacy = {
+      SYNTAX_ERR: "SyntaxError",
+      INVALID_ACCESS_ERR: "InvalidAccessError",
+      INVALID_STATE_ERR: "InvalidStateError"
+    };
+    name = legacy[name] || name;
     try { fn(); } catch (e) {
       if (e instanceof DOMException && e.name === name) return;
       fail("expected DOMException " + name + " but got " + e, description);
