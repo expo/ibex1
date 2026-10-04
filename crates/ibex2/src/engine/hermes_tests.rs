@@ -247,6 +247,42 @@ fn event_target_observes_dom_listener_list_semantics() {
 }
 
 #[test]
+fn stop_propagation_prevents_the_later_at_target_phase() {
+    let mut rt = with_stdlib();
+    assert_eq!(
+        rt.eval(
+            r#"
+            var order = [];
+            var stopped = new EventTarget();
+            stopped.addEventListener('go', function (event) {
+              order.push('stop-capture-1');
+              event.stopPropagation();
+            }, true);
+            stopped.addEventListener('go', function () {
+              order.push('stop-capture-2');
+            }, true);
+            stopped.addEventListener('go', function () { order.push('stop-bubble'); });
+            stopped.dispatchEvent(new Event('go'));
+
+            var canceled = new EventTarget();
+            canceled.addEventListener('go', function (event) {
+              order.push('cancel-capture-1');
+              event.cancelBubble = true;
+            }, true);
+            canceled.addEventListener('go', function () {
+              order.push('cancel-capture-2');
+            }, true);
+            canceled.addEventListener('go', function () { order.push('cancel-bubble'); });
+            canceled.dispatchEvent(new Event('go'));
+            order.join(',')
+            "#,
+        )
+        .unwrap(),
+        "stop-capture-1,stop-capture-2,cancel-capture-1,cancel-capture-2"
+    );
+}
+
+#[test]
 fn listener_exceptions_become_error_events_and_do_not_escape_dispatch() {
     let mut rt = with_stdlib();
     let observed = rt

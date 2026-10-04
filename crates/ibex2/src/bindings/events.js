@@ -295,7 +295,8 @@
     state.path = [target];
     try {
       invoke(target, event, true);
-      invoke(target, event, false);
+      // @ref LLP 0057.000#l3--events-abort-and-the-second-direction — at-target capture and bubble remain distinct propagation phases
+      if (!state.stop) invoke(target, event, false);
       return !state.canceled;
     } finally {
       state.currentTarget = null;
