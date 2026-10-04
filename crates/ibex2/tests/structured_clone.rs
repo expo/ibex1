@@ -168,6 +168,20 @@ fn errors_normalize_names_and_keep_message_and_stack() {
 }
 
 #[test]
+fn text_encoder_and_decoder_are_not_cloneable() {
+    check(
+        r#"
+        dataCloneError(() => structuredClone(new TextEncoder()), "TextEncoder");
+        dataCloneError(() => structuredClone(new TextDecoder()), "TextDecoder");
+        assert(Object.keys(structuredClone(Object.create(TextEncoder.prototype))).length === 0,
+          "forged TextEncoder prototype was rejected");
+        assert(Object.keys(structuredClone(Object.create(TextDecoder.prototype))).length === 0,
+          "forged TextDecoder prototype was rejected");
+        "#,
+    );
+}
+
+#[test]
 fn platform_identity_is_private_and_unsupported_values_throw_data_clone_error() {
     check(
         r#"

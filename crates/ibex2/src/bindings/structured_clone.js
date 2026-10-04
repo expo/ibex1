@@ -114,6 +114,18 @@
   var stringValue = uncurry(String.prototype.valueOf);
   var bigintValue = typeof BigInt === "function" ? uncurry(BigInt.prototype.valueOf) : null;
   var symbolValue = uncurry(Symbol.prototype.valueOf);
+  var textEncoderEncodeDescriptor = typeof global.TextEncoder === "function"
+    ? objectGetOwnPropertyDescriptor(global.TextEncoder.prototype, "encode")
+    : null;
+  var textEncoderEncode = textEncoderEncodeDescriptor && textEncoderEncodeDescriptor.value
+    ? uncurry(textEncoderEncodeDescriptor.value)
+    : null;
+  var textDecoderEncodingDescriptor = typeof global.TextDecoder === "function"
+    ? objectGetOwnPropertyDescriptor(global.TextDecoder.prototype, "encoding")
+    : null;
+  var textDecoderEncoding = textDecoderEncodingDescriptor && textDecoderEncodingDescriptor.get
+    ? uncurry(textDecoderEncodingDescriptor.get)
+    : null;
 
   var errorIsError = Error.isError;
   var errorConstructors = {
@@ -340,6 +352,10 @@
     if (hasBrand(weakMapHas, value) || hasBrand(weakSetHas, value) ||
         hasBrand(weakRefDeref, value) || hasBrand(registryUnregister, value)) {
       dataCloneError("Weak collections and references cannot be cloned");
+    }
+    if (hasBrand(textEncoderEncode, value) ||
+        hasBrand(textDecoderEncoding, value)) {
+      dataCloneError("Text codec objects cannot be cloned");
     }
     if (objectIsPrototypeOf(PromisePrototype, value)) {
       dataCloneError("Promise objects cannot be cloned");
