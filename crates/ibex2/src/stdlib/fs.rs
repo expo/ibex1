@@ -400,13 +400,11 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_storage_remains_explicitly_unqualified() {
+    fn native_windows_grant_spelling_remains_explicitly_unqualified() {
         // @ref LLP 0068#windows-host-and-engine — engine qualification
         // cannot accidentally broaden the unimplemented filesystem family.
         assert!(normalize(r"C:\data\file.txt").is_err());
         assert!(normalize(r"\\server\share\file.txt").is_err());
-        let dir = std::env::temp_dir();
-        assert!(super::super::app_fs::AppDirectories::new(&dir, &dir, &dir).is_err());
     }
 
     #[test]

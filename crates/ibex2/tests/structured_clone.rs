@@ -390,7 +390,6 @@ fn transfer_is_empty_or_refused_and_intrinsics_are_captured() {
 
 #[cfg(feature = "loader")]
 #[test]
-#[cfg_attr(windows, ignore = "Windows app directory capabilities and SQLite paths are not implemented yet")]
 fn private_fetch_and_sqlite_objects_stay_branded_after_visible_shape_changes() {
     use ibex2::{
         boundary::HostError,

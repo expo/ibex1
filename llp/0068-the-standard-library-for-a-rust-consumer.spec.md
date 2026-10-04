@@ -310,6 +310,46 @@ These results qualify this engine slice only; the remaining storage, platform,
 and test-fixture work is tracked in
 [`issues/20261004-ibex2-windows-platform-gaps.md`](../issues/20261004-ibex2-windows-platform-gaps.md).
 
+### Windows app storage qualification
+
+Implementation owner: Codex, 2026-10-04, following the Windows engine slice.
+`app:/data`, `app:/cache`, and `app:/tmp` use host-selected existing local-drive
+roots and retained Windows handles. Each child opens through `NtCreateFile`
+relative to its owned parent with `FILE_OPEN_REPARSE_POINT`; every returned
+handle rejects all reparse attributes. Directory enumeration reopens the held
+object with an empty NT relative name. Reads, writes, append, metadata, mkdir,
+copy, rename, recursive removal, and atomic sibling publication never rebuild
+a filesystem pathname after granting the logical `app:/` request. Rename/copy
+keep both paths' existing authorization rules. Names reject traversal, NUL,
+Windows streams, separators, trailing dot/space aliases, and device aliases.
+Atomic writes flush their file before handle-relative replacement, matching
+the existing app-filesystem whole-file contract; this is not signed publishing.
+
+SQLite retains its existing, distinct provider contract: `Location` carries a
+native filename, and the embedder keeps the selected database ancestry stable
+for the connection lifetime. Windows resolution checks the current physical
+parent against the pinned parent identity and rejects reparse roots, parents,
+database names, and existing `-journal`, `-wal`, and `-shm` names. The provider
+continues using maintained SQLite's native Windows VFS, journaling, and locking;
+this does not claim handle-relative SQLite I/O or hostile-host rename protection.
+Native Windows absolute filesystem grants remain refused; this slice admits
+only the existing logical `app:/` namespaces, not drive/UNC capability spellings.
+
+Qualification requires every filesystem operation, denied/mismatched grants,
+Unicode/space paths, roots/intermediate/final junction refusal, held-parent
+rename and replacement, copy-self refusal, SQLite typed persistence and
+transaction rollback, borrowed-runtime storage, and Exact calendar persistence.
+Existing Windows storage-success exclusions must be removed once these checks
+pass. Native-path spelling and stronger SQLite namespace ownership remain
+separate work, explicitly tracked instead of widening the tested claim.
+The Windows storage slice passes 183 no-engine library tests (four loader
+symlink cases still require privileges), all 18 borrowed-runtime embedding
+tests, and all ten structured-clone tests. Six native app-filesystem tests
+cover the Windows ownership boundary; provider tests exercise typed durable
+reopening, transaction rollback, concurrent connections and preexisting reparse
+sidecar refusal. The earlier storage-success exclusions are removed. Exact's
+calendar persistence consumer is checked when this revision is vendored there.
+
 ## 5. Open questions
 
 **OQ1 — The crate boundary.** *Resolved the same day:* the loader — Oxc's

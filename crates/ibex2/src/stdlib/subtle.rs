@@ -353,8 +353,10 @@ pub struct CryptoKeyPair {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(not(feature = "crypto"), allow(dead_code))]
-#[cfg_attr(not(feature = "crypto-asymmetric"), allow(dead_code))]
+#[cfg_attr(
+    any(not(feature = "crypto"), not(feature = "crypto-asymmetric")),
+    allow(dead_code)
+)]
 enum KeyType {
     Secret,
     Public,
