@@ -46,10 +46,7 @@ int bindings_validate_groups(uint16_t groups, char **error) {
     return 0;
   }
 }
-void *bindings_consumer_create(const void *queue, const Ibex2Bindings *bindings,
-                               uint16_t groups,
-                               const ibex2::jsi_adapter::CompiledScript *scripts,
-                               size_t script_count, char **error) {
+void *bindings_consumer_create_uninstalled(const void *queue) {
   try {
     auto c = std::make_unique<Consumer>();
     auto config = ::hermes::vm::RuntimeConfig::Builder()
@@ -58,9 +55,36 @@ void *bindings_consumer_create(const void *queue, const Ibex2Bindings *bindings,
     if (!c->runtime) return nullptr;
     c->adapter = std::make_unique<ibex2::jsi_adapter::Adapter>(
         *c->runtime, queue, bytecode_version());
-    c->adapter->install(groups, bindings, scripts, script_count);
     return c.release();
-  } catch (const std::exception &e) { *error = copy(e.what()); return nullptr; }
+  } catch (const std::exception &) {
+    return nullptr;
+  }
+}
+int bindings_consumer_install(
+    void *handle, const Ibex2Bindings *bindings, uint16_t groups,
+    const ibex2::jsi_adapter::CompiledScript *scripts, size_t script_count,
+    char **error) {
+  try {
+    auto *c = static_cast<Consumer *>(handle);
+    if (c == nullptr || c->adapter == nullptr) return 0;
+    c->adapter->install(groups, bindings, scripts, script_count);
+    return 1;
+  } catch (const std::exception &e) {
+    if (error != nullptr) *error = copy(e.what());
+    return 0;
+  }
+}
+void *bindings_consumer_create(const void *queue, const Ibex2Bindings *bindings,
+                               uint16_t groups,
+                               const ibex2::jsi_adapter::CompiledScript *scripts,
+                               size_t script_count, char **error) {
+  void *consumer = bindings_consumer_create_uninstalled(queue);
+  if (consumer == nullptr) return nullptr;
+  if (bindings_consumer_install(consumer, bindings, groups, scripts,
+                                script_count, error) == 1)
+    return consumer;
+  delete static_cast<Consumer *>(consumer);
+  return nullptr;
 }
 void *storage_consumer_create(const void *queue, const void *grants,
                               const uint8_t *factory, size_t len,

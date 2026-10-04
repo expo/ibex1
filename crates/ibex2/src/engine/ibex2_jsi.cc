@@ -337,13 +337,15 @@ struct Integrity {
   }
 };
 
+enum class InstallStatus { Fresh, Installed, Spent };
+
 struct Adapter::State {
   struct Pending { jsi::Function resolve; jsi::Function reject; };
   const void* queue;
   uint64_t next_task_id = 1;
   std::unordered_map<uint64_t, Pending> pending;
   bool alive = true;
-  bool installed = false;
+  InstallStatus install_status = InstallStatus::Fresh;
   Groups groups = 0;
   uint32_t bytecode_version;
   std::shared_ptr<Lifetime> lifetime;
@@ -449,6 +451,13 @@ uint32_t bytecode_version(const CompiledScript& script) {
       (static_cast<uint32_t>(script.bytes[9]) << 8) |
       (static_cast<uint32_t>(script.bytes[10]) << 16) |
       (static_cast<uint32_t>(script.bytes[11]) << 24);
+}
+
+uint32_t bytecode_declared_length(const CompiledScript& script) {
+  return static_cast<uint32_t>(script.bytes[32]) |
+      (static_cast<uint32_t>(script.bytes[33]) << 8) |
+      (static_cast<uint32_t>(script.bytes[34]) << 16) |
+      (static_cast<uint32_t>(script.bytes[35]) << 24);
 }
 
 struct ResponseOwner final : jsi::NativeState {
@@ -623,108 +632,140 @@ void Adapter::install(Groups groups, const Ibex2Bindings* bindings,
   if (!runtime_) throw std::logic_error("Ibex2 bindings are detached");
   auto& rt = *runtime_;
   state_->require(rt);
-  if (state_->installed) throw std::logic_error("Ibex2 bindings are already installed");
-  const void* endowed_state = ibex2_bindings_state(bindings);
-  const void* grants = ibex2_bindings_grants(bindings);
-  if (endowed_state == nullptr || grants == nullptr)
-    throw std::invalid_argument("Ibex2 bindings require a live endowment");
-  if (endowed_state != state_->queue)
-    throw std::invalid_argument("Ibex2 bindings do not belong to this runtime state");
-  validate_groups(groups);
-  auto expected = expected_scripts(groups);
-  if (script_count != expected.size() || (script_count != 0 && scripts == nullptr))
-    throw std::invalid_argument("Ibex2 binding bytecode count does not match groups");
-  for (size_t i = 0; i < script_count; ++i) {
-    if (scripts[i].name == nullptr || scripts[i].bytes == nullptr ||
-        std::strcmp(scripts[i].name, expected[i]) != 0)
-      throw std::invalid_argument("Ibex2 binding bytecode is not in scripts() order");
-    if (scripts[i].len < 12 ||
-        std::memcmp(scripts[i].bytes, kHermesBytecodeMagic,
-                    sizeof(kHermesBytecodeMagic)) != 0)
-      throw std::invalid_argument("Ibex2 binding payload is not Hermes bytecode");
-    if (state_->bytecode_version != 0 &&
-        bytecode_version(scripts[i]) != state_->bytecode_version)
-      throw std::invalid_argument(
-          "Ibex2 binding bytecode version does not match the runtime");
-  }
+  if (state_->install_status == InstallStatus::Installed)
+    throw std::logic_error("Ibex2 bindings are already installed");
+  if (state_->install_status == InstallStatus::Spent)
+    throw std::logic_error(
+        "a previous Ibex2 binding installation failed; the Adapter is spent "
+        "and the runtime must be discarded");
 
-  // Validation above is deliberately complete before the first host function
-  // or JavaScript global is installed: one bad payload refuses the whole door.
-  if (has(groups, GROUP_CONSOLE)) install_console(rt, state_->lifetime);
-  if (has(groups, GROUP_PURE)) install_pure(rt, state_->lifetime);
-  if (has(groups, GROUP_TIMERS)) install_timers(rt, state_->lifetime);
-  if (has(groups, GROUP_CRYPTO)) install_crypto(rt, state_->lifetime);
-  if (has(groups, GROUP_FETCH)) install_fetch(rt, *this, state_->lifetime);
-#if defined(IBEX2_JSI_HAS_INTL)
-  if (has(groups, GROUP_INTL)) {
-    ibex2::intl_number_format::install(rt, state_->lifetime);
-    ibex2::intl_case::install(rt, state_->lifetime);
-  }
-#endif
+  // An Adapter has one installation attempt. Preflight failures have not
+  // changed JavaScript, but consuming the attempt keeps retry behavior
+  // deterministic. Once mutation starts, every failure below is additionally
+  // reported as a terminal runtime failure.
+  state_->install_status = InstallStatus::Spent;
+  bool mutation_started = false;
+  try {
+    const void* endowed_state = ibex2_bindings_state(bindings);
+    const void* grants = ibex2_bindings_grants(bindings);
+    if (endowed_state == nullptr || grants == nullptr)
+      throw std::invalid_argument("Ibex2 bindings require a live endowment");
+    if (endowed_state != state_->queue)
+      throw std::invalid_argument("Ibex2 bindings do not belong to this runtime state");
+    validate_groups(groups);
+    auto expected = expected_scripts(groups);
+    if (script_count != expected.size() || (script_count != 0 && scripts == nullptr))
+      throw std::invalid_argument("Ibex2 binding bytecode count does not match groups");
+    for (size_t i = 0; i < script_count; ++i) {
+      if (scripts[i].name == nullptr || scripts[i].bytes == nullptr ||
+          std::strcmp(scripts[i].name, expected[i]) != 0)
+        throw std::invalid_argument("Ibex2 binding bytecode is not in scripts() order");
+      if (scripts[i].len < 36)
+        throw std::invalid_argument(
+            "Ibex2 binding payload has a truncated Hermes bytecode header");
+      if (std::memcmp(scripts[i].bytes, kHermesBytecodeMagic,
+                      sizeof(kHermesBytecodeMagic)) != 0)
+        throw std::invalid_argument("Ibex2 binding payload is not Hermes bytecode");
+      if (bytecode_declared_length(scripts[i]) != scripts[i].len)
+        throw std::invalid_argument(
+            "Ibex2 binding bytecode declared length does not match its buffer");
+      if (state_->bytecode_version != 0 &&
+          bytecode_version(scripts[i]) != state_->bytecode_version)
+        throw std::invalid_argument(
+            "Ibex2 binding bytecode version does not match the runtime");
+    }
 
-  for (size_t i = 0; i < script_count; ++i) {
-    const auto& script = scripts[i];
-    auto buffer = std::make_shared<CompiledBytes>(script.bytes, script.len);
-    auto value = rt.evaluateJavaScript(buffer, std::string(script.name) + ".js");
-    if (std::strcmp(script.name, "fetch") == 0) {
-      if (!value.isObject() || !value.getObject(rt).isFunction(rt))
-        throw jsi::JSError(rt, "fetch binding did not evaluate to a factory");
-      state_->fetch_factory = jsi::Value(rt, value);
-      continue;
-    }
-    if (std::strcmp(script.name, "sqlite") == 0) {
-      if (!value.isObject() || !value.getObject(rt).isFunction(rt))
-        throw jsi::JSError(rt, "SQLite binding did not evaluate to a factory");
-      state_->sqlite_factory = jsi::Value(rt, value);
-      continue;
-    }
+    // Validation above is deliberately complete before the first host function
+    // or JavaScript global is installed: one bad payload refuses the whole door.
+    mutation_started = true;
+    if (has(groups, GROUP_CONSOLE)) install_console(rt, state_->lifetime);
+    if (has(groups, GROUP_PURE)) install_pure(rt, state_->lifetime);
+    if (has(groups, GROUP_TIMERS)) install_timers(rt, state_->lifetime);
+    if (has(groups, GROUP_CRYPTO)) install_crypto(rt, state_->lifetime);
+    if (has(groups, GROUP_FETCH)) install_fetch(rt, *this, state_->lifetime);
 #if defined(IBEX2_JSI_HAS_INTL)
-    if (std::strcmp(script.name, "intl_datetime") == 0) {
-      if (!value.isObject() || !value.getObject(rt).isFunction(rt))
-        throw jsi::JSError(rt, "DateTimeFormat binding did not evaluate to a factory");
-      auto arguments =
-          ibex2::intl_datetime::factory_arguments(rt, state_->lifetime);
-      value.getObject(rt).getFunction(rt).call(
-          rt, static_cast<const jsi::Value*>(arguments.data()), arguments.size());
+    if (has(groups, GROUP_INTL)) {
+      ibex2::intl_number_format::install(rt, state_->lifetime);
+      ibex2::intl_case::install(rt, state_->lifetime);
     }
 #endif
-  }
+
+    for (size_t i = 0; i < script_count; ++i) {
+      const auto& script = scripts[i];
+      auto buffer = std::make_shared<CompiledBytes>(script.bytes, script.len);
+      auto value = rt.evaluateJavaScript(buffer, std::string(script.name) + ".js");
+      if (std::strcmp(script.name, "fetch") == 0) {
+        if (!value.isObject() || !value.getObject(rt).isFunction(rt))
+          throw jsi::JSError(rt, "fetch binding did not evaluate to a factory");
+        state_->fetch_factory = jsi::Value(rt, value);
+        continue;
+      }
+      if (std::strcmp(script.name, "sqlite") == 0) {
+        if (!value.isObject() || !value.getObject(rt).isFunction(rt))
+          throw jsi::JSError(rt, "SQLite binding did not evaluate to a factory");
+        state_->sqlite_factory = jsi::Value(rt, value);
+        continue;
+      }
+#if defined(IBEX2_JSI_HAS_INTL)
+      if (std::strcmp(script.name, "intl_datetime") == 0) {
+        if (!value.isObject() || !value.getObject(rt).isFunction(rt))
+          throw jsi::JSError(rt, "DateTimeFormat binding did not evaluate to a factory");
+        auto arguments =
+            ibex2::intl_datetime::factory_arguments(rt, state_->lifetime);
+        value.getObject(rt).getFunction(rt).call(
+            rt, static_cast<const jsi::Value*>(arguments.data()), arguments.size());
+      }
+#endif
+    }
 
 #if defined(IBEX2_JSI_HAS_INTL)
-  if (has(groups, GROUP_INTL)) {
+    if (has(groups, GROUP_INTL)) {
+      auto global = rt.global();
+      auto accept = [&](const char* constructor, const char* property) {
+        auto prototype = global.getPropertyAsObject(rt, constructor)
+                             .getPropertyAsObject(rt, "prototype");
+        accept_trusted_intrinsic_property(std::move(prototype), property);
+      };
+      accept("Number", "toLocaleString");
+      accept("BigInt", "toLocaleString");
+      accept("String", "toLocaleLowerCase");
+      accept("String", "toLocaleUpperCase");
+    }
+#endif
+
+    state_->groups = groups;
     auto global = rt.global();
-    auto accept = [&](const char* constructor, const char* property) {
-      auto prototype = global.getPropertyAsObject(rt, constructor)
-                           .getPropertyAsObject(rt, "prototype");
-      accept_trusted_intrinsic_property(std::move(prototype), property);
-    };
-    accept("Number", "toLocaleString");
-    accept("BigInt", "toLocaleString");
-    accept("String", "toLocaleLowerCase");
-    accept("String", "toLocaleUpperCase");
-  }
-#endif
+    if (has(groups, GROUP_FETCH)) {
+      global.setProperty(rt, "fetch", fetch(grants));
+    } else if (has(groups, GROUP_PURE)) {
+      for (const char* name : {"__ibex2_headers_free", "__ibex2_text_encode",
+                               "__ibex2_text_decode", "__ibex2_text_encode_into"})
+        remove_global(rt, global, name);
+    }
+    if (has(groups, GROUP_ABORT) && !has(groups, GROUP_FETCH))
+      remove_global(rt, global, "__ibex2_abort");
+    if (has(groups, GROUP_STORAGE)) {
+      auto storage_value = storage(grants);
+      global.setProperty(rt, "fs", storage_value.getProperty(rt, "fs"));
+      global.setProperty(rt, "sqlite", storage_value.getProperty(rt, "sqlite"));
+    }
+    if (has(groups, GROUP_ENV))
+      global.setProperty(rt, "process", make_process(rt, grants));
 
-  state_->groups = groups;
-  auto global = rt.global();
-  if (has(groups, GROUP_FETCH)) {
-    global.setProperty(rt, "fetch", fetch(grants));
-  } else if (has(groups, GROUP_PURE)) {
-    for (const char* name : {"__ibex2_headers_free", "__ibex2_text_encode",
-                             "__ibex2_text_decode", "__ibex2_text_encode_into"})
-      remove_global(rt, global, name);
+    state_->install_status = InstallStatus::Installed;
+  } catch (const std::exception& error) {
+    if (mutation_started)
+      throw std::runtime_error(
+          std::string("Ibex2 binding installation failed after mutating the runtime; ") +
+          "the runtime must be discarded: " + error.what());
+    throw;
+  } catch (...) {
+    if (mutation_started)
+      throw std::runtime_error(
+          "Ibex2 binding installation failed after mutating the runtime; the "
+          "runtime must be discarded");
+    throw;
   }
-  if (has(groups, GROUP_ABORT) && !has(groups, GROUP_FETCH))
-    remove_global(rt, global, "__ibex2_abort");
-  if (has(groups, GROUP_STORAGE)) {
-    auto storage_value = storage(grants);
-    global.setProperty(rt, "fs", storage_value.getProperty(rt, "fs"));
-    global.setProperty(rt, "sqlite", storage_value.getProperty(rt, "sqlite"));
-  }
-  if (has(groups, GROUP_ENV))
-    global.setProperty(rt, "process", make_process(rt, grants));
-
-  state_->installed = true;
 }
 
 static jsi::Value filesystem_promise(jsi::Runtime& r, jsi::Value value, uint32_t op) {

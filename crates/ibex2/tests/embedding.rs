@@ -24,6 +24,15 @@ struct CompiledScript {
 
 extern "C" {
     fn bindings_validate_groups(groups: u16, error: *mut *mut c_char) -> i32;
+    fn bindings_consumer_create_uninstalled(queue: *const c_void) -> *mut c_void;
+    fn bindings_consumer_install(
+        handle: *mut c_void,
+        bindings: *const ibex2::bindings::Ibex2Bindings,
+        groups: u16,
+        scripts: *const CompiledScript,
+        script_count: usize,
+        error: *mut *mut c_char,
+    ) -> i32;
     fn bindings_consumer_create(
         queue: *const c_void,
         bindings: *const ibex2::bindings::Ibex2Bindings,
@@ -541,6 +550,117 @@ fn grouped_install_refuses_a_grant_pointer_as_the_install_handle() {
         error.contains("live endowment"),
         "unexpected error: {error}"
     );
+}
+
+fn assert_failed_install_is_terminal(
+    context: &Context,
+    first: &[CompiledScript],
+    expected_error: &str,
+) {
+    let valid: Vec<_> = ibex2::bindings::scripts(Groups::PURE)
+        .unwrap()
+        .into_iter()
+        .map(|(name, _)| compiled_script(name))
+        .collect();
+    let handle = unsafe { bindings_consumer_create_uninstalled(context.state_ptr()) };
+    assert!(!handle.is_null(), "test runtime");
+
+    let mut error = std::ptr::null_mut();
+    let installed = unsafe {
+        bindings_consumer_install(
+            handle,
+            context.bindings_ptr(),
+            Groups::PURE.bits(),
+            first.as_ptr(),
+            first.len(),
+            &mut error,
+        )
+    };
+    assert_eq!(installed, 0, "malformed bytecode unexpectedly installed");
+    let error = take(error);
+    assert!(
+        error.contains(expected_error),
+        "unexpected first error: {error}"
+    );
+
+    let mut retry_error = std::ptr::null_mut();
+    let retried = unsafe {
+        bindings_consumer_install(
+            handle,
+            context.bindings_ptr(),
+            Groups::PURE.bits(),
+            valid.as_ptr(),
+            valid.len(),
+            &mut retry_error,
+        )
+    };
+    assert_eq!(retried, 0, "a failed Adapter accepted a retry");
+    let retry_error = take(retry_error);
+    assert!(
+        retry_error.contains("spent") && retry_error.contains("discarded"),
+        "retry did not require runtime disposal: {retry_error}"
+    );
+    unsafe { storage_consumer_destroy(handle) };
+}
+
+#[test]
+fn truncated_binding_bytecode_is_refused_and_spends_the_adapter() {
+    let context = Context::new(GrantSet::none());
+    let mut bytes = include_bytes!(concat!(env!("OUT_DIR"), "/headers.hbc")).to_vec();
+    bytes.truncate(bytes.len() - 1);
+    let name = b"headers\0";
+    let mut scripts: Vec<_> = ibex2::bindings::scripts(Groups::PURE)
+        .unwrap()
+        .into_iter()
+        .map(|(name, _)| compiled_script(name))
+        .collect();
+    scripts[0] = CompiledScript {
+        name: name.as_ptr().cast(),
+        bytes: bytes.as_ptr(),
+        len: bytes.len(),
+    };
+    assert_failed_install_is_terminal(&context, &scripts, "declared length");
+}
+
+#[test]
+fn spoofed_binding_header_is_refused_after_mutation_and_spends_the_runtime() {
+    let context = Context::new(GrantSet::none());
+    let valid = include_bytes!(concat!(env!("OUT_DIR"), "/headers.hbc"));
+    let mut bytes = [0; 36];
+    bytes[..12].copy_from_slice(&valid[..12]);
+    bytes[32..36].copy_from_slice(&36u32.to_le_bytes());
+    let name = b"headers\0";
+    let mut scripts: Vec<_> = ibex2::bindings::scripts(Groups::PURE)
+        .unwrap()
+        .into_iter()
+        .map(|(name, _)| compiled_script(name))
+        .collect();
+    scripts[0] = CompiledScript {
+        name: name.as_ptr().cast(),
+        bytes: bytes.as_ptr(),
+        len: bytes.len(),
+    };
+    assert_failed_install_is_terminal(&context, &scripts, "runtime must be discarded");
+}
+
+#[test]
+fn wrong_binding_version_is_refused_and_spends_a_versioned_adapter() {
+    let context = Context::new(GrantSet::none());
+    let mut bytes = include_bytes!(concat!(env!("OUT_DIR"), "/headers.hbc")).to_vec();
+    let version = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+    bytes[8..12].copy_from_slice(&version.wrapping_add(1).to_le_bytes());
+    let name = b"headers\0";
+    let mut scripts: Vec<_> = ibex2::bindings::scripts(Groups::PURE)
+        .unwrap()
+        .into_iter()
+        .map(|(name, _)| compiled_script(name))
+        .collect();
+    scripts[0] = CompiledScript {
+        name: name.as_ptr().cast(),
+        bytes: bytes.as_ptr(),
+        len: bytes.len(),
+    };
+    assert_failed_install_is_terminal(&context, &scripts, "version does not match");
 }
 
 #[test]
