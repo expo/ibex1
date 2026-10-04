@@ -46,6 +46,7 @@ inline constexpr Groups GROUP_ENV = 1u << 7;
 inline constexpr Groups GROUP_SECRETS = 1u << 8;
 inline constexpr Groups GROUP_KV = 1u << 9;
 inline constexpr Groups GROUP_INTL = 1u << 10;
+inline constexpr Groups GROUP_EVENTS = 1u << 11;
 
 // The dependency/availability table used by Adapter::install. Exposed so an
 // embedder can mechanically compare its public group-selection rules.
@@ -130,8 +131,16 @@ public:
   jsi::Object storage(const void* grants, const jsi::Function& sqlite_factory);
   // Takes/releases the ABI payload even if no promise is awaiting this id.
   void settle(uint64_t task_id, Ibex2AbiValue&, bool is_error);
-  // Takes at most one storage completion. No timers or microtask checkpoints.
-  // Returns true if a task was delivered; throws for a non-settlement task.
+  // Register a JS callback for a future host-event source. The returned
+  // identity is the one Rust carries in HostTask::Event.
+  uint64_t subscribe(jsi::Function callback);
+  // Removes the callback root and cancels admitted, unreserved events.
+  void unsubscribe(uint64_t subscription);
+  // Deliver one already-reserved event, taking/releasing its payload.
+  void deliver_event(uint64_t subscription, Ibex2AbiValue&);
+  // Takes at most one storage settlement or subscribed event. No timers or
+  // microtask checkpoints. Returns true if a task was delivered; throws for a
+  // timer task, which belongs to an owning runtime's driver.
   bool deliver_one();
 private:
   struct State;

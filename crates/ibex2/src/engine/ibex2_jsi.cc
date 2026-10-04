@@ -26,6 +26,8 @@ extern "C" int ibex2_response_field(const void*, double, uint32_t,
 extern "C" size_t ibex2_grants_env_count(const void*);
 extern "C" int ibex2_grants_env_at(const void*, size_t, char**, char**);
 extern "C" void ibex2_string_free(char*);
+extern "C" void* ibex2_subscription_create(const void*, uint64_t*);
+extern "C" void ibex2_subscription_destroy(void*);
 
 #if defined(IBEX2_JSI_HAS_INTL)
 namespace ibex2::intl_number_format {
@@ -345,9 +347,14 @@ enum class InstallStatus { Fresh, Installed, Spent };
 
 struct Adapter::State {
   struct Pending { jsi::Function resolve; jsi::Function reject; };
+  struct EventSubscription {
+    void* rust;
+    jsi::Function callback;
+  };
   const void* queue;
   uint64_t next_task_id = 1;
   std::unordered_map<uint64_t, Pending> pending;
+  std::unordered_map<uint64_t, EventSubscription> subscriptions;
   bool alive = true;
   InstallStatus install_status = InstallStatus::Fresh;
   Groups groups = 0;
@@ -387,6 +394,9 @@ void Adapter::accept_trusted_intrinsic_property(jsi::Object object,
 void Adapter::detach() {
   if (!state_->alive) return;
   state_->alive = false;
+  for (auto& entry : state_->subscriptions)
+    ibex2_subscription_destroy(entry.second.rust);
+  state_->subscriptions.clear();
   state_->lifetime->detach();
   state_->pending.clear();
   state_->fetch_factory = jsi::Value::undefined();
@@ -964,12 +974,53 @@ void Adapter::settle(uint64_t id, Ibex2AbiValue& value, bool is_error) {
   } else promise.resolve.call(rt, payload);
 }
 
+uint64_t Adapter::subscribe(jsi::Function callback) {
+  if (!runtime_) throw std::logic_error("Ibex2 bindings are detached");
+  state_->require(*runtime_);
+  uint64_t id = 0;
+  void* rust = ibex2_subscription_create(state_->queue, &id);
+  if (rust == nullptr)
+    throw std::runtime_error("could not create Ibex2 event subscription");
+  try {
+    state_->subscriptions.emplace(
+        id, State::EventSubscription{rust, std::move(callback)});
+  } catch (...) {
+    ibex2_subscription_destroy(rust);
+    throw;
+  }
+  return id;
+}
+
+void Adapter::unsubscribe(uint64_t id) {
+  auto found = state_->subscriptions.find(id);
+  if (found == state_->subscriptions.end()) return;
+  // Rust cancellation is the barrier for the host-task FIFO; only after it
+  // returns is the owner-thread JSI root released.
+  ibex2_subscription_destroy(found->second.rust);
+  state_->subscriptions.erase(found);
+}
+
+void Adapter::deliver_event(uint64_t id, Ibex2AbiValue& value) {
+  struct Release {
+    Ibex2AbiValue& value;
+    ~Release() { ibex2_host_release(&value); }
+  } release{value};
+  auto found = state_->subscriptions.find(id);
+  if (!state_->alive || found == state_->subscriptions.end()) return;
+  auto payload = from_abi(*runtime_, value);
+  found->second.callback.call(*runtime_, payload);
+}
+
 bool Adapter::deliver_one() {
   if (!state_->alive) return false;
   int kind = 0, is_error = 0;
   unsigned long long id = 0;
   Ibex2AbiValue value{IBEX2_TAG_UNDEFINED, 0, nullptr, 0};
   if (!ibex2_take_task(state_->queue, &kind, &id, &value, &is_error)) return false;
+  if (kind == 3) {
+    deliver_event(id, value);
+    return true;
+  }
   if (kind != 1) {
     ibex2_host_release(&value);
     throw jsi::JSError(*runtime_, "storage adapter received a non-settlement task");

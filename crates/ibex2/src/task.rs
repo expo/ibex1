@@ -808,6 +808,7 @@ impl RuntimeState {
     /// lock through admission closes the race with unsubscribe: either this
     /// task is admitted first and cancellation removes it, or publication sees
     /// the missing subscription and refuses it.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn publish_event(&self, subscription: u64, payload: HostValue) -> bool {
         let subscriptions = self
             .subscriptions
@@ -1000,6 +1001,49 @@ pub unsafe extern "C" fn ibex2_queue_destroy(queue: *const RuntimeState) {
         let state = Arc::from_raw(queue);
         state.release_owner();
         drop(state);
+    }
+}
+
+/// Opaque owner for one event-subscription registration.
+#[repr(C)]
+pub struct Ibex2Subscription {
+    subscription: crate::stdlib::events::Subscription,
+}
+
+/// Register a host-event callback slot for an adapter.
+///
+/// # Safety
+/// `state` must be a live runtime state and `out_id` must be writable. The
+/// returned pointer must be released exactly once with
+/// [`ibex2_subscription_destroy`].
+#[no_mangle]
+pub unsafe extern "C" fn ibex2_subscription_create(
+    state: *const RuntimeState,
+    out_id: *mut u64,
+) -> *mut Ibex2Subscription {
+    if out_id.is_null() {
+        return std::ptr::null_mut();
+    }
+    let Some(state) = clone_queue(state) else {
+        return std::ptr::null_mut();
+    };
+    if state.is_shutdown() {
+        return std::ptr::null_mut();
+    }
+    let (id, subscription) = state.subscribe_event();
+    *out_id = id;
+    Box::into_raw(Box::new(Ibex2Subscription { subscription }))
+}
+
+/// Unsubscribe and release a handle made by [`ibex2_subscription_create`].
+///
+/// # Safety
+/// `subscription` must be null or an unfreed pointer returned by
+/// [`ibex2_subscription_create`].
+#[no_mangle]
+pub unsafe extern "C" fn ibex2_subscription_destroy(subscription: *mut Ibex2Subscription) {
+    if !subscription.is_null() {
+        drop(Box::from_raw(subscription));
     }
 }
 

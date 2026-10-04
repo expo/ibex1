@@ -65,6 +65,10 @@ extern "C" {
         specifier: *const c_char,
         out_error: *mut *mut c_char,
     ) -> c_int;
+    #[cfg(test)]
+    fn ibex2_hermes_test_subscribe(handle: *mut c_void, callback_name: *const c_char) -> u64;
+    #[cfg(test)]
+    fn ibex2_hermes_test_unsubscribe(handle: *mut c_void, subscription: u64);
 }
 
 /// Whether JavaScript may compile source of its own.
@@ -404,6 +408,32 @@ impl Hermes {
     pub fn collect_garbage(&mut self) -> bool {
         // SAFETY: the handle is live and this is the owning JavaScript thread.
         unsafe { ibex2_hermes_collect_garbage(self.handle) == 0 }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn subscribe_test_event(&mut self, callback_name: &str) -> u64 {
+        let callback_name = CString::new(callback_name).expect("callback name contains NUL");
+        // SAFETY: the runtime is live and the callback name remains valid for
+        // the call. The adapter roots the callback it finds.
+        unsafe { ibex2_hermes_test_subscribe(self.handle, callback_name.as_ptr()) }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn publish_test_event(
+        &self,
+        subscription: u64,
+        payload: crate::boundary::HostValue,
+    ) -> bool {
+        // SAFETY: an owned Hermes handle retains its runtime state.
+        let state =
+            unsafe { ibex2_hermes_state(self.handle).as_ref() }.expect("live Hermes runtime state");
+        state.publish_event(subscription, payload)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn unsubscribe_test_event(&mut self, subscription: u64) {
+        // SAFETY: owner-thread call on the live adapter.
+        unsafe { ibex2_hermes_test_unsubscribe(self.handle, subscription) }
     }
 
     /// Number of Rust `Headers` registry entries owned by this runtime.

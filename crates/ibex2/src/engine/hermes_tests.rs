@@ -137,6 +137,33 @@ fn console_from_javascript_reaches_the_rust_queue() {
     assert_eq!(records[1].level, crate::stdlib::console::Level::Error);
 }
 
+#[test]
+fn subscribed_host_events_are_delivered_only_by_pump_and_unsubscribe_cancels_queued() {
+    let mut rt = with_stdlib();
+    rt.eval(
+        "globalThis.__testEvents = []; globalThis.__testEventCallback = value => __testEvents.push(value)",
+    )
+    .unwrap();
+    let subscription = rt.subscribe_test_event("__testEventCallback");
+    assert_ne!(subscription, 0);
+    assert!(rt.publish_test_event(
+        subscription,
+        crate::boundary::HostValue::Str("first".into())
+    ));
+    assert_eq!(rt.eval("__testEvents.length").unwrap(), "0");
+    assert_eq!(rt.pump().unwrap(), 1);
+    assert_eq!(rt.eval("__testEvents.join(',')").unwrap(), "first");
+
+    assert!(rt.publish_test_event(subscription, crate::boundary::HostValue::Str("late".into())));
+    rt.unsubscribe_test_event(subscription);
+    assert_eq!(rt.pump().unwrap(), 0);
+    assert_eq!(rt.eval("__testEvents.join(',')").unwrap(), "first");
+    assert!(!rt.publish_test_event(
+        subscription,
+        crate::boundary::HostValue::Str("later".into())
+    ));
+}
+
 /// Formatting is Rust's, not the engine's — which is the point of §3.1.
 /// A JS engine would print 1 for `1.0` too, but it is Rust deciding here.
 #[test]

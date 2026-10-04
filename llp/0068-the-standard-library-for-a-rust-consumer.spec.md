@@ -211,8 +211,11 @@ to a Rust-based bake. `fs.readdir` returns an array, `fs.stat` a record, and
 `fs.readFile` an `ArrayBuffer`. Writes require bytes, never silently treating
 an unsupported value as an empty file. SQLite integers return as `bigint`.
 
-The adapter delivers at most one completion when asked; it runs no timers or
-microtask checkpoints. `Context::set_wake` schedules the caller's executor
+The adapter delivers at most one settlement or subscribed event when asked;
+it runs no timers or microtask checkpoints. Each event callback root is owned
+with the Rust `Subscription`; explicit unsubscribe cancels queued delivery
+before releasing the root, and detach does the same for every live
+subscription. `Context::set_wake` schedules the caller's executor
 from a publishing worker, outside queue locks. Wake is an edge-triggered,
 coalescing notification: an admission records a pending edge; if no invocation
 is in flight that publisher becomes the invoker, and admissions during its call
@@ -220,8 +223,7 @@ only leave one pending edge for its loop to invoke afterward. At most one wake
 callback runs per queue. A coalescing publisher never invokes, waits for, or is
 counted as an active callback. The callback only schedules and returns. It
 never runs JavaScript and never blocks waiting for the owner thread; `wait` is
-the blocking alternative. Only the owner thread touches JSI.
-The caller detaches the
+the blocking alternative. Only the owner thread touches JSI. The caller detaches the
 adapter before destroying either its runtime or Rust context. Detach clears
 JS roots; retained capability functions fail closed. A `Context` holds an owner
 lease on its runtime state, and an owning Hermes runtime holds its own lease.

@@ -545,6 +545,8 @@ int ibex2_hermes_pump(void *handle, int *out_ran) {
         fire.getObject(runtime).getFunction(runtime).call(
             runtime, static_cast<double>(task_id));
       }
+    } else if (kind == 3) {
+      rt->bindings->deliver_event(task_id, value);
     } else {
       rt->bindings->settle(task_id, value, is_error != 0);
     }
@@ -577,6 +579,32 @@ int ibex2_hermes_pump(void *handle, int *out_ran) {
     *out_ran = 1;
   }
   return entrance.status(IBEX2_STATUS_OK);
+}
+
+/// Test-source seam: retain a named JavaScript callback as an event
+/// subscription without publishing a global API. Production bindings call
+/// Adapter::subscribe directly when they open their source.
+unsigned long long ibex2_hermes_test_subscribe(void *handle,
+                                               const char *callback_name) {
+  auto *rt = static_cast<Ibex2Runtime *>(handle);
+  if (rt == nullptr || rt->runtime == nullptr || callback_name == nullptr)
+    return 0;
+  try {
+    auto value = rt->runtime->global().getProperty(*rt->runtime, callback_name);
+    if (!value.isObject() || !value.getObject(*rt->runtime).isFunction(*rt->runtime))
+      return 0;
+    return rt->bindings->subscribe(
+        value.getObject(*rt->runtime).getFunction(*rt->runtime));
+  } catch (...) {
+    return 0;
+  }
+}
+
+void ibex2_hermes_test_unsubscribe(void *handle,
+                                   unsigned long long subscription) {
+  auto *rt = static_cast<Ibex2Runtime *>(handle);
+  if (rt != nullptr && rt->bindings != nullptr)
+    rt->bindings->unsubscribe(subscription);
 }
 
 /// Block until a host task is ready, or the timeout elapses.
