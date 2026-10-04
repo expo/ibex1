@@ -4,9 +4,11 @@
 
   var hooks = global.__ibex2_websocket;
   var fireTrustedEvent = global.__ibex2_fire_trusted_event;
+  var blobHelpers = global.__ibex2_blob_helpers;
   var brand = global.__ibex2_brand || function (value) { return value; };
   delete global.__ibex2_websocket;
   delete global.__ibex2_fire_trusted_event;
+  delete global.__ibex2_blob_helpers;
   if (!hooks || typeof hooks.open !== "function" ||
       typeof fireTrustedEvent !== "function") {
     throw new Error("WebSocket native hooks are unavailable");
@@ -197,7 +199,11 @@
       return;
     }
     if (typeof global.Blob === "function" && data instanceof global.Blob) {
-      throw new DOMException("Blob WebSocket send is unavailable", "NotSupportedError");
+      if (!blobHelpers || typeof blobHelpers.extractBody !== "function") {
+        throw new DOMException("Blob WebSocket send is unavailable", "NotSupportedError");
+      }
+      hooks.sendBinary(state.handle, blobHelpers.extractBody(data).bytes);
+      return;
     }
     hooks.sendText(state.handle, domString(data));
   };

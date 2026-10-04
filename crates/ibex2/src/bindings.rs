@@ -284,11 +284,11 @@ pub fn scripts(groups: Groups) -> Result<Vec<Script>, GroupError> {
     if groups.contains(Groups::ABORT) {
         push("abort");
     }
-    if groups.contains(Groups::WEBSOCKET) {
-        push("websocket");
-    }
     if groups.contains(Groups::BLOB) {
         push("blob");
+    }
+    if groups.contains(Groups::WEBSOCKET) {
+        push("websocket");
     }
     #[cfg(target_os = "linux")]
     if groups.contains(Groups::INTL) {

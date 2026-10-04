@@ -211,7 +211,9 @@ fn websocket_lifecycle(
           socketLog.push(['binary', event.data instanceof ArrayBuffer,
                           event.data.byteLength, socket.bufferedAmount, event.isTrusted]);
           socket.binaryType = 'blob';
-          socket.send(new Uint8Array([1, 2, 3]));
+          socket.send({install_blob}
+            ? new Blob([new Uint8Array([1, 2, 3])])
+            : new Uint8Array([1, 2, 3]));
           socket.onmessage = function (second) {{
             socketLog.push(['binary-kind', socket.binaryType,
                             second.data instanceof ArrayBuffer,

@@ -475,8 +475,8 @@ std::vector<const char*> expected_scripts_impl(Groups groups) {
   if (has(groups, GROUP_CRYPTO)) result.push_back("crypto");
   if (has(groups, GROUP_EVENTS)) result.push_back("events");
   if (has(groups, GROUP_ABORT)) result.push_back("abort");
-  if (has(groups, GROUP_WEBSOCKET)) result.push_back("websocket");
   if (has(groups, GROUP_BLOB)) result.push_back("blob");
+  if (has(groups, GROUP_WEBSOCKET)) result.push_back("websocket");
 #if defined(IBEX2_JSI_HAS_INTL)
   if (has(groups, GROUP_INTL)) {
     result.push_back("intl_number_format");
@@ -977,6 +977,9 @@ void Adapter::install(Groups groups, const Ibex2Bindings* bindings,
       if (std::strcmp(script.name, "websocket") == 0) {
         rt.global().setProperty(rt, "__ibex2_fire_trusted_event",
                                 jsi::Value(rt, state_->trusted_event_dispatch));
+        if (state_->blob_helpers.isObject())
+          rt.global().setProperty(rt, "__ibex2_blob_helpers",
+                                  state_->blob_helpers);
       }
       if (std::strcmp(script.name, "fetch") == 0 &&
           state_->blob_helpers.isObject())
