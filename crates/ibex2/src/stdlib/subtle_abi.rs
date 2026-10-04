@@ -73,6 +73,17 @@ fn optional_unsigned_long(
     }
 }
 
+fn nullable_unsigned_long(
+    args: &[HostArg<'_>],
+    index: usize,
+    label: &str,
+) -> Result<Option<u32>, HostError> {
+    match args.get(index) {
+        Some(HostArg::Null | HostArg::Undefined) | None => Ok(None),
+        _ => unsigned_long(args, index, label).map(Some),
+    }
+}
+
 fn optional_flag(
     args: &[HostArg<'_>],
     index: usize,
@@ -394,9 +405,13 @@ pub(crate) fn dispatch(
             }
             DERIVE_BITS => {
                 let algorithm = derive_algorithm(args, 1)?;
-                let length = unsigned_long(args, 6, "derived bit length")? as usize;
+                let Some(length) = nullable_unsigned_long(args, 6, "derived bit length")? else {
+                    return Err(HostError::Failed(
+                        "OperationError: deriveBits length must not be null".into(),
+                    ));
+                };
                 with_key(runtime, handle(args, 0)?, |key| {
-                    subtle::derive_bits(algorithm, key, length)
+                    subtle::derive_bits(algorithm, key, length as usize)
                 })
                 .map(HostValue::Bytes)
             }
@@ -428,5 +443,17 @@ mod tests {
         for value in [-1.0, 1.5, 4_294_967_296.0, f64::NAN, f64::INFINITY] {
             assert!(unsigned_long(&[HostArg::Number(value)], 0, "value").is_err());
         }
+    }
+
+    #[test]
+    fn nullable_unsigned_long_keeps_null_distinct_from_zero() {
+        assert_eq!(
+            nullable_unsigned_long(&[HostArg::Null], 0, "value").unwrap(),
+            None
+        );
+        assert_eq!(
+            nullable_unsigned_long(&[HostArg::Number(0.0)], 0, "value").unwrap(),
+            Some(0)
+        );
     }
 }

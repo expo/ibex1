@@ -96,6 +96,9 @@
   function unsignedLong(value, label) {
     return enforceRange(value, label, 4294967295);
   }
+  function nullableUnsignedLong(value, label) {
+    return value === null || value === undefined ? null : unsignedLong(value, label);
+  }
   function unsignedShort(value, label) {
     return enforceRange(value, label, 65535);
   }
@@ -439,7 +442,7 @@
         return native.deriveBits(
           keyRecord(baseKeyValue).handle, algorithm.name, algorithm.hash,
           algorithm.salt, algorithm.info, algorithm.iterations,
-          unsignedLong(lengthValue, "length")
+          nullableUnsignedLong(lengthValue, "length")
         );
       });
     }
