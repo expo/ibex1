@@ -1,7 +1,8 @@
 //! A WebSocket client off Apple (RFC 6455): TCP from the standard
 //! library, TLS from the same rustls and trust store as `RustlsHttpTransport`.
-//! One writer queue serializes masked client frames and accounts queued data;
-//! the reader joins both text and binary fragments and owns control replies.
+//! One bounded writer queue serializes every masked client frame and accounts
+//! queued data; the reader joins fragments and admits control replies without
+//! ever blocking behind that writer.
 //! @ref LLP 0057#3-the-boundary — the platform owns the socket and TLS
 
 use crate::boundary::HostError;
@@ -21,6 +22,8 @@ const MAX_HEAD: usize = 16 << 10;
 const FRAGMENT: usize = 16 << 10;
 const MAX_OUTBOUND_BYTES: usize = 16 << 20;
 const MAX_OUTBOUND_MESSAGES: usize = 256;
+// @ref LLP 0059.000#312-websocket--delegating-capability-bearing-author-required — data and control frames share one bounded command channel
+const MAX_OUTBOUND_COMMANDS: usize = MAX_OUTBOUND_MESSAGES + 16;
 const OPEN: u8 = 1;
 const CLOSING: u8 = 2;
 const CLOSED: u8 = 3;
@@ -31,6 +34,8 @@ const CLOSED: u8 = 3;
 #[derive(Default)]
 pub struct TcpSocketTransport {
     tls: std::sync::OnceLock<Arc<rustls::ClientConfig>>,
+    #[cfg(test)]
+    writer_gate: Option<Arc<(Mutex<bool>, std::sync::Condvar)>>,
 }
 
 impl TcpSocketTransport {
@@ -42,7 +47,18 @@ impl TcpSocketTransport {
     pub(crate) fn with_tls(config: Arc<rustls::ClientConfig>) -> Self {
         let tls = std::sync::OnceLock::new();
         tls.set(config).expect("a fresh TLS configuration");
-        Self { tls }
+        Self {
+            tls,
+            writer_gate: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_writer_gate(gate: Arc<(Mutex<bool>, std::sync::Condvar)>) -> Self {
+        Self {
+            tls: std::sync::OnceLock::new(),
+            writer_gate: Some(gate),
+        }
     }
 
     fn tls(&self) -> Arc<rustls::ClientConfig> {
@@ -226,7 +242,7 @@ impl SocketTransport for TcpSocketTransport {
             queued_bytes: 0,
             queued_messages: 0,
         }));
-        let (commands, outgoing) = mpsc::channel();
+        let (commands, outgoing) = mpsc::sync_channel(MAX_OUTBOUND_COMMANDS);
         let sender = Arc::new(TcpSender {
             commands,
             buffered: Arc::clone(&buffered_amount),
@@ -235,7 +251,17 @@ impl SocketTransport for TcpSocketTransport {
         });
         let writer_wire = Arc::clone(&wire);
         let writer_shutdown = shutdown.try_clone().map_err(failed)?;
+        #[cfg(test)]
+        let writer_gate = self.writer_gate.clone();
         std::thread::spawn(move || {
+            #[cfg(test)]
+            if let Some(gate) = writer_gate {
+                let (lock, ready) = &*gate;
+                let mut open = lock.lock().expect("WebSocket writer gate poisoned");
+                while !*open {
+                    open = ready.wait(open).expect("WebSocket writer gate poisoned");
+                }
+            }
             writer_loop(
                 outgoing,
                 writer_wire,
@@ -374,7 +400,7 @@ enum Command {
 }
 
 struct TcpSender {
-    commands: mpsc::Sender<Command>,
+    commands: mpsc::SyncSender<Command>,
     buffered: Arc<AtomicUsize>,
     state: Arc<Mutex<SendState>>,
     shutdown: TcpStream,
@@ -386,7 +412,40 @@ struct SendState {
     queued_messages: usize,
 }
 
+enum CommandQueueError {
+    Full,
+    Closed,
+}
+
+impl CommandQueueError {
+    fn host_error(self) -> HostError {
+        match self {
+            Self::Full => HostError::Failed("the socket's outbound command queue is full".into()),
+            Self::Closed => HostError::Failed("the socket is closed".into()),
+        }
+    }
+}
+
 impl TcpSender {
+    fn queue(&self, state: &mut SendState, command: Command) -> Result<(), CommandQueueError> {
+        match self.commands.try_send(command) {
+            Ok(()) => Ok(()),
+            Err(mpsc::TrySendError::Full(_)) => {
+                // A peer that does not read can prevent even a close frame
+                // from draining. Fail abruptly instead of adding an unbounded
+                // control-frame escape hatch beside the data quotas.
+                state.phase = CLOSED;
+                let _ = self.shutdown.shutdown(Shutdown::Both);
+                Err(CommandQueueError::Full)
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                state.phase = CLOSED;
+                let _ = self.shutdown.shutdown(Shutdown::Both);
+                Err(CommandQueueError::Closed)
+            }
+        }
+    }
+
     fn enqueue(&self, opcode: u8, payload: &[u8]) -> Result<(), HostError> {
         saturating_add(&self.buffered, payload.len());
         let mut state = self.state.lock().expect("WebSocket sender poisoned");
@@ -405,23 +464,35 @@ impl TcpSender {
             let _ = self.shutdown.shutdown(Shutdown::Both);
             return Ok(());
         }
-        self.commands
-            .send(Command::Data {
+        let queued = self.queue(
+            &mut state,
+            Command::Data {
                 opcode,
                 payload: payload.to_vec(),
                 accounted: payload.len(),
-            })
-            .map_err(|_| HostError::Failed("the socket is closed".into()))?;
+            },
+        );
+        if let Err(error) = queued {
+            return match error {
+                // As with the byte/message quota above, the send which finds
+                // a full implementation buffer fails the connection without
+                // synchronously throwing into script.
+                CommandQueueError::Full => Ok(()),
+                CommandQueueError::Closed => Err(error.host_error()),
+            };
+        }
         state.queued_bytes = state.queued_bytes.saturating_add(payload.len());
         state.queued_messages += 1;
         Ok(())
     }
 
-    fn control(&self, opcode: u8, payload: Vec<u8>) {
-        let state = self.state.lock().expect("WebSocket sender poisoned");
+    fn control(&self, opcode: u8, payload: Vec<u8>) -> Result<(), HostError> {
+        let mut state = self.state.lock().expect("WebSocket sender poisoned");
         if state.phase == OPEN {
-            let _ = self.commands.send(Command::Control { opcode, payload });
+            self.queue(&mut state, Command::Control { opcode, payload })
+                .map_err(CommandQueueError::host_error)?;
         }
+        Ok(())
     }
 
     fn mark_closed(&self) {
@@ -436,10 +507,13 @@ impl TcpSender {
         let mut state = self.state.lock().expect("WebSocket sender poisoned");
         if state.phase == OPEN {
             state.phase = CLOSING;
-            let _ = self.commands.send(Command::Control {
-                opcode: 0x8,
-                payload,
-            });
+            let _ = self.queue(
+                &mut state,
+                Command::Control {
+                    opcode: 0x8,
+                    payload,
+                },
+            );
         }
         state.phase = CLOSED;
     }
@@ -450,10 +524,13 @@ impl TcpSender {
             return;
         }
         state.phase = CLOSING;
-        let _ = self.commands.send(Command::Control {
-            opcode: 0x8,
-            payload: 1009u16.to_be_bytes().to_vec(),
-        });
+        let _ = self.queue(
+            &mut state,
+            Command::Control {
+                opcode: 0x8,
+                payload: 1009u16.to_be_bytes().to_vec(),
+            },
+        );
     }
 }
 
@@ -477,12 +554,14 @@ impl MessageSender for TcpSender {
             payload.extend_from_slice(&code.to_be_bytes());
             payload.extend_from_slice(reason.as_bytes());
         }
-        self.commands
-            .send(Command::Control {
+        self.queue(
+            &mut state,
+            Command::Control {
                 opcode: 0x8,
                 payload,
-            })
-            .map_err(|_| HostError::Failed("the socket is closed".into()))
+            },
+        )
+        .map_err(CommandQueueError::host_error)
     }
 
     fn buffered_amount(&self) -> usize {
@@ -719,7 +798,7 @@ impl Socket {
                             reason: reason.to_string(),
                         });
                     }
-                    0x9 => self.sender.control(0xA, payload),
+                    0x9 => self.sender.control(0xA, payload)?,
                     0xA => {}
                     _ => return Err(protocol("an unknown control opcode")),
                 }

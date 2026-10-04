@@ -467,6 +467,76 @@ fn the_rust_transport_holds_the_whole_conversation() {
     conversation(&TcpSocketTransport::new());
 }
 
+#[test]
+fn a_ping_flood_from_a_non_reading_peer_fails_cleanly() {
+    const PINGS: usize = 4_096;
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (release_peer, released) = channel();
+    let peer = std::thread::spawn(move || {
+        let mut stream = listener.accept().unwrap().0;
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            stream.read_exact(&mut byte).unwrap();
+            head.push(byte[0]);
+        }
+        let head = String::from_utf8(head).unwrap();
+        let key = head
+            .lines()
+            .find_map(|line| line.strip_prefix("Sec-WebSocket-Key: "))
+            .unwrap()
+            .trim();
+        let accept = crate::stdlib::websocket::accept_key(key);
+        write!(
+            stream,
+            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+        )
+        .unwrap();
+
+        let ping = frame(true, 0x9, &[7; 125]);
+        for _ in 0..PINGS {
+            if stream.write_all(&ping).is_err() {
+                break;
+            }
+        }
+        // Deliberately never read a pong. Keep the peer open long enough that
+        // only the client's own bounded-queue failure can finish next().
+        let _ = released.recv_timeout(Duration::from_secs(5));
+    });
+
+    let writer_gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+    let mut socket = open_on(
+        &TcpSocketTransport::with_writer_gate(Arc::clone(&writer_gate)),
+        port,
+        "/ping-flood",
+        &AbortSignal::default(),
+    )
+    .unwrap();
+    let (reported, report) = channel();
+    let reader = std::thread::spawn(move || {
+        let _ = reported.send(socket.next());
+    });
+    let result = report.recv_timeout(Duration::from_secs(2));
+    let _ = release_peer.send(());
+    peer.join().unwrap();
+    {
+        let (lock, ready) = &*writer_gate;
+        *lock.lock().unwrap() = true;
+        ready.notify_one();
+    }
+    reader.join().unwrap();
+
+    let error = result
+        .expect("the ping flood must fail before the peer closes")
+        .expect_err("command-capacity exhaustion is an abrupt failure");
+    assert!(
+        error.to_string().contains("outbound command queue is full"),
+        "unexpected ping-flood failure: {error}"
+    );
+}
+
 const LOCAL_CERT: &str = "MIIBcDCCARagAwIBAgIJAL/L9Qemvq28MAoGCCqGSM49BAMCMBQxEjAQBgNVBAMMCWxvY2FsaG9zdDAeFw0yNjEwMDQxMzQ2MTBaFw0yNzEwMDQxMzQ2MTBaMBQxEjAQBgNVBAMMCWxvY2FsaG9zdDBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABB+9b/H/REalNbaY5CeIowEsLfdmeVL8M/iQgCo4BrJM+IgYXRIUDI6EdvgZkkyBFTr8dIRFr/5u/AX/0vRU3p2jUTBPMBoGA1UdEQQTMBGCCWxvY2FsaG9zdIcEfwAAATAMBgNVHRMBAf8EAjAAMA4GA1UdDwEB/wQEAwIHgDATBgNVHSUEDDAKBggrBgEFBQcDATAKBggqhkjOPQQDAgNIADBFAiBU7Mu0QDVetJW9tm7u7aoPrVQcEqkO0IUkZ0aMgPA6GwIhAPMuBqpj21v+kfb7/bCjL94nmzgQkNzpdDPei6+PzVpa";
 const LOCAL_KEY: &str = "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgNuGe4B07FBTDauLEJyJRWafyt3Hlvuh33z/wS96uBu2hRANCAAQfvW/x/0RGpTW2mOQniKMBLC33ZnlS/DP4kIAqOAayTPiIGF0SFAyOhHb4GZJMgRU6/HSERa/+bvwF/9L0VN6d";
 
