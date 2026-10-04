@@ -468,7 +468,7 @@ void freeze(jsi::Runtime&, const jsi::Object&);
 
 constexpr Groups kKnownGroups = GROUP_PURE | GROUP_CONSOLE | GROUP_TIMERS |
     GROUP_ABORT | GROUP_CRYPTO | GROUP_FETCH | GROUP_STORAGE | GROUP_ENV |
-    GROUP_SECRETS | GROUP_KV | GROUP_INTL | GROUP_BLOB | GROUP_EVENTS |
+    GROUP_SECRETS | GROUP_KV | GROUP_INTL | GROUP_EVENTS | GROUP_BLOB |
     GROUP_WEBSOCKET;
 
 bool has(Groups groups, Groups group) { return (groups & group) == group; }

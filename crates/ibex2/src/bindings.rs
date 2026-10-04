@@ -46,8 +46,8 @@ impl Groups {
     pub const SECRETS: Self = Self(1 << 8);
     pub const KV: Self = Self(1 << 9);
     pub const INTL: Self = Self(1 << 10);
-    pub const BLOB: Self = Self(1 << 11);
-    pub const EVENTS: Self = Self(1 << 12);
+    pub const EVENTS: Self = Self(1 << 11);
+    pub const BLOB: Self = Self(1 << 12);
     /// Application WebSockets. The secure runtime injects a grant-bound
     /// constructor per module; caller-owned runtimes receive an installer-
     /// endowed global.
@@ -64,8 +64,8 @@ impl Groups {
             | Self::ENV.0
             | Self::SECRETS.0
             | Self::KV.0
-            | Self::BLOB.0
             | Self::EVENTS.0
+            | Self::BLOB.0
             | Self::WEBSOCKET.0,
     );
 
@@ -153,8 +153,8 @@ impl Groups {
             (Groups::SECRETS, "SECRETS"),
             (Groups::KV, "KV"),
             (Groups::INTL, "INTL"),
-            (Groups::BLOB, "BLOB"),
             (Groups::EVENTS, "EVENTS"),
+            (Groups::BLOB, "BLOB"),
             (Groups::WEBSOCKET, "WEBSOCKET"),
         ];
         NAMES

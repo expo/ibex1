@@ -46,8 +46,8 @@ inline constexpr Groups GROUP_ENV = 1u << 7;
 inline constexpr Groups GROUP_SECRETS = 1u << 8;
 inline constexpr Groups GROUP_KV = 1u << 9;
 inline constexpr Groups GROUP_INTL = 1u << 10;
-inline constexpr Groups GROUP_BLOB = 1u << 11;
-inline constexpr Groups GROUP_EVENTS = 1u << 12;
+inline constexpr Groups GROUP_EVENTS = 1u << 11;
+inline constexpr Groups GROUP_BLOB = 1u << 12;
 inline constexpr Groups GROUP_WEBSOCKET = 1u << 13;
 
 // The dependency/availability table used by Adapter::install. Exposed so an

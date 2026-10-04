@@ -263,7 +263,11 @@ fn platform_identity_is_private_and_unsupported_values_throw_data_clone_error() 
           new WeakMap(), new WeakSet(), Promise.resolve(1), new Headers(),
           new URL("https://example.com/"), new URLSearchParams("x=1"),
           new AbortController(), AbortSignal.abort(), crypto,
-          new Headers().entries(), new URLSearchParams("x=1").entries()];
+          new Headers().entries(), new URLSearchParams("x=1").entries(),
+          new Event("event"), new CustomEvent("custom"), new ErrorEvent("error"),
+          new PromiseRejectionEvent("unhandledrejection", {
+            promise: Promise.resolve(), reason: "reason"
+          }), new EventTarget(), navigator];
         if (typeof Intl !== "undefined" && typeof Intl.NumberFormat === "function") rejected.push(new Intl.NumberFormat());
         if (typeof Intl !== "undefined" && typeof Intl.DateTimeFormat === "function") rejected.push(new Intl.DateTimeFormat());
         if (typeof WeakRef === "function") rejected.push(new WeakRef({}));
@@ -273,7 +277,11 @@ fn platform_identity_is_private_and_unsupported_values_throw_data_clone_error() 
         }
 
         const changed = [new Headers(), new URL("https://example.com/"),
-          new URLSearchParams("x=1"), new AbortController(), AbortSignal.abort()];
+          new URLSearchParams("x=1"), new AbortController(), AbortSignal.abort(),
+          new Event("event"), new CustomEvent("custom"), new ErrorEvent("error"),
+          new PromiseRejectionEvent("unhandledrejection", {
+            promise: Promise.resolve(), reason: "reason"
+          }), new EventTarget()];
         changed.push(new Headers().entries(), new URLSearchParams("x=1").entries());
         if (typeof Intl !== "undefined" && typeof Intl.NumberFormat === "function") changed.push(new Intl.NumberFormat());
         if (typeof Intl !== "undefined" && typeof Intl.DateTimeFormat === "function") changed.push(new Intl.DateTimeFormat());

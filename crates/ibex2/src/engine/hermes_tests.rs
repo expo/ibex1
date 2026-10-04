@@ -980,6 +980,31 @@ fn abort_signal_uses_event_target_when_events_are_installed() {
 }
 
 #[test]
+fn abort_trust_does_not_flow_through_a_replaced_global_event_constructor() {
+    let mut rt = with_stdlib();
+    assert_eq!(
+        rt.eval(
+            r#"
+            var PlatformEvent = Event;
+            var appEvent = new PlatformEvent("application");
+            var controller = new AbortController();
+            var received;
+            controller.signal.addEventListener("abort", function (event) {
+              received = event;
+            });
+            Event = function Event() { return appEvent; };
+            controller.abort();
+            [appEvent.isTrusted, appEvent.target === null,
+             received !== appEvent, received instanceof PlatformEvent,
+             received.type, received.isTrusted].join("|")
+            "#,
+        )
+        .unwrap(),
+        "false|true|true|true|abort|true"
+    );
+}
+
+#[test]
 fn signal_bound_listener_is_removed_before_abort_event_dispatch() {
     let mut rt = with_stdlib();
     assert_eq!(
@@ -1677,6 +1702,13 @@ fn two_runtimes_endowed_from_one_context_never_take_each_others_fetches() {
     use std::collections::BTreeSet;
     use std::sync::{mpsc, Arc, Condvar, Mutex};
 
+    // Both entries happen inside Transport::open, before either worker can
+    // publish a completion into L3's FIFO. Under the full parallel suite the
+    // production host pool is also exercised by deliberate saturation tests,
+    // so allow scheduling delay without replacing the production pool this
+    // isolation test is meant to cover.
+    const FETCH_TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
     struct Gate {
         released: Mutex<BTreeSet<String>>,
         changed: Condvar,
@@ -1756,11 +1788,7 @@ fn two_runtimes_endowed_from_one_context_never_take_each_others_fetches() {
     first.run_entry("./index.js").unwrap();
     second.run_entry("./index.js").unwrap();
     let entered: BTreeSet<_> = (0..2)
-        .map(|_| {
-            entered_rx
-                .recv_timeout(std::time::Duration::from_secs(2))
-                .unwrap()
-        })
+        .map(|_| entered_rx.recv_timeout(FETCH_TEST_TIMEOUT).unwrap())
         .collect();
     assert_eq!(entered, BTreeSet::from(["first".into(), "second".into()]));
 
@@ -1772,7 +1800,7 @@ fn two_runtimes_endowed_from_one_context_never_take_each_others_fetches() {
             .len()
     };
     let wait_for_task = |runtime: &Hermes| {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let deadline = std::time::Instant::now() + FETCH_TEST_TIMEOUT;
         while queued(runtime) == 0 {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -1793,12 +1821,12 @@ fn two_runtimes_endowed_from_one_context_never_take_each_others_fetches() {
         0,
         "the first runtime took the second runtime's fetch completion"
     );
-    second.run_to_quiescence(std::time::Duration::from_secs(2));
+    second.run_to_quiescence(FETCH_TEST_TIMEOUT);
     assert_eq!(second.eval("result").unwrap(), "second");
     assert_eq!(first.eval("result").unwrap(), "");
 
     release("first");
-    first.run_to_quiescence(std::time::Duration::from_secs(2));
+    first.run_to_quiescence(FETCH_TEST_TIMEOUT);
     assert_eq!(first.eval("result").unwrap(), "first");
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -2326,7 +2354,7 @@ fn hermes_rejection_tracker_dispatches_unhandled_and_handled_events() {
     pump_for(&mut rt, 150);
     assert_eq!(
         rt.eval("rejections.join('|')").unwrap(),
-        "unhandledrejection:late rejection:true:true"
+        "unhandledrejection:late rejection:true:false"
     );
     assert!(rt.drain_console().is_empty());
 
@@ -2334,8 +2362,30 @@ fn hermes_rejection_tracker_dispatches_unhandled_and_handled_events() {
     rt.drain_microtasks().unwrap();
     assert_eq!(
         rt.eval("rejections.join('|')").unwrap(),
-        "unhandledrejection:late rejection:true:true|rejectionhandled:late rejection:true:true"
+        "unhandledrejection:late rejection:true:false|rejectionhandled:late rejection:true:false"
     );
+}
+
+#[test]
+fn direct_promise_tracker_calls_cannot_forge_trusted_rejection_events() {
+    let mut rt = timer_rt();
+    let _ = rt.drain_console();
+    rt.eval(
+        r#"
+        globalThis.forgedRejectionTrust = [];
+        onunhandledrejection = function (event) {
+          if (event.reason && event.reason.message === "fake") {
+            forgedRejectionTrust.push(event.isTrusted);
+            return false;
+          }
+        };
+        Promise._C({_x: 0}, new TypeError("fake"));
+        "#,
+    )
+    .unwrap();
+    pump_for(&mut rt, 150);
+    assert_eq!(rt.eval("forgedRejectionTrust.join(',')").unwrap(), "false");
+    assert!(rt.drain_console().is_empty());
 }
 
 #[test]

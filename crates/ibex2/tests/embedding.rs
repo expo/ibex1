@@ -575,8 +575,8 @@ fn rust_and_cpp_group_validation_tables_agree() {
         Groups::SECRETS,
         Groups::KV,
         Groups::INTL,
-        Groups::BLOB,
         Groups::EVENTS,
+        Groups::BLOB,
         Groups::WEBSOCKET,
     ];
     for mask in 0..(1usize << group_bits.len()) {
@@ -719,6 +719,170 @@ fn borrowed_runtime_reports_callback_exceptions_instead_of_throwing_from_deliver
     assert!(
         ibex2::boundary_abi::drain_console().is_empty(),
         "preventDefault did not cancel host reporting"
+    );
+}
+
+#[test]
+fn borrowed_unhardened_runtime_cannot_forge_event_trust_through_intrinsics() {
+    let consumer = BareConsumer::new(Groups::PURE | Groups::EVENTS);
+    assert_eq!(
+        consumer.eval(
+            r#"
+            var originalWeakSet = WeakMap.prototype.set;
+            var originalWeakGet = WeakMap.prototype.get;
+            var originalDefineProperty = Object.defineProperty;
+            WeakMap.prototype.set = function (key, state) {
+              if (state && state.trusted === false) state.trusted = true;
+              return originalWeakSet.call(this, key, state);
+            };
+            WeakMap.prototype.get = function (key) {
+              var state = originalWeakGet.call(this, key);
+              if (state && typeof state.trusted === 'boolean') state.trusted = true;
+              return state;
+            };
+            Object.defineProperty = function (target, name, descriptor) {
+              if (name === 'isTrusted') {
+                return originalDefineProperty(target, name, {
+                  value: true, enumerable: true
+                });
+              }
+              return originalDefineProperty(target, name, descriptor);
+            };
+
+            var event = new Event('application');
+            var target = new EventTarget();
+            var seen = [];
+            target.addEventListener('application', function (received) {
+              seen.push(received === event, received.isTrusted);
+            });
+            var dispatched = target.dispatchEvent(event);
+            [event.isTrusted, seen.join(','), dispatched,
+             event.target === target].join('|');
+            "#,
+        ),
+        "false|true,false|true|true"
+    );
+}
+
+#[test]
+fn borrowed_unhardened_runtime_inherited_setters_never_see_private_event_records() {
+    let consumer = BareConsumer::new(Groups::PURE | Groups::EVENTS);
+    assert_eq!(
+        consumer.eval(
+            r#"
+            var captured = [];
+            ['detail', 'message', 'filename', 'lineno', 'colno', 'error',
+             'promise', 'reason', 'removed', 'abortRelease', 'trusted'
+            ].forEach(function (name) {
+              Object.defineProperty(Object.prototype, name, {
+                configurable: true,
+                set: function (value) { captured.push(this); },
+                get: function () { return undefined; }
+              });
+            });
+            var events = [
+              new CustomEvent('c', { detail: 1 }),
+              new ErrorEvent('e', { message: 'm', filename: 'f', lineno: 1, colno: 2, error: 3 }),
+              new PromiseRejectionEvent('p', { promise: Promise.resolve(), reason: 4 })
+            ];
+            var target = new EventTarget();
+            var listener = function () {};
+            target.addEventListener('c', listener);
+            target.removeEventListener('c', listener);
+            for (var i = 0; i < captured.length; i++) {
+              try { captured[i].trusted = true; } catch (_) {}
+            }
+            var seen = [];
+            target.addEventListener('c', function (e) { seen.push(e.isTrusted); });
+            target.dispatchEvent(events[0]);
+            [captured.length,
+             events.map(function (e) { return e.isTrusted; }).join(','),
+             seen.join(','),
+             events[0].detail, events[1].message, events[2].reason].join('|');
+            "#,
+        ),
+        "0|false,false,false|false|1|m|4"
+    );
+}
+
+#[test]
+fn borrowed_unhardened_runtime_array_hooks_never_see_private_event_lists() {
+    let consumer = BareConsumer::new(Groups::PURE | Groups::EVENTS);
+    // The script itself avoids arrays: the hooks below would fire for its own
+    // pushes too. It records through a counter and a string.
+    assert_eq!(
+        consumer.eval(
+            r#"
+            var captures = 0;
+            var log = '';
+            for (var index = 0; index < 4; index++) {
+              Object.defineProperty(Array.prototype, String(index), {
+                configurable: true,
+                set: function (value) { captures++; },
+                get: function () { return undefined; }
+              });
+            }
+            var target = new EventTarget();
+            var first = function (e) { log += 'first:' + e.isTrusted + ','; };
+            var second = function (e) { log += 'second,'; };
+            target.addEventListener('x', first);
+            target.addEventListener('x', second);
+            Object.defineProperty(Array.prototype, 'constructor', {
+              configurable: true,
+              get: function () { captures++; return Array; }
+            });
+            var event = new Event('x');
+            target.dispatchEvent(event);
+            event.composedPath();
+            target.removeEventListener('x', first);
+            target.dispatchEvent(new Event('x'));
+            delete Array.prototype.constructor;
+            for (var j = 0; j < 4; j++) delete Array.prototype[String(j)];
+            captures + '|' + log + '|' + event.isTrusted;
+            "#,
+        ),
+        "0|first:false,second,second,|false"
+    );
+}
+
+#[test]
+fn borrowed_unhardened_runtime_cannot_recover_or_write_platform_brand_registry() {
+    let consumer = BareConsumer::new(Groups::PURE);
+    assert_eq!(
+        consumer.eval(
+            r#"
+            var originalWeakGet = WeakMap.prototype.get;
+            var originalWeakSet = WeakMap.prototype.set;
+            var capturedRegistry = null;
+            var getCalls = 0;
+            var setCalls = 0;
+            WeakMap.prototype.get = function (key) {
+              getCalls++;
+              capturedRegistry = this;
+              return originalWeakGet.call(this, key);
+            };
+            WeakMap.prototype.set = function (key, value) {
+              setCalls++;
+              capturedRegistry = this;
+              return originalWeakSet.call(this, key, value);
+            };
+
+            var plain = { marker: 1 };
+            structuredClone(plain);
+            new Headers();
+            if (capturedRegistry) {
+              originalWeakSet.call(capturedRegistry, plain, {
+                kind: 'DOMException',
+                data: { name: 'AbortError', message: 'forged' }
+              });
+            }
+            var clone = structuredClone(plain);
+            [getCalls, setCalls, capturedRegistry === null, clone !== plain,
+             Object.getPrototypeOf(clone) === Object.prototype,
+             clone.marker === 1, clone instanceof DOMException].join('|');
+            "#,
+        ),
+        "0|0|true|true|true|true|false"
     );
 }
 

@@ -15,105 +15,101 @@
     results.push({ name: name, ok: !error, message: error ? String(error && error.message || error) : "" });
   }
 
-  function context() {
+  function context(name, asynchronous) {
     var cleanups = [];
-    var state = {
-      add_cleanup: function (fn) { cleanups.push(fn); },
-      cleanup: function (error) {
-        for (var i = cleanups.length - 1; i >= 0; i--) {
-          try { cleanups[i](); } catch (e) { if (!error) error = e; }
-        }
-        return error;
+    var finished = false;
+    var firstError = null;
+    function cleanup(error) {
+      for (var i = cleanups.length - 1; i >= 0; i--) {
+        try { cleanups[i](); } catch (e) { if (!error) error = e; }
       }
+      cleanups = [];
+      return error;
+    }
+    function finish(error) {
+      if (finished) return;
+      finished = true;
+      if (asynchronous) pending--;
+      record(name, cleanup(error || firstError));
+    }
+    var t = {
+      add_cleanup: function (fn) { cleanups.push(fn); },
+      cleanup: cleanup,
+      step: function (fn) {
+        if (finished) return;
+        try { return fn.call(t); }
+        catch (error) {
+          if (!firstError) firstError = error;
+          if (asynchronous) finish(error);
+        }
+      },
+      step_func: function (fn) {
+        return function () {
+          try { return fn.apply(t, arguments); }
+          catch (error) {
+            if (!firstError) firstError = error;
+            if (asynchronous) finish(error);
+          }
+        };
+      },
+      step_func_done: function (fn) {
+        return function () {
+          try { if (fn) fn.apply(t, arguments); finish(null); }
+          catch (error) { finish(error); }
+        };
+      },
+      step_timeout: function (fn, milliseconds) {
+        return setTimeout(t.step_func(fn), milliseconds);
+      },
+      unreached_func: function (description) {
+        return t.step_func(function () { fail("reached unreachable code", description); });
+      },
+      done: function () { finish(null); },
+      _finish: finish,
+      _error: function () { return firstError; }
     };
-    state.step = function (fn) { return fn.call(state); };
-    state.step_func = function (fn) {
-      return function () { return fn.apply(state, arguments); };
-    };
-    state.unreached_func = function (description) {
-      return state.step_func(function () { fail("reached unreachable code", description); });
-    };
-    return state;
+    return t;
   }
 
   global.test = function (fn, name) {
-    var state = context(), error = null;
+    var t = context(name, false);
+    var error = null;
     try {
-      fn.call(state, state);
+      fn.call(t, t);
     } catch (e) {
       error = e;
     }
-    record(name, state.cleanup(error));
+    record(name, t.cleanup(error || t._error()));
   };
 
   global.async_test = function (fn, name) {
-    // WPT's common declaration-only overload is async_test(name); callbacks
-    // retained from the returned object complete it later.
-    if (typeof fn === "string" && name === undefined) {
+    if (typeof fn !== "function") {
       name = fn;
       fn = null;
     }
-    var state = context(), complete = false, firstError = null;
     pending++;
-    function finish(error) {
-      if (complete) return;
-      complete = true;
-      pending--;
-      record(name, state.cleanup(error || firstError));
+    var t = context(name, true);
+    if (fn) {
+      try { fn.call(t, t); } catch (e) { t._finish(e); }
     }
-    state.step = function (callback) {
-      if (complete) return;
-      try { callback.call(state); } catch (error) {
-        if (!firstError) firstError = error;
-        finish(error);
-      }
-    };
-    state.step_func = function (callback) {
-      return function () {
-        if (complete) return;
-        try { return callback.apply(state, arguments); } catch (error) {
-          if (!firstError) firstError = error;
-          finish(error);
-        }
-      };
-    };
-    state.step_func_done = function (callback) {
-      return function () {
-        try { if (callback) callback.apply(state, arguments); finish(null); }
-        catch (error) { finish(error); }
-      };
-    };
-    state.step_timeout = function (callback, milliseconds) {
-      return setTimeout(state.step_func(callback), milliseconds);
-    };
-    state.unreached_func = function (description) {
-      return state.step_func(function () { fail("reached unreachable code", description); });
-    };
-    state.done = function () { finish(null); };
-    try { if (typeof fn === "function") fn.call(state, state); }
-    catch (error) { finish(error); }
-    return state;
+    return t;
   };
 
   global.promise_test = function (fn, name) {
-    var state = context();
-    var complete = false;
+    pending++;
     outstandingPromiseTests++;
-    function finish(error) {
-      if (complete) return;
-      complete = true;
-      record(name, state.cleanup(error));
-      outstandingPromiseTests--;
-    }
+    var t = context(name, true);
     // WPT promise tests run in registration order. Besides matching the real
     // harness, serialization keeps tests which temporarily delete an interface
     // from perturbing unrelated cases that use it.
     promiseTestTail = promiseTestTail.then(function () {
-      return fn.call(state, state);
+      return fn.call(t, t);
     }).then(function () {
-      finish(null);
+      t.done();
+      outstandingPromiseTests--;
     }, function (e) {
-      finish(e);
+      t._finish(e);
+      outstandingPromiseTests--;
     });
   };
 
@@ -172,11 +168,9 @@
     fail("did not throw", description);
   };
   global.assert_throws_exactly = function (expected, fn, description) {
-    try {
-      fn();
-    } catch (e) {
+    try { fn(); } catch (e) {
       if (e === expected) return;
-      fail("threw " + format(e) + " instead of the expected value", description);
+      fail("threw " + format(e) + " instead of the exact expected value", description);
     }
     fail("did not throw", description);
   };
