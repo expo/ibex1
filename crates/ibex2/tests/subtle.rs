@@ -75,6 +75,52 @@ fn digest_hmac_and_key_metadata_round_trip() {
 
 #[cfg(feature = "crypto")]
 #[test]
+fn non_octet_hmac_generate_sign_and_export_round_trips() {
+    let mut runtime = runtime();
+    run_async(
+        &mut runtime,
+        r#"
+        const imported = await crypto.subtle.importKey(
+          "raw", new Uint8Array(20).fill(255),
+          {name: "HMAC", hash: "SHA-256", length: 155}, true, ["sign", "verify"]
+        );
+        assert(imported.algorithm.length === 155);
+        const importedRaw = new Uint8Array(await crypto.subtle.exportKey("raw", imported));
+        assert(importedRaw.length === 20 && importedRaw[19] === 224);
+        const importedSignature = await crypto.subtle.sign("HMAC", imported, new TextEncoder().encode("ibex"));
+        assert(hex(importedSignature) === "09dc61ba3ab858026005afe0e64a7e864f4be1256bedefce0e16d78dd5a571ae");
+        assert(await crypto.subtle.verify("HMAC", imported, importedSignature, new TextEncoder().encode("ibex")));
+
+        const generated = await crypto.subtle.generateKey(
+          {name: "HMAC", hash: "SHA-256", length: 17}, true, ["sign", "verify"]
+        );
+        assert(generated.algorithm.length === 17);
+        const raw = new Uint8Array(await crypto.subtle.exportKey("raw", generated));
+        assert(raw.length === 3 && (raw[2] & 127) === 0);
+        const signature = await crypto.subtle.sign("HMAC", generated, new Uint8Array([1, 2, 3]));
+        assert(await crypto.subtle.verify("HMAC", generated, signature, new Uint8Array([1, 2, 3])));
+        const roundTrip = await crypto.subtle.importKey(
+          "raw", raw, {name: "HMAC", hash: "SHA-256", length: 17}, true, ["sign"]
+        );
+        assert(roundTrip.algorithm.length === 17);
+        assert(hex(await crypto.subtle.sign("HMAC", roundTrip, new Uint8Array([1, 2, 3]))) === hex(signature));
+
+        const hkdf = await crypto.subtle.importKey(
+          "raw", new Uint8Array([1, 2, 3]), "HKDF", false, ["deriveKey"]
+        );
+        const derived = await crypto.subtle.deriveKey(
+          {name: "HKDF", hash: "SHA-256", salt: new Uint8Array(), info: new Uint8Array()},
+          hkdf, {name: "HMAC", hash: "SHA-256", length: 17}, true, ["sign"]
+        );
+        const derivedRaw = new Uint8Array(await crypto.subtle.exportKey("raw", derived));
+        assert(derived.algorithm.length === 17);
+        assert(derivedRaw.length === 3 && (derivedRaw[2] & 127) === 0);
+        "#,
+    );
+}
+
+#[cfg(feature = "crypto")]
+#[test]
 fn aes_gcm_round_trip_and_refusals() {
     let mut runtime = runtime();
     run_async(
@@ -115,6 +161,12 @@ fn hkdf_and_pbkdf2_derive_bits_and_keys() {
         const info = new Uint8Array([240,241,242,243,244,245,246,247,248,249]);
         const hkdfBits = await crypto.subtle.deriveBits({name: "HKDF", hash: "SHA-256", salt, info}, hkdf, 336);
         assert(hex(hkdfBits) === "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865");
+        await rejects("OperationError", () => crypto.subtle.deriveBits(
+          {name: "HKDF", hash: "SHA-256", salt, info}, hkdf, null
+        ));
+        await rejects("OperationError", () => crypto.subtle.deriveBits(
+          {name: "HKDF", hash: "SHA-256", salt, info}, hkdf
+        ));
         const derivedHmac = await crypto.subtle.deriveKey(
           {name: "HKDF", hash: "SHA-256", salt, info}, hkdf,
           {name: "HMAC", hash: "SHA-256", length: 256}, false, ["sign"]
@@ -127,6 +179,8 @@ fn hkdf_and_pbkdf2_derive_bits_and_keys() {
         const pbkdf = {name: "PBKDF2", hash: "SHA-256", salt: new TextEncoder().encode("salt"), iterations: 1};
         assert(hex(await crypto.subtle.deriveBits(pbkdf, password, 256)) ===
           "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b");
+        await rejects("OperationError", () => crypto.subtle.deriveBits(pbkdf, password, null));
+        await rejects("OperationError", () => crypto.subtle.deriveBits(pbkdf, password));
         const aes = await crypto.subtle.deriveKey(pbkdf, password, {name: "AES-GCM", length: 128}, false, ["encrypt"]);
         assert(aes.algorithm.name === "AES-GCM" && aes.algorithm.length === 128 && !aes.extractable);
         await rejects("SyntaxError", () => crypto.subtle.importKey("raw", ikm, "HKDF", true, ["deriveBits"]));
@@ -185,6 +239,58 @@ fn ecdsa_p256_key_pair_formats_and_all_hashes() {
 
 #[cfg(feature = "crypto")]
 #[test]
+fn hostile_integer_sizes_are_rejected_by_name() {
+    let mut runtime = runtime();
+    run_async(
+        &mut runtime,
+        r#"
+        for (const length of [NaN, Infinity, -1, 4294967296, 2 ** 53]) {
+          await rejects("TypeError", () => crypto.subtle.generateKey(
+            {name: "HMAC", hash: "SHA-256", length}, true, ["sign"]
+          ));
+        }
+        const rounded = await crypto.subtle.generateKey(
+          {name: "HMAC", hash: "SHA-256", length: 16.9}, true, ["sign"]
+        );
+        assert(rounded.algorithm.length === 16);
+        assert(new Uint8Array(await crypto.subtle.exportKey("raw", rounded)).length === 2);
+        await rejects("OperationError", () => crypto.subtle.generateKey(
+          {name: "HMAC", hash: "SHA-256", length: 1000008}, true, ["sign"]
+        ));
+        await rejects("OperationError", () => crypto.subtle.importKey(
+          "raw", new Uint8Array(125001), {name: "HMAC", hash: "SHA-256"}, true, ["sign"]
+        ));
+
+        const ikm = new Uint8Array(32);
+        const hkdf = await crypto.subtle.importKey(
+          "raw", ikm, "HKDF", false, ["deriveBits", "deriveKey"]
+        );
+        const hkdfParams = {
+          name: "HKDF", hash: "SHA-256", salt: new Uint8Array(), info: new Uint8Array()
+        };
+        await rejects("TypeError", () => crypto.subtle.deriveBits(hkdfParams, hkdf, 4294967296));
+        await rejects("OperationError", () => crypto.subtle.deriveBits(hkdfParams, hkdf, 65288));
+        await rejects("OperationError", () => crypto.subtle.deriveKey(
+          hkdfParams, hkdf,
+          {name: "HMAC", hash: "SHA-256", length: 1000008}, true, ["sign"]
+        ));
+
+        const password = await crypto.subtle.importKey(
+          "raw", new Uint8Array([1]), "PBKDF2", false, ["deriveBits"]
+        );
+        const pbkdf = iterations => ({
+          name: "PBKDF2", hash: "SHA-256", salt: new Uint8Array(), iterations
+        });
+        await rejects("TypeError", () => crypto.subtle.deriveBits(pbkdf(4294967296), password, 8));
+        await rejects("OperationError", () => crypto.subtle.deriveBits(pbkdf(0), password, 8));
+        await rejects("OperationError", () => crypto.subtle.deriveBits(pbkdf(1000001), password, 8));
+        await rejects("OperationError", () => crypto.subtle.deriveBits(pbkdf(1), password, 1000008));
+        "#,
+    );
+}
+
+#[cfg(feature = "crypto")]
+#[test]
 fn ed25519_known_answer_and_format_round_trips() {
     let mut runtime = runtime();
     run_async(
@@ -216,6 +322,22 @@ fn ed25519_known_answer_and_format_round_trips() {
         assert(pair.publicKey.extractable && !pair.privateKey.extractable);
         const roundTrip = await crypto.subtle.sign("Ed25519", pair.privateKey, new Uint8Array([1,2,3]));
         assert(await crypto.subtle.verify("Ed25519", pair.publicKey, roundTrip, new Uint8Array([1,2,3])));
+        "#,
+    );
+}
+
+#[cfg(feature = "crypto")]
+#[test]
+fn hmac_generation_does_not_inherit_get_random_values_quota() {
+    let mut runtime = runtime();
+    run_async(
+        &mut runtime,
+        r#"
+        const key = await crypto.subtle.generateKey(
+          {name: "HMAC", hash: "SHA-256", length: 600000}, true, ["sign"]
+        );
+        assert(key.algorithm.length === 600000);
+        assert((await crypto.subtle.exportKey("raw", key)).byteLength === 75000);
         "#,
     );
 }

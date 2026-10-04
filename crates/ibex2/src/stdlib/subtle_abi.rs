@@ -45,22 +45,42 @@ fn number(args: &[HostArg<'_>], index: usize, label: &str) -> Result<f64, HostEr
     }
 }
 
-fn integer(args: &[HostArg<'_>], index: usize, label: &str) -> Result<usize, HostError> {
-    let value = number(args, index, label)?;
-    if value < 0.0 || value.fract() != 0.0 || value >= usize::MAX as f64 {
-        return Err(invalid(format!("expected {label}")));
-    }
-    Ok(value as usize)
-}
-
-fn optional_integer(
+fn unsigned_range(
     args: &[HostArg<'_>],
     index: usize,
     label: &str,
-) -> Result<Option<usize>, HostError> {
+    maximum: u32,
+) -> Result<u32, HostError> {
+    let value = number(args, index, label)?;
+    if value < 0.0 || value.fract() != 0.0 || value > f64::from(maximum) {
+        return Err(invalid(format!("{label} is outside the accepted range")));
+    }
+    Ok(value as u32)
+}
+
+fn unsigned_long(args: &[HostArg<'_>], index: usize, label: &str) -> Result<u32, HostError> {
+    unsigned_range(args, index, label, u32::MAX)
+}
+
+fn optional_unsigned_long(
+    args: &[HostArg<'_>],
+    index: usize,
+    label: &str,
+) -> Result<Option<u32>, HostError> {
     match args.get(index) {
         Some(HostArg::Number(-1.0)) | Some(HostArg::Undefined) | None => Ok(None),
-        _ => integer(args, index, label).map(Some),
+        _ => unsigned_long(args, index, label).map(Some),
+    }
+}
+
+fn optional_flag(
+    args: &[HostArg<'_>],
+    index: usize,
+    label: &str,
+) -> Result<Option<u32>, HostError> {
+    match args.get(index) {
+        Some(HostArg::Number(-1.0)) | Some(HostArg::Undefined) | None => Ok(None),
+        _ => unsigned_range(args, index, label, 1).map(Some),
     }
 }
 
@@ -102,7 +122,8 @@ fn import_algorithm(args: &[HostArg<'_>], name_index: usize) -> Result<ImportAlg
     match string(args, name_index, "an algorithm name")? {
         "HMAC" => Ok(ImportAlgorithm::Hmac {
             hash: hash(args, name_index + 1)?,
-            length_bits: optional_integer(args, name_index + 2, "an HMAC length")?,
+            length_bits: optional_unsigned_long(args, name_index + 2, "an HMAC length")?
+                .map(|value| value as usize),
         }),
         "AES-GCM" => Ok(ImportAlgorithm::AesGcm),
         "HKDF" => Ok(ImportAlgorithm::Hkdf),
@@ -125,10 +146,11 @@ fn generate_algorithm(args: &[HostArg<'_>]) -> Result<GenerateAlgorithm, HostErr
     match string(args, 0, "an algorithm name")? {
         "HMAC" => Ok(GenerateAlgorithm::Hmac {
             hash: hash(args, 1)?,
-            length_bits: optional_integer(args, 2, "an HMAC length")?,
+            length_bits: optional_unsigned_long(args, 2, "an HMAC length")?
+                .map(|value| value as usize),
         }),
         "AES-GCM" => Ok(GenerateAlgorithm::AesGcm {
-            length_bits: integer(args, 2, "an AES-GCM length")?,
+            length_bits: unsigned_range(args, 2, "an AES-GCM length", u16::MAX.into())? as usize,
         }),
         "ECDSA" => match optional_string(args, 5) {
             Some("P-256") => Ok(GenerateAlgorithm::EcdsaP256),
@@ -171,9 +193,7 @@ fn derive_algorithm<'a>(
             info: bytes(args, start + 3, "HKDF info")?,
         }),
         "PBKDF2" => {
-            let iterations = integer(args, start + 4, "PBKDF2 iterations")?;
-            let iterations =
-                u32::try_from(iterations).map_err(|_| invalid("PBKDF2 iterations exceed u32"))?;
+            let iterations = unsigned_long(args, start + 4, "PBKDF2 iterations")?;
             Ok(DeriveAlgorithm::Pbkdf2 {
                 hash: hash(args, start + 1)?,
                 salt: bytes(args, start + 2, "PBKDF2 salt")?,
@@ -190,10 +210,12 @@ fn derived_algorithm(args: &[HostArg<'_>], start: usize) -> Result<DerivedKeyAlg
     match string(args, start, "a derived key algorithm")? {
         "HMAC" => Ok(DerivedKeyAlgorithm::Hmac {
             hash: hash(args, start + 1)?,
-            length_bits: optional_integer(args, start + 2, "an HMAC length")?,
+            length_bits: optional_unsigned_long(args, start + 2, "an HMAC length")?
+                .map(|value| value as usize),
         }),
         "AES-GCM" => Ok(DerivedKeyAlgorithm::AesGcm {
-            length_bits: integer(args, start + 2, "an AES-GCM length")?,
+            length_bits: unsigned_range(args, start + 2, "an AES-GCM length", u16::MAX.into())?
+                as usize,
         }),
         name => Err(HostError::Failed(format!(
             "NotSupportedError: derived key algorithm {name} is not supported"
@@ -243,7 +265,7 @@ pub(crate) fn dispatch(
                         &usages,
                     ),
                     "jwk" => {
-                        let ext = match optional_integer(args, 11, "JWK ext")? {
+                        let ext = match optional_flag(args, 11, "JWK ext")? {
                             None => None,
                             Some(0) => Some(false),
                             Some(1) => Some(true),
@@ -357,7 +379,8 @@ pub(crate) fn dispatch(
                 let params = AesGcmParams {
                     iv: bytes(args, 1, "AES-GCM iv")?,
                     additional_data: bytes(args, 2, "AES-GCM additionalData")?,
-                    tag_length_bits: integer(args, 3, "AES-GCM tagLength")?,
+                    tag_length_bits: unsigned_range(args, 3, "AES-GCM tagLength", u8::MAX.into())?
+                        as usize,
                 };
                 let input = bytes(args, 4, "AES-GCM data")?;
                 with_key(runtime, handle(args, 0)?, |key| {
@@ -371,7 +394,7 @@ pub(crate) fn dispatch(
             }
             DERIVE_BITS => {
                 let algorithm = derive_algorithm(args, 1)?;
-                let length = integer(args, 6, "derived bit length")?;
+                let length = unsigned_long(args, 6, "derived bit length")? as usize;
                 with_key(runtime, handle(args, 0)?, |key| {
                     subtle::derive_bits(algorithm, key, length)
                 })
@@ -390,4 +413,20 @@ pub(crate) fn dispatch(
             _ => unreachable!(),
         }
     })())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unsigned_long_bounds_are_repeated_at_the_native_boundary() {
+        assert_eq!(
+            unsigned_long(&[HostArg::Number(f64::from(u32::MAX))], 0, "value").unwrap(),
+            u32::MAX
+        );
+        for value in [-1.0, 1.5, 4_294_967_296.0, f64::NAN, f64::INFINITY] {
+            assert!(unsigned_long(&[HostArg::Number(value)], 0, "value").is_err());
+        }
+    }
 }

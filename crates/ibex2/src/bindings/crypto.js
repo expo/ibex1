@@ -79,15 +79,28 @@
     }
     return name;
   }
-  function number(value, label) {
+  function enforceRange(value, label, maximum) {
     if (typeof value === "bigint" || typeof value === "symbol") {
       throw new TypeError(label + " must be a number");
     }
     const result = Number(value);
-    if (!Number.isFinite(result) || result < 0 || Math.floor(result) !== result) {
-      throw new TypeError(label + " must be a non-negative integer");
+    if (!Number.isFinite(result)) {
+      throw new TypeError(label + " must be a finite number");
     }
-    return result;
+    const integer = Math.trunc(result);
+    if (integer < 0 || integer > maximum) {
+      throw new TypeError(label + " is outside the accepted range");
+    }
+    return integer;
+  }
+  function unsignedLong(value, label) {
+    return enforceRange(value, label, 4294967295);
+  }
+  function unsignedShort(value, label) {
+    return enforceRange(value, label, 65535);
+  }
+  function octet(value, label) {
+    return enforceRange(value, label, 255);
   }
   function bufferSource(value, label) {
     try {
@@ -134,7 +147,7 @@
   }
   function optionalLength(algorithm) {
     if (algorithm === null || (typeof algorithm !== "object" && typeof algorithm !== "function")) return -1;
-    return algorithm.length === undefined ? -1 : number(algorithm.length, "length");
+    return algorithm.length === undefined ? -1 : unsignedLong(algorithm.length, "length");
   }
   function normalizeKeyAlgorithm(algorithm, generating) {
     const name = algorithmName(algorithm);
@@ -146,7 +159,7 @@
     }
     if (name === "AES-GCM") {
       const length = generating
-        ? number(algorithm && algorithm.length, "AES-GCM length") : -1;
+        ? unsignedShort(algorithm && algorithm.length, "AES-GCM length") : -1;
       if (generating && length !== 128 && length !== 256) {
         if (length === 192) unsupported("AES-GCM-192 is not supported by ring");
         throw new DOMException("AES-GCM keys must be 128 or 256 bits", "OperationError");
@@ -247,7 +260,7 @@
         hash: hashName(algorithm.hash),
         salt: bufferSource(algorithm.salt, "PBKDF2 salt"),
         info: empty,
-        iterations: number(algorithm.iterations, "PBKDF2 iterations")
+        iterations: unsignedLong(algorithm.iterations, "PBKDF2 iterations")
       };
     }
     unsupported("derivation algorithm " + name + " is not supported");
@@ -261,7 +274,7 @@
       iv: bufferSource(algorithm.iv, "AES-GCM iv"),
       additionalData: algorithm.additionalData === undefined
         ? empty : bufferSource(algorithm.additionalData, "AES-GCM additionalData"),
-      tagLength: algorithm.tagLength === undefined ? 128 : number(algorithm.tagLength, "tagLength")
+      tagLength: algorithm.tagLength === undefined ? 128 : octet(algorithm.tagLength, "tagLength")
     };
   }
 
@@ -426,7 +439,7 @@
         return native.deriveBits(
           keyRecord(baseKeyValue).handle, algorithm.name, algorithm.hash,
           algorithm.salt, algorithm.info, algorithm.iterations,
-          number(lengthValue, "length")
+          unsignedLong(lengthValue, "length")
         );
       });
     }

@@ -19,6 +19,12 @@ mod der;
 /// iteration count to monopolize the runtime thread.
 pub const MAX_PBKDF2_ITERATIONS: u32 = 1_000_000;
 
+/// Bound caller-selected secret/output sizes so a pure synchronous host call
+/// cannot turn an integer parameter into an effectively unbounded allocation.
+/// Values are bits because that is the unit WebCrypto exposes.
+pub const MAX_DERIVED_BITS: usize = 1_000_000;
+pub const MAX_HMAC_KEY_BITS: usize = 1_000_000;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ErrorName {
     NotSupportedError,
@@ -477,24 +483,66 @@ fn validate_aes_length(length_bits: usize) -> Result<()> {
 }
 
 #[cfg(feature = "crypto")]
+fn validate_hmac_generated_length(length_bits: usize) -> Result<()> {
+    if length_bits == 0 {
+        return Err(Error::operation("HMAC key length must be positive"));
+    }
+    if length_bits > MAX_HMAC_KEY_BITS {
+        return Err(Error::operation(format!(
+            "HMAC key length exceeds the per-call limit of {MAX_HMAC_KEY_BITS} bits"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "crypto")]
+fn validate_hmac_import_length(
+    material_bytes: usize,
+    requested_bits: Option<usize>,
+) -> Result<usize> {
+    if material_bytes == 0 {
+        return Err(Error::data("HMAC key data must not be empty"));
+    }
+    let available = material_bytes
+        .checked_mul(8)
+        .ok_or_else(|| Error::operation("HMAC key data is too large"))?;
+    let length_bits = requested_bits.unwrap_or(available);
+    if length_bits > MAX_HMAC_KEY_BITS {
+        return Err(Error::operation(format!(
+            "HMAC key length exceeds the per-call limit of {MAX_HMAC_KEY_BITS} bits"
+        )));
+    }
+    if length_bits == 0 || length_bits > available || length_bits <= available - 8 {
+        return Err(Error::data(
+            "HMAC length does not describe the supplied key data",
+        ));
+    }
+    Ok(length_bits)
+}
+
+#[cfg(feature = "crypto")]
+fn truncate_hmac_material(material: &mut Vec<u8>, length_bits: usize) {
+    material.truncate(length_bits.div_ceil(8));
+    let retained = length_bits % 8;
+    if retained != 0 {
+        let mask = u8::MAX << (8 - retained);
+        *material
+            .last_mut()
+            .expect("a positive HMAC bit length retains one byte") &= mask;
+    }
+}
+
+#[cfg(feature = "crypto")]
 fn import_material(
-    material: Vec<u8>,
+    mut material: Vec<u8>,
     algorithm: ImportAlgorithm,
     extractable: bool,
     usages: &[KeyUsage],
 ) -> Result<CryptoKey> {
     let (algorithm, usages) = match algorithm {
         ImportAlgorithm::Hmac { hash, length_bits } => {
-            if material.is_empty() {
-                return Err(Error::data("HMAC key data must not be empty"));
-            }
-            let available = material.len() * 8;
-            let length_bits = length_bits.unwrap_or(available);
-            if length_bits == 0 || length_bits > available || length_bits <= available - 8 {
-                return Err(Error::data(
-                    "HMAC length does not describe the supplied key data",
-                ));
-            }
+            let length_bits = validate_hmac_import_length(material.len(), length_bits)?;
+            truncate_hmac_material(&mut material, length_bits);
             (
                 KeyAlgorithm::Hmac { hash, length_bits },
                 validate_usages(usages, &[KeyUsage::Sign, KeyUsage::Verify])?,
@@ -568,6 +616,9 @@ pub fn import_raw_key(
     }
     #[cfg(feature = "crypto")]
     {
+        if let ImportAlgorithm::Hmac { length_bits, .. } = algorithm {
+            validate_hmac_import_length(material.len(), length_bits)?;
+        }
         if matches!(
             algorithm,
             ImportAlgorithm::EcdsaP256 | ImportAlgorithm::Ed25519
@@ -635,6 +686,26 @@ pub fn import_jwk_key(
             .k
             .as_deref()
             .ok_or_else(|| Error::data("JWK k is required"))?;
+        match algorithm {
+            ImportAlgorithm::Hmac { length_bits, .. } => {
+                if let Some(length_bits) = length_bits {
+                    if length_bits > MAX_HMAC_KEY_BITS {
+                        return Err(Error::operation(format!(
+                            "HMAC key length exceeds the per-call limit of {MAX_HMAC_KEY_BITS} bits"
+                        )));
+                    }
+                }
+                if encoded.len() > MAX_HMAC_KEY_BITS.div_ceil(6) {
+                    return Err(Error::operation(format!(
+                        "HMAC key length exceeds the per-call limit of {MAX_HMAC_KEY_BITS} bits"
+                    )));
+                }
+            }
+            ImportAlgorithm::AesGcm if encoded.len() > 43 => {
+                return Err(Error::data("AES-GCM JWK has an invalid key length"));
+            }
+            _ => {}
+        }
         let material = URL_SAFE_NO_PAD
             .decode(encoded.as_bytes())
             .map_err(|_| Error::data("JWK k is not unpadded base64url"))?;
@@ -725,11 +796,7 @@ pub fn generate_key(
         let (import, length_bits) = match algorithm {
             GenerateAlgorithm::Hmac { hash, length_bits } => {
                 let length = length_bits.unwrap_or_else(|| hash.hmac_default_bits());
-                if length == 0 || !length.is_multiple_of(8) {
-                    return Err(Error::operation(
-                        "HMAC key length must be a positive multiple of 8",
-                    ));
-                }
+                validate_hmac_generated_length(length)?;
                 (
                     ImportAlgorithm::Hmac {
                         hash,
@@ -748,8 +815,26 @@ pub fn generate_key(
                 ))
             }
         };
-        let mut material = vec![0; length_bits / 8];
-        super::crypto::get_random_values(&mut material)
+        // Validate usage syntax before entropy or key-material allocation.
+        match import {
+            ImportAlgorithm::Hmac { .. } => {
+                validate_usages(usages, &[KeyUsage::Sign, KeyUsage::Verify])?;
+            }
+            ImportAlgorithm::AesGcm => {
+                validate_usages(
+                    usages,
+                    &[
+                        KeyUsage::Encrypt,
+                        KeyUsage::Decrypt,
+                        KeyUsage::WrapKey,
+                        KeyUsage::UnwrapKey,
+                    ],
+                )?;
+            }
+            _ => unreachable!(),
+        }
+        let mut material = vec![0; length_bits.div_ceil(8)];
+        super::crypto::fill_random(&mut material)
             .map_err(|error| Error::operation(error.to_string()))?;
         import_material(material, import, extractable, usages)
     }
@@ -952,12 +1037,45 @@ fn derive_material(
     if !length_bits.is_multiple_of(8) {
         return Err(Error::operation("derived length must be a multiple of 8"));
     }
-    let mut output = vec![0; length_bits / 8];
+    if length_bits > MAX_DERIVED_BITS {
+        return Err(Error::operation(format!(
+            "derived length exceeds the per-call limit of {MAX_DERIVED_BITS} bits"
+        )));
+    }
+
+    // Validate the algorithm, key type, and all algorithm-specific work
+    // limits before allocating the caller-selected output buffer.
     match algorithm {
-        DeriveAlgorithm::Hkdf { hash, salt, info } => {
+        DeriveAlgorithm::Hkdf { hash, .. } => {
             if base_key.algorithm != KeyAlgorithm::Hkdf {
                 return Err(Error::invalid_access("HKDF requires an HKDF base key"));
             }
+            let maximum = 255 * hash.output_bits();
+            if length_bits > maximum {
+                return Err(Error::operation(format!(
+                    "HKDF output exceeds 255 times the {hash_name} length",
+                    hash_name = hash.name()
+                )));
+            }
+        }
+        DeriveAlgorithm::Pbkdf2 { iterations, .. } => {
+            if base_key.algorithm != KeyAlgorithm::Pbkdf2 {
+                return Err(Error::invalid_access("PBKDF2 requires a PBKDF2 base key"));
+            }
+            if iterations == 0 {
+                return Err(Error::operation("PBKDF2 iterations must be non-zero"));
+            }
+            if iterations > MAX_PBKDF2_ITERATIONS {
+                return Err(Error::operation(format!(
+                    "PBKDF2 iterations exceed the per-call limit of {MAX_PBKDF2_ITERATIONS}"
+                )));
+            }
+        }
+    }
+
+    let mut output = vec![0; length_bits / 8];
+    match algorithm {
+        DeriveAlgorithm::Hkdf { hash, salt, info } => {
             let algorithm = match hash {
                 HashAlgorithm::Sha256 => ring::hkdf::HKDF_SHA256,
                 HashAlgorithm::Sha384 => ring::hkdf::HKDF_SHA384,
@@ -981,16 +1099,8 @@ fn derive_material(
             salt,
             iterations,
         } => {
-            if base_key.algorithm != KeyAlgorithm::Pbkdf2 {
-                return Err(Error::invalid_access("PBKDF2 requires a PBKDF2 base key"));
-            }
             let iterations = std::num::NonZeroU32::new(iterations)
-                .ok_or_else(|| Error::operation("PBKDF2 iterations must be non-zero"))?;
-            if iterations.get() > MAX_PBKDF2_ITERATIONS {
-                return Err(Error::operation(format!(
-                    "PBKDF2 iterations exceed the per-call limit of {MAX_PBKDF2_ITERATIONS}"
-                )));
-            }
+                .expect("PBKDF2 iterations were validated before allocation");
             let algorithm = match hash {
                 HashAlgorithm::Sha256 => ring::pbkdf2::PBKDF2_HMAC_SHA256,
                 HashAlgorithm::Sha384 => ring::pbkdf2::PBKDF2_HMAC_SHA384,
@@ -1030,9 +1140,13 @@ pub fn derive_key(
     }
     #[cfg(feature = "crypto")]
     {
+        if usages.is_empty() {
+            return Err(Error::syntax("derived secret keys need at least one usage"));
+        }
         let (import, length_bits) = match derived {
             DerivedKeyAlgorithm::Hmac { hash, length_bits } => {
                 let length_bits = length_bits.unwrap_or_else(|| hash.hmac_default_bits());
+                validate_hmac_generated_length(length_bits)?;
                 (
                     ImportAlgorithm::Hmac {
                         hash,
@@ -1046,7 +1160,30 @@ pub fn derive_key(
                 (ImportAlgorithm::AesGcm, length_bits)
             }
         };
-        let material = derive_material(algorithm, base_key, KeyUsage::DeriveKey, length_bits)?;
+        // Refuse invalid derived-key usages before performing the KDF.
+        match import {
+            ImportAlgorithm::Hmac { .. } => {
+                validate_usages(usages, &[KeyUsage::Sign, KeyUsage::Verify])?;
+            }
+            ImportAlgorithm::AesGcm => {
+                validate_usages(
+                    usages,
+                    &[
+                        KeyUsage::Encrypt,
+                        KeyUsage::Decrypt,
+                        KeyUsage::WrapKey,
+                        KeyUsage::UnwrapKey,
+                    ],
+                )?;
+            }
+            _ => unreachable!(),
+        }
+        let material = derive_material(
+            algorithm,
+            base_key,
+            KeyUsage::DeriveKey,
+            length_bits.div_ceil(8) * 8,
+        )?;
         import_material(material, import, extractable, usages)
     }
 }
@@ -1122,6 +1259,37 @@ mod tests {
             .unwrap();
             assert_eq!(sign(&key, b"Hi There").unwrap(), hex(expected));
         }
+    }
+
+    #[test]
+    fn non_octet_hmac_import_masks_and_signs_with_retained_bits() {
+        let key = import_raw_key(
+            &[0xff; 20],
+            ImportAlgorithm::Hmac {
+                hash: HashAlgorithm::Sha256,
+                length_bits: Some(155),
+            },
+            true,
+            &[KeyUsage::Sign],
+        )
+        .unwrap();
+        assert_eq!(
+            key.algorithm(),
+            &KeyAlgorithm::Hmac {
+                hash: HashAlgorithm::Sha256,
+                length_bits: 155,
+            }
+        );
+        let mut expected_key = vec![0xff; 20];
+        expected_key[19] = 0xe0;
+        assert_eq!(
+            export_key(KeyFormat::Raw, &key).unwrap(),
+            ExportedKey::Raw(expected_key)
+        );
+        assert_eq!(
+            sign(&key, b"ibex").unwrap(),
+            hex("09dc61ba3ab858026005afe0e64a7e864f4be1256bedefce0e16d78dd5a571ae")
+        );
     }
 
     #[test]
@@ -1205,6 +1373,95 @@ mod tests {
         assert_eq!(
             output,
             hex("120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b")
+        );
+    }
+
+    #[test]
+    fn caller_sized_work_is_bounded_before_backend_calls() {
+        assert_eq!(
+            generate_key(
+                GenerateAlgorithm::Hmac {
+                    hash: HashAlgorithm::Sha256,
+                    length_bits: Some(MAX_HMAC_KEY_BITS + 8),
+                },
+                true,
+                &[KeyUsage::Sign],
+            )
+            .unwrap_err()
+            .name,
+            ErrorName::OperationError
+        );
+
+        let hkdf = import_raw_key(
+            b"key",
+            ImportAlgorithm::Hkdf,
+            false,
+            &[KeyUsage::DeriveBits, KeyUsage::DeriveKey],
+        )
+        .unwrap();
+        let hkdf_params = DeriveAlgorithm::Hkdf {
+            hash: HashAlgorithm::Sha256,
+            salt: b"",
+            info: b"",
+        };
+        assert_eq!(
+            derive_bits(hkdf_params, &hkdf, 255 * 256 + 8)
+                .unwrap_err()
+                .name,
+            ErrorName::OperationError
+        );
+        assert_eq!(
+            derive_key(
+                hkdf_params,
+                &hkdf,
+                DerivedKeyAlgorithm::Hmac {
+                    hash: HashAlgorithm::Sha256,
+                    length_bits: Some(MAX_HMAC_KEY_BITS + 8),
+                },
+                true,
+                &[KeyUsage::Sign],
+            )
+            .unwrap_err()
+            .name,
+            ErrorName::OperationError
+        );
+
+        let pbkdf2 = import_raw_key(
+            b"password",
+            ImportAlgorithm::Pbkdf2,
+            false,
+            &[KeyUsage::DeriveBits],
+        )
+        .unwrap();
+        for iterations in [0, MAX_PBKDF2_ITERATIONS + 1] {
+            assert_eq!(
+                derive_bits(
+                    DeriveAlgorithm::Pbkdf2 {
+                        hash: HashAlgorithm::Sha256,
+                        salt: b"salt",
+                        iterations,
+                    },
+                    &pbkdf2,
+                    8,
+                )
+                .unwrap_err()
+                .name,
+                ErrorName::OperationError
+            );
+        }
+        assert_eq!(
+            derive_bits(
+                DeriveAlgorithm::Pbkdf2 {
+                    hash: HashAlgorithm::Sha256,
+                    salt: b"salt",
+                    iterations: 1,
+                },
+                &pbkdf2,
+                MAX_DERIVED_BITS + 8,
+            )
+            .unwrap_err()
+            .name,
+            ErrorName::OperationError
         );
     }
 
