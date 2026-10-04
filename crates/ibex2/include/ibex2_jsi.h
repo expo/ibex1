@@ -54,6 +54,21 @@ struct HostCallResult {
 };
 HostCallResult call_host_result(jsi::Runtime&, const void*, uint32_t,
                                 const jsi::Value*, size_t);
+
+// Shared by every native closure installed through Adapter. The closure asks
+// for the borrowed Rust state at call time, after checking detach, so keeping
+// a JavaScript function alive cannot keep or later dereference that borrow.
+class Lifetime {
+public:
+  const void* require(jsi::Runtime&) const;
+private:
+  friend class Adapter;
+  explicit Lifetime(const void* state) : state_(state) {}
+  void detach() { alive_ = false; state_ = nullptr; }
+  bool alive_ = true;
+  const void* state_;
+};
+
 jsi::Function make_host_binding(jsi::Runtime&, const char*, uint32_t, const void*);
 void set_binding(jsi::Runtime&, jsi::Object&, const char*, uint32_t, const void*);
 
@@ -72,6 +87,9 @@ public:
   Adapter(const Adapter&) = delete;
   Adapter& operator=(const Adapter&) = delete;
   void detach();
+  // Internal companion installers (the Linux Intl shims) capture the same
+  // token as the core group installers.
+  std::shared_ptr<Lifetime> lifetime() const;
   // Update only an already-captured intrinsic property's expected identity
   // after Ibex's trusted bootstrap replaces that property. Every other
   // captured identity remains anchored to runtime construction.

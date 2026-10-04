@@ -23,18 +23,26 @@ extern "C" void ibex2_string_free(char*);
 
 #if defined(IBEX2_JSI_HAS_INTL)
 namespace ibex2::intl_number_format {
-void install(facebook::jsi::Runtime&, const void*);
+void install(facebook::jsi::Runtime&,
+             std::shared_ptr<ibex2::jsi_adapter::Lifetime>);
 }
 namespace ibex2::intl_case {
-void install(facebook::jsi::Runtime&, const void*);
+void install(facebook::jsi::Runtime&,
+             std::shared_ptr<ibex2::jsi_adapter::Lifetime>);
 }
 namespace ibex2::intl_datetime {
 std::vector<facebook::jsi::Value> factory_arguments(facebook::jsi::Runtime&,
-                                                    const void*);
+    std::shared_ptr<ibex2::jsi_adapter::Lifetime>);
 }
 #endif
 
 namespace ibex2::jsi_adapter {
+const void* Lifetime::require(jsi::Runtime& rt) const {
+  if (!alive_ || state_ == nullptr)
+    throw jsi::JSError(rt, "Ibex2 bindings are detached");
+  return state_;
+}
+
 // Convert a JS argument. Strings are decoded into `owned`, which the caller
 // keeps alive for the duration of the host call so the span stays valid.
 Ibex2AbiValue to_abi(jsi::Runtime &rt, const jsi::Value &value,
@@ -335,20 +343,29 @@ struct Adapter::State {
   bool alive = true;
   bool installed = false;
   Groups groups = 0;
+  std::shared_ptr<Lifetime> lifetime;
   jsi::Value fetch_factory;
   jsi::Value sqlite_factory;
   std::unique_ptr<Integrity> integrity;
-  State(jsi::Runtime& rt, const void* value) : queue(value), integrity(std::make_unique<Integrity>(rt)) {}
-  void require(jsi::Runtime& rt) const {
-    if (!alive) throw jsi::JSError(rt, "Ibex2 bindings are detached");
+  State(jsi::Runtime& rt, const void* value,
+        std::shared_ptr<Lifetime> lifetime_value)
+      : queue(value), lifetime(std::move(lifetime_value)),
+        integrity(std::make_unique<Integrity>(rt)) {}
+  const void* require(jsi::Runtime& rt) const {
+    return lifetime->require(rt);
   }
 };
 
 Adapter::Adapter(jsi::Runtime& rt, const void* queue)
-    : runtime_(&rt), state_(std::make_shared<State>(rt, queue)) {
+    : runtime_(&rt),
+      state_(std::make_shared<State>(
+          rt, queue, std::shared_ptr<Lifetime>(new Lifetime(queue)))) {
   if (!queue) throw std::invalid_argument("Ibex2 bindings require runtime state");
 }
 Adapter::~Adapter() { detach(); }
+std::shared_ptr<Lifetime> Adapter::lifetime() const {
+  return state_->lifetime;
+}
 void Adapter::accept_trusted_intrinsic_property(jsi::Object object,
                                                 const char* name) {
   if (!runtime_ || !state_->integrity)
@@ -358,6 +375,7 @@ void Adapter::accept_trusted_intrinsic_property(jsi::Object object,
 void Adapter::detach() {
   if (!state_->alive) return;
   state_->alive = false;
+  state_->lifetime->detach();
   state_->pending.clear();
   state_->fetch_factory = jsi::Value::undefined();
   state_->sqlite_factory = jsi::Value::undefined();
@@ -423,71 +441,98 @@ struct ResponseOwner final : jsi::NativeState {
   ~ResponseOwner() override { ibex2_response_owner_destroy(owner); }
 };
 
-void install_console(jsi::Runtime& rt, const void* queue) {
+jsi::Function make_group_binding(jsi::Runtime& rt, const char* name,
+                                 uint32_t op,
+                                 std::shared_ptr<Lifetime> lifetime) {
+  auto prop = jsi::PropNameID::forUtf8(rt, std::string(name));
+  return jsi::Function::createFromHostFunction(
+      rt, prop, 1,
+      [op, lifetime = std::move(lifetime)](
+          jsi::Runtime& r, const jsi::Value&, const jsi::Value* args,
+          size_t count) -> jsi::Value {
+        const void* state = lifetime->require(r);
+        return call_host(r, state, op, args, count);
+      });
+}
+
+void set_group_binding(jsi::Runtime& rt, jsi::Object& target,
+                       const char* name, uint32_t op,
+                       const std::shared_ptr<Lifetime>& lifetime) {
+  target.setProperty(rt, jsi::PropNameID::forUtf8(rt, std::string(name)),
+                     make_group_binding(rt, name, op, lifetime));
+}
+
+void install_console(jsi::Runtime& rt,
+                     const std::shared_ptr<Lifetime>& lifetime) {
   jsi::Object console(rt);
-  set_binding(rt, console, "log", 1, queue);
-  set_binding(rt, console, "info", 2, queue);
-  set_binding(rt, console, "debug", 3, queue);
-  set_binding(rt, console, "warn", 4, queue);
-  set_binding(rt, console, "error", 5, queue);
+  set_group_binding(rt, console, "log", 1, lifetime);
+  set_group_binding(rt, console, "info", 2, lifetime);
+  set_group_binding(rt, console, "debug", 3, lifetime);
+  set_group_binding(rt, console, "warn", 4, lifetime);
+  set_group_binding(rt, console, "error", 5, lifetime);
   rt.global().setProperty(rt, "console", std::move(console));
 }
 
-void install_pure(jsi::Runtime& rt, const void* queue) {
+void install_pure(jsi::Runtime& rt,
+                  const std::shared_ptr<Lifetime>& lifetime) {
   auto global = rt.global();
-  set_binding(rt, global, "__ibex2_text_encode", 20, queue);
-  set_binding(rt, global, "__ibex2_text_decode", 21, queue);
-  set_binding(rt, global, "__ibex2_text_encode_into", 22, queue);
-  set_binding(rt, global, "__ibex2_url_parse", 30, queue);
-  set_binding(rt, global, "__ibex2_url_set", 32, queue);
-  set_binding(rt, global, "__ibex2_search_params_normalize", 29, queue);
-  set_binding(rt, global, "__ibex2_search_params_get", 31, queue);
-  set_binding(rt, global, "__ibex2_search_params_get_all", 33, queue);
-  set_binding(rt, global, "__ibex2_search_params_has", 34, queue);
-  set_binding(rt, global, "__ibex2_search_params_set", 35, queue);
-  set_binding(rt, global, "__ibex2_search_params_append", 36, queue);
-  set_binding(rt, global, "__ibex2_search_params_delete", 37, queue);
-  set_binding(rt, global, "__ibex2_search_params_sort", 38, queue);
-  set_binding(rt, global, "__ibex2_search_params_entries", 39, queue);
+  set_group_binding(rt, global, "__ibex2_text_encode", 20, lifetime);
+  set_group_binding(rt, global, "__ibex2_text_decode", 21, lifetime);
+  set_group_binding(rt, global, "__ibex2_text_encode_into", 22, lifetime);
+  set_group_binding(rt, global, "__ibex2_url_parse", 30, lifetime);
+  set_group_binding(rt, global, "__ibex2_url_set", 32, lifetime);
+  set_group_binding(rt, global, "__ibex2_search_params_normalize", 29, lifetime);
+  set_group_binding(rt, global, "__ibex2_search_params_get", 31, lifetime);
+  set_group_binding(rt, global, "__ibex2_search_params_get_all", 33, lifetime);
+  set_group_binding(rt, global, "__ibex2_search_params_has", 34, lifetime);
+  set_group_binding(rt, global, "__ibex2_search_params_set", 35, lifetime);
+  set_group_binding(rt, global, "__ibex2_search_params_append", 36, lifetime);
+  set_group_binding(rt, global, "__ibex2_search_params_delete", 37, lifetime);
+  set_group_binding(rt, global, "__ibex2_search_params_sort", 38, lifetime);
+  set_group_binding(rt, global, "__ibex2_search_params_entries", 39, lifetime);
 
   jsi::Object headers(rt);
-  set_binding(rt, headers, "create", 40, queue);
-  set_binding(rt, headers, "append", 41, queue);
-  set_binding(rt, headers, "set", 42, queue);
-  set_binding(rt, headers, "get", 43, queue);
-  set_binding(rt, headers, "has", 44, queue);
-  set_binding(rt, headers, "remove", 45, queue);
-  set_binding(rt, headers, "count", 46, queue);
-  set_binding(rt, headers, "nameAt", 47, queue);
-  set_binding(rt, headers, "valueAt", 48, queue);
-  set_binding(rt, headers, "validName", 49, queue);
-  set_binding(rt, headers, "validValue", 50, queue);
-  set_binding(rt, headers, "free", 51, queue);
+  set_group_binding(rt, headers, "create", 40, lifetime);
+  set_group_binding(rt, headers, "append", 41, lifetime);
+  set_group_binding(rt, headers, "set", 42, lifetime);
+  set_group_binding(rt, headers, "get", 43, lifetime);
+  set_group_binding(rt, headers, "has", 44, lifetime);
+  set_group_binding(rt, headers, "remove", 45, lifetime);
+  set_group_binding(rt, headers, "count", 46, lifetime);
+  set_group_binding(rt, headers, "nameAt", 47, lifetime);
+  set_group_binding(rt, headers, "valueAt", 48, lifetime);
+  set_group_binding(rt, headers, "validName", 49, lifetime);
+  set_group_binding(rt, headers, "validValue", 50, lifetime);
+  set_group_binding(rt, headers, "free", 51, lifetime);
   global.setProperty(rt, "__ibex2_headers", std::move(headers));
 }
 
-void install_timers(jsi::Runtime& rt, const void* queue) {
+void install_timers(jsi::Runtime& rt,
+                    const std::shared_ptr<Lifetime>& lifetime) {
   auto global = rt.global();
-  set_binding(rt, global, "__ibex2_timer_set", 60, queue);
-  set_binding(rt, global, "__ibex2_timer_set_repeating", 61, queue);
-  set_binding(rt, global, "__ibex2_timer_clear", 62, queue);
-  set_binding(rt, global, "__ibex2_performance_now", 63, queue);
+  set_group_binding(rt, global, "__ibex2_timer_set", 60, lifetime);
+  set_group_binding(rt, global, "__ibex2_timer_set_repeating", 61, lifetime);
+  set_group_binding(rt, global, "__ibex2_timer_clear", 62, lifetime);
+  set_group_binding(rt, global, "__ibex2_performance_now", 63, lifetime);
 }
 
-void install_crypto(jsi::Runtime& rt, const void* queue) {
+void install_crypto(jsi::Runtime& rt,
+                    const std::shared_ptr<Lifetime>& lifetime) {
   auto global = rt.global();
-  set_binding(rt, global, "__ibex2_random_uuid", 70, queue);
-  set_binding(rt, global, "__ibex2_get_random_values", 71, queue);
+  set_group_binding(rt, global, "__ibex2_random_uuid", 70, lifetime);
+  set_group_binding(rt, global, "__ibex2_get_random_values", 71, lifetime);
 }
 
-void install_fetch(jsi::Runtime& rt, Adapter& adapter, const void* queue) {
+void install_fetch(jsi::Runtime& rt, Adapter& adapter,
+                   const std::shared_ptr<Lifetime>& lifetime) {
   auto global = rt.global();
-  set_binding(rt, global, "__ibex2_fetch_control", 72, queue);
+  set_group_binding(rt, global, "__ibex2_fetch_control", 72, lifetime);
   global.setProperty(rt, "__ibex2_response_own",
       jsi::Function::createFromHostFunction(rt,
           jsi::PropNameID::forAscii(rt, "__ibex2_response_own"), 2,
-          [queue](jsi::Runtime& r, const jsi::Value&, const jsi::Value* args,
-                  size_t count) -> jsi::Value {
+          [lifetime](jsi::Runtime& r, const jsi::Value&,
+                     const jsi::Value* args, size_t count) -> jsi::Value {
+            const void* queue = lifetime->require(r);
             if (count != 2 || !args[0].isNumber() || !args[1].isObject())
               throw jsi::JSError(r, "response owner needs a handle and a body");
             auto body = args[1].getObject(r);
@@ -503,8 +548,9 @@ void install_fetch(jsi::Runtime& rt, Adapter& adapter, const void* queue) {
                      adapter.async_binding("__ibex2_response_read", 102, nullptr));
   auto field = jsi::Function::createFromHostFunction(rt,
       jsi::PropNameID::forAscii(rt, "__ibex2_response_field"), 3,
-      [queue](jsi::Runtime& r, const jsi::Value&, const jsi::Value* args,
-              size_t count) -> jsi::Value {
+      [lifetime](jsi::Runtime& r, const jsi::Value&,
+                 const jsi::Value* args, size_t count) -> jsi::Value {
+        const void* queue = lifetime->require(r);
         if (count < 2)
           throw jsi::JSError(r, "response field needs a handle and a field id");
         std::vector<std::string> owned;
@@ -570,15 +616,15 @@ void Adapter::install(Groups groups, const void* grants,
       throw std::invalid_argument("Ibex2 binding bytecode is not in scripts() order");
   }
 
-  if (has(groups, GROUP_CONSOLE)) install_console(rt, state_->queue);
-  if (has(groups, GROUP_PURE)) install_pure(rt, state_->queue);
-  if (has(groups, GROUP_TIMERS)) install_timers(rt, state_->queue);
-  if (has(groups, GROUP_CRYPTO)) install_crypto(rt, state_->queue);
-  if (has(groups, GROUP_FETCH)) install_fetch(rt, *this, state_->queue);
+  if (has(groups, GROUP_CONSOLE)) install_console(rt, state_->lifetime);
+  if (has(groups, GROUP_PURE)) install_pure(rt, state_->lifetime);
+  if (has(groups, GROUP_TIMERS)) install_timers(rt, state_->lifetime);
+  if (has(groups, GROUP_CRYPTO)) install_crypto(rt, state_->lifetime);
+  if (has(groups, GROUP_FETCH)) install_fetch(rt, *this, state_->lifetime);
 #if defined(IBEX2_JSI_HAS_INTL)
   if (has(groups, GROUP_INTL)) {
-    ibex2::intl_number_format::install(rt, state_->queue);
-    ibex2::intl_case::install(rt, state_->queue);
+    ibex2::intl_number_format::install(rt, state_->lifetime);
+    ibex2::intl_case::install(rt, state_->lifetime);
   }
 #endif
 
@@ -602,7 +648,8 @@ void Adapter::install(Groups groups, const void* grants,
     if (std::strcmp(script.name, "intl_datetime") == 0) {
       if (!value.isObject() || !value.getObject(rt).isFunction(rt))
         throw jsi::JSError(rt, "DateTimeFormat binding did not evaluate to a factory");
-      auto arguments = ibex2::intl_datetime::factory_arguments(rt, state_->queue);
+      auto arguments =
+          ibex2::intl_datetime::factory_arguments(rt, state_->lifetime);
       value.getObject(rt).getFunction(rt).call(
           rt, static_cast<const jsi::Value*>(arguments.data()), arguments.size());
     }

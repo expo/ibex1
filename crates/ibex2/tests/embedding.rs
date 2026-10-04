@@ -112,7 +112,7 @@ fn compiled_script(name: &str) -> CompiledScript {
 
 struct BareConsumer {
     handle: *mut c_void,
-    _context: Context,
+    context: Option<Context>,
     directory: PathBuf,
 }
 
@@ -145,12 +145,12 @@ impl BareConsumer {
         assert!(!handle.is_null(), "{}", take(error));
         Self {
             handle,
-            _context: context,
+            context: Some(context),
             directory,
         }
     }
 
-    fn eval(&self, source: &str) -> String {
+    fn eval_result(&self, source: &str) -> Result<String, String> {
         let input = self.directory.join("test.js");
         let output = self.directory.join("test.hbc");
         std::fs::write(&input, source).unwrap();
@@ -179,8 +179,20 @@ impl BareConsumer {
         let status =
             unsafe { storage_consumer_eval(self.handle, bytes.as_ptr(), bytes.len(), &mut out) };
         let text = take(out);
-        assert_eq!(status, 0, "{text}");
-        text
+        if status == 0 {
+            Ok(text)
+        } else {
+            Err(text)
+        }
+    }
+
+    fn eval(&self, source: &str) -> String {
+        self.eval_result(source).unwrap()
+    }
+
+    fn detach_and_drop_context(&mut self) {
+        unsafe { storage_consumer_detach(self.handle) };
+        drop(self.context.take());
     }
 }
 
@@ -363,6 +375,26 @@ fn fetch_group_does_not_install_timers_or_crypto() {
         consumer.eval("[typeof fetch, typeof setTimeout, typeof crypto].join(',')"),
         "function,undefined,undefined"
     );
+}
+
+#[test]
+fn retained_pure_bindings_refuse_after_detach_and_context_drop() {
+    let mut consumer = BareConsumer::new(Groups::PURE);
+    assert_eq!(
+        consumer.eval(
+            "globalThis.SavedHeaders = Headers; globalThis.SavedURL = URL; 'saved'"
+        ),
+        "saved"
+    );
+    consumer.detach_and_drop_context();
+
+    for source in ["new SavedHeaders()", "new SavedURL('https://example.com')"] {
+        let error = consumer.eval_result(source).unwrap_err();
+        assert!(
+            error.contains("Ibex2 bindings are detached"),
+            "unexpected detached error for {source}: {error}"
+        );
+    }
 }
 
 #[test]

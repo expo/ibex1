@@ -31,13 +31,16 @@ using namespace facebook;
 using namespace ibex2::jsi_adapter;
 #if defined(__linux__)
 namespace ibex2::intl_number_format {
-void install(jsi::Runtime &, const void *);
+void install(jsi::Runtime &,
+             std::shared_ptr<ibex2::jsi_adapter::Lifetime>);
 }
 namespace ibex2::intl_case {
-void install(jsi::Runtime &, const void *);
+void install(jsi::Runtime &,
+             std::shared_ptr<ibex2::jsi_adapter::Lifetime>);
 }
 namespace ibex2::intl_datetime {
-std::vector<jsi::Value> factory_arguments(jsi::Runtime &, const void *);
+std::vector<jsi::Value> factory_arguments(
+    jsi::Runtime &, std::shared_ptr<ibex2::jsi_adapter::Lifetime>);
 }
 #endif
 extern "C" void ibex2_host_release(Ibex2AbiValue *);
@@ -1132,7 +1135,8 @@ int ibex2_hermes_install_intl_datetime(void *handle,
     if (!value.isObject() || !value.getObject(runtime).isFunction(runtime))
       return 1;
     auto arguments =
-        ibex2::intl_datetime::factory_arguments(runtime, rt->queue);
+        ibex2::intl_datetime::factory_arguments(runtime,
+                                                 rt->bindings->lifetime());
     value.getObject(runtime).getFunction(runtime).call(
         runtime, static_cast<const jsi::Value *>(arguments.data()),
         arguments.size());
@@ -1283,8 +1287,8 @@ int ibex2_hermes_install_stdlib(void *handle) {
     set_binding(runtime, global, "__ibex2_performance_now", 63, rt->queue);
 
 #if defined(__linux__)
-    ibex2::intl_number_format::install(runtime, rt->queue);
-    ibex2::intl_case::install(runtime, rt->queue);
+    ibex2::intl_number_format::install(runtime, rt->bindings->lifetime());
+    ibex2::intl_case::install(runtime, rt->bindings->lifetime());
 #endif
 
     return 0;
