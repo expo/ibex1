@@ -83,6 +83,16 @@ fn run_fetch_module_with_groups(
     source: &str,
     groups: Groups,
 ) -> Vec<String> {
+    run_fetch_module_with_options(name, origin, source, groups, true)
+}
+
+fn run_fetch_module_with_options(
+    name: &str,
+    origin: &str,
+    source: &str,
+    groups: Groups,
+    harden: bool,
+) -> Vec<String> {
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let directory = std::env::temp_dir().join(format!(
         "ibex2-blob-{name}-{}-{}",
@@ -100,7 +110,9 @@ fn run_fetch_module_with_groups(
             ModuleGrants::parse(&format!("[*]\nnet.fetch {origin}\n")).unwrap(),
         )
         .unwrap();
-    runtime.harden().unwrap();
+    if harden {
+        runtime.harden().unwrap();
+    }
     runtime.run_entry("./index.js").unwrap();
     runtime.run_to_quiescence(Duration::from_secs(10));
     let output = runtime
@@ -503,6 +515,35 @@ fn response_blob_uses_fetch_mime_type_extraction() {
         );
         server.join().unwrap();
     }
+}
+
+#[test]
+fn response_blob_copies_into_private_bytes_with_unhardened_intrinsics() {
+    let (origin, server) = capture("text/plain", b"private response bytes");
+    let output = run_fetch_module_with_options(
+        "response-blob-private-buffer",
+        &origin,
+        &format!(
+            r#"
+            let bufferGets = 0;
+            Object.defineProperty(Uint8Array.prototype, 'buffer', {{
+              configurable: true,
+              get() {{ bufferGets++; return new ArrayBuffer(0); }}
+            }});
+            fetch('{origin}/private').then(r => r.blob()).then(async blob => {{
+              console.log(JSON.stringify([bufferGets, blob.size, await blob.text()]));
+            }});
+            "#
+        ),
+        Groups::DEFAULT | Groups::BLOB,
+        false,
+    );
+    assert_eq!(
+        output,
+        [r#"[0,22,"private response bytes"]"#],
+        "response bytes reached a caller-controlled typed-array getter"
+    );
+    server.join().unwrap();
 }
 
 #[test]

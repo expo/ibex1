@@ -2,6 +2,18 @@
 // escape these closures: neither readers nor signals can forge network authority.
 (function (global) {
   "use strict";
+  var ObjectCtor = global.Object;
+  var ObjectGetOwnPropertyDescriptor = ObjectCtor.getOwnPropertyDescriptor;
+  var ObjectGetPrototypeOf = ObjectCtor.getPrototypeOf;
+  var ArrayCtor = global.Array;
+  var ArrayBufferCtor = global.ArrayBuffer;
+  var Uint8ArrayCtor = global.Uint8Array;
+  var ReflectApply = global.Reflect.apply;
+  var TypedArrayPrototype = ObjectGetPrototypeOf(Uint8ArrayCtor.prototype);
+  var typedArrayBuffer = ObjectGetOwnPropertyDescriptor(TypedArrayPrototype, "buffer").get;
+  var typedArrayByteLength = ObjectGetOwnPropertyDescriptor(TypedArrayPrototype, "byteLength").get;
+  var typedArraySet = Uint8ArrayCtor.prototype.set;
+  function call(fn, receiver, args) { return ReflectApply(fn, receiver, args); }
   var brand = global.__ibex2_brand || function (value) { return value; };
   var field = global.__ibex2_response_field;
   var readBody = global.__ibex2_response_read;
@@ -112,7 +124,7 @@
       }
       if (state.terminal) bytes = null;
       if (bytes === null) finish(state);
-      pending.resolve({ value: bytes === null ? undefined : new Uint8Array(bytes), done: bytes === null });
+      pending.resolve({ value: bytes === null ? undefined : new Uint8ArrayCtor(bytes), done: bytes === null });
     }, function (error) {
       if (reader.state === state && !state.terminal) finish(state, error, true);
       if (state.terminal && !state.failed && reader.state === state) pending.resolve({ value: undefined, done: true });
@@ -155,15 +167,25 @@
   Object.defineProperty(Response.prototype, "bodyUsed", { get: function () { return own(responses, this, "Response").used; }, enumerable: true });
   function consume(response) {
     var state = own(responses, response, "Response");
-    if (state.body === null) return Promise.resolve(new ArrayBuffer(0));
+    if (state.body === null) return Promise.resolve(new ArrayBufferCtor(0));
     if (state.used || state.reader) return Promise.reject(new TypeError("body already consumed or locked"));
-    var reader = state.body.getReader(), chunks = [], length = 0;
+    var reader = state.body.getReader(), chunks = new ArrayCtor(), length = 0;
     function next() {
       return reader.read().then(function (chunk) {
-        if (!chunk.done) { chunks.push(chunk.value); length += chunk.value.byteLength; return next(); }
-        var bytes = new Uint8Array(length), offset = 0;
-        chunks.forEach(function (part) { bytes.set(part, offset); offset += part.byteLength; });
-        return bytes.buffer;
+        if (!chunk.done) {
+          chunks[chunks.length] = chunk.value;
+          length += call(typedArrayByteLength, chunk.value, []);
+          return next();
+        }
+        // Do not read `.buffer`, `.byteLength`, or `.set` through caller-
+        // controlled prototypes: this backing store becomes Blob private state.
+        var bytes = new Uint8ArrayCtor(length), offset = 0;
+        for (var i = 0; i < chunks.length; i++) {
+          var part = chunks[i];
+          call(typedArraySet, bytes, [part, offset]);
+          offset += call(typedArrayByteLength, part, []);
+        }
+        return call(typedArrayBuffer, bytes, []);
       });
     }
     return next();
