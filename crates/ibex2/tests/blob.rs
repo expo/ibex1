@@ -374,6 +374,30 @@ fn array_buffer_slice_override_does_not_change_blob_results() {
 }
 
 #[test]
+fn typed_array_buffer_override_cannot_redirect_blob_private_bytes() {
+    let mut runtime = runtime(Groups::PURE | Groups::BLOB, false);
+    runtime
+        .eval(
+            r#"
+            const attacker = new Uint8Array([90, 91, 92]).buffer;
+            Object.defineProperty(Uint8Array.prototype, 'buffer', {
+              configurable: true,
+              get() { return attacker; }
+            });
+            const source = new Uint8Array([1, 2, 3]);
+            const blob = new Blob([source]);
+            new Uint8Array(attacker).fill(255);
+            source.fill(0);
+            globalThis.__result = 'pending';
+            blob.bytes().then(bytes => { __result = Array.from(bytes).join(','); });
+            "#,
+        )
+        .unwrap();
+    runtime.run_to_quiescence(Duration::from_secs(5));
+    assert_eq!(runtime.eval("__result").unwrap(), "1,2,3");
+}
+
+#[test]
 fn blob_group_is_explicit_and_does_not_arrive_with_fetch() {
     let mut runtime = runtime(Groups::PURE | Groups::ABORT | Groups::FETCH, true);
     assert_eq!(

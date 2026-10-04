@@ -148,7 +148,7 @@
     var source = new Uint8ArrayCtor(buffer, offset, length);
     var target = new Uint8ArrayCtor(length);
     for (var i = 0; i < length; i++) target[i] = source[i];
-    return target.buffer;
+    return call(typedBuffer, target, []);
   }
 
   function arrayBufferSpan(value) {
@@ -210,7 +210,7 @@
       var chunk = new Uint8ArrayCtor(chunks[c]);
       for (var j = 0; j < chunk.length; j++) target[at++] = chunk[j];
     }
-    return target.buffer;
+    return call(typedBuffer, target, []);
   }
 
   function initializeBlob(object, parts, options) {
