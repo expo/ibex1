@@ -171,6 +171,55 @@
     error: { get: function () { return eventState(this).error; }, enumerable: true }
   });
 
+  function MessageEvent(type, init) {
+    if (!new.target) throw new TypeError("MessageEvent requires new");
+    if (arguments.length === 0) throw new TypeError("MessageEvent requires a type");
+    init = dictionary(init);
+    initializeEvent(this, type, init);
+    var state = eventState(this);
+    state.data = "data" in init ? init.data : null;
+    state.origin = "origin" in init ? domString(init.origin) : "";
+    state.lastEventId = "lastEventId" in init ? domString(init.lastEventId) : "";
+    state.source = "source" in init ? init.source : null;
+    state.ports = "ports" in init ? Array.from(init.ports) : [];
+  }
+  inherit(MessageEvent);
+  Object.defineProperties(MessageEvent.prototype, {
+    data: { get: function () { return eventState(this).data; }, enumerable: true },
+    origin: { get: function () { return eventState(this).origin; }, enumerable: true },
+    lastEventId: { get: function () { return eventState(this).lastEventId; }, enumerable: true },
+    source: { get: function () { return eventState(this).source; }, enumerable: true },
+    ports: { get: function () { return eventState(this).ports.slice(); }, enumerable: true }
+  });
+  MessageEvent.prototype.initMessageEvent = function (
+      type, bubbles, cancelable, data, origin, lastEventId, source, ports) {
+    var state = eventState(this);
+    if (state.dispatching) return;
+    this.initEvent(type, bubbles, cancelable);
+    state.data = data;
+    state.origin = domString(origin);
+    state.lastEventId = domString(lastEventId);
+    state.source = source == null ? null : source;
+    state.ports = ports == null ? [] : Array.from(ports);
+  };
+
+  function CloseEvent(type, init) {
+    if (!new.target) throw new TypeError("CloseEvent requires new");
+    if (arguments.length === 0) throw new TypeError("CloseEvent requires a type");
+    init = dictionary(init);
+    initializeEvent(this, type, init);
+    var state = eventState(this);
+    state.wasClean = !!init.wasClean;
+    state.code = "code" in init ? Number(init.code) & 0xffff : 0;
+    state.reason = "reason" in init ? domString(init.reason) : "";
+  }
+  inherit(CloseEvent);
+  Object.defineProperties(CloseEvent.prototype, {
+    wasClean: { get: function () { return eventState(this).wasClean; }, enumerable: true },
+    code: { get: function () { return eventState(this).code; }, enumerable: true },
+    reason: { get: function () { return eventState(this).reason; }, enumerable: true }
+  });
+
   function PromiseRejectionEvent(type, init) {
     if (!new.target) throw new TypeError("PromiseRejectionEvent requires new");
     if (arguments.length < 2 || init == null || !("promise" in Object(init))) {
@@ -390,6 +439,8 @@
   global.EventTarget = EventTarget;
   global.CustomEvent = CustomEvent;
   global.ErrorEvent = ErrorEvent;
+  global.MessageEvent = MessageEvent;
+  global.CloseEvent = CloseEvent;
   global.PromiseRejectionEvent = PromiseRejectionEvent;
   global.reportError = reportError;
   global.self = global;
@@ -409,7 +460,8 @@
 
   if (typeof Symbol === "function" && Symbol.toStringTag) {
     [[Event, "Event"], [EventTarget, "EventTarget"], [CustomEvent, "CustomEvent"],
-     [ErrorEvent, "ErrorEvent"], [PromiseRejectionEvent, "PromiseRejectionEvent"]]
+     [ErrorEvent, "ErrorEvent"], [MessageEvent, "MessageEvent"],
+     [CloseEvent, "CloseEvent"], [PromiseRejectionEvent, "PromiseRejectionEvent"]]
       .forEach(function (entry) {
         Object.defineProperty(entry[0].prototype, Symbol.toStringTag, {
           value: entry[1], configurable: true

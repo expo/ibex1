@@ -22,9 +22,9 @@ pub mod rustls_http;
 pub use rustls_http::RustlsHttpTransport;
 // A listening WebSocket (LLP 0059.000 §3.12): the platform's own on Apple,
 // TCP and rustls elsewhere (and in tests everywhere).
-#[cfg(target_vendor = "apple")]
+#[cfg(all(feature = "websocket", target_vendor = "apple"))]
 pub mod darwin_websocket;
-#[cfg(any(not(target_vendor = "apple"), test))]
+#[cfg(all(feature = "websocket", any(not(target_vendor = "apple"), test)))]
 pub mod websocket;
 
 /// The transport this build uses by default.

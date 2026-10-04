@@ -109,6 +109,8 @@ pub enum HostError {
     Denied { capability: &'static str },
     /// The arguments did not match the operation's contract.
     InvalidArgument(String),
+    /// The requested family was deliberately omitted from this build.
+    Unavailable { feature: &'static str },
     /// The operation's own error, e.g. malformed base64 or an unparseable URL.
     Failed(String),
 }
@@ -118,6 +120,9 @@ impl std::fmt::Display for HostError {
         match self {
             HostError::Denied { capability } => write!(f, "denied: {capability}"),
             HostError::InvalidArgument(detail) => write!(f, "invalid argument: {detail}"),
+            HostError::Unavailable { feature } => {
+                write!(f, "unavailable: the {feature} feature is not enabled")
+            }
             HostError::Failed(detail) => write!(f, "{detail}"),
         }
     }

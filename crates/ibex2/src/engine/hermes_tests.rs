@@ -135,6 +135,8 @@ fn all_groups_preserve_the_shipping_global_insertion_order() {
             "EventTarget",
             "CustomEvent",
             "ErrorEvent",
+            "MessageEvent",
+            "CloseEvent",
             "PromiseRejectionEvent",
             "reportError",
             "self",
@@ -148,6 +150,306 @@ fn all_groups_preserve_the_shipping_global_insertion_order() {
             "AbortSignal",
             "AbortController",
         ]
+    );
+}
+
+#[cfg(feature = "websocket")]
+fn websocket_lifecycle(transport: Box<dyn crate::stdlib::websocket::SocketTransport>) {
+    let (port, seen) = crate::transport::websocket::tests::peer();
+    let grants =
+        crate::grant::GrantSet::parse(&format!("net.websocket ws://127.0.0.1:{port}\n")).unwrap();
+    let bindings = host::Host::new()
+        .with_socket_transport(transport)
+        .endow(grants);
+    let context = crate::bindings::Context::from_bindings(&bindings);
+    let mut rt = Hermes::new(DynamicCode::Closed).expect("runtime");
+    let groups = crate::bindings::Groups::PURE
+        | crate::bindings::Groups::EVENTS
+        | crate::bindings::Groups::WEBSOCKET;
+    rt.install_runtime(groups, &context).unwrap();
+    rt.harden().unwrap();
+    rt.eval(&format!(
+        r#"
+        var socketLog = [];
+        var socket = new WebSocket('http://127.0.0.1:{port}/protocol', ['chat']);
+        socketLog.push(['construct', socket.url, socket.readyState, socket.binaryType]);
+        try {{ socket.send('too soon'); }} catch (error) {{
+          socketLog.push(['connecting', error.name]);
+        }}
+        socket.binaryType = 'arraybuffer';
+        socket.binaryType = 'invalid';
+        socket.onopen = function (event) {{
+          socketLog.push(['open', socket.readyState, socket.protocol, event.isTrusted]);
+          var closeErrors = [];
+          try {{ socket.close(1001); }} catch (error) {{ closeErrors.push(error.name); }}
+          try {{ socket.close(3000, 'é'.repeat(62)); }} catch (error) {{ closeErrors.push(error.name); }}
+          socketLog.push(['close-validation'].concat(closeErrors));
+          socket.send('hi');
+          var big = new Uint8Array(4 << 20);
+          socket.send(big);
+          socketLog.push(['queued', socket.bufferedAmount]);
+        }};
+        socket.onmessage = function (event) {{
+          if (typeof event.data === 'string') {{
+            socketLog.push(['text', event.data, event.isTrusted]);
+            return;
+          }}
+          socketLog.push(['binary', event.data instanceof ArrayBuffer,
+                          event.data.byteLength, socket.bufferedAmount, event.isTrusted]);
+          socket.binaryType = 'blob';
+          socket.send(new Uint8Array([1, 2, 3]));
+          socket.onmessage = function (second) {{
+            socketLog.push(['blob-fallback', socket.binaryType,
+                            second.data instanceof ArrayBuffer, second.data.byteLength]);
+            socket.close(3001, 'done');
+          }};
+        }};
+        socket.onerror = function () {{ socketLog.push(['error']); }};
+        socket.onclose = function (event) {{
+          var before = socket.bufferedAmount;
+          socket.send('late');
+          socketLog.push(['close', event.code, event.reason, event.wasClean,
+                          event.isTrusted, socket.readyState,
+                          socket.bufferedAmount - before]);
+        }};
+        "#
+    ))
+    .unwrap();
+    rt.run_to_quiescence(std::time::Duration::from_secs(30));
+    let raw = rt.eval("JSON.stringify(socketLog)").unwrap();
+    let log: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let entries = log.as_array().unwrap();
+    assert_eq!(entries.len(), 9, "incomplete WebSocket lifecycle: {raw}");
+    assert_eq!(entries[0][0], "construct");
+    assert_eq!(entries[0][2], 0);
+    assert_eq!(entries[0][3], "blob");
+    assert_eq!(
+        entries[1],
+        serde_json::json!(["connecting", "InvalidStateError"])
+    );
+    assert_eq!(entries[2], serde_json::json!(["open", 1, "chat", true]));
+    assert_eq!(
+        entries[3],
+        serde_json::json!(["close-validation", "InvalidAccessError", "SyntaxError"])
+    );
+    assert_eq!(
+        entries[4],
+        serde_json::json!(["queued", entries[4][1].clone()])
+    );
+    assert!(entries[4][1].as_u64().unwrap_or(0) > 0);
+    assert_eq!(entries[5], serde_json::json!(["text", "hi", true]));
+    assert_eq!(entries[6][0], "binary");
+    assert_eq!(entries[6][1], true);
+    assert_eq!(entries[6][2], 4 << 20);
+    assert_eq!(
+        entries[6][3], 0,
+        "bufferedAmount drained before the echo event"
+    );
+    assert_eq!(entries[6][4], true);
+    assert_eq!(
+        entries[7],
+        serde_json::json!(["blob-fallback", "blob", true, 3])
+    );
+    assert_eq!(
+        entries[8],
+        serde_json::json!(["close", 3001, "done", true, true, 3, 4])
+    );
+    assert!(!entries.iter().any(|entry| entry[0] == "error"));
+
+    assert_eq!(
+        seen.recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap(),
+        "/protocol message 1 2"
+    );
+    assert_eq!(
+        seen.recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap(),
+        format!("/protocol message 2 {}", 4 << 20)
+    );
+    assert_eq!(
+        seen.recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap(),
+        "/protocol message 2 3"
+    );
+    assert_eq!(
+        seen.recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap(),
+        "/protocol close 3001 done"
+    );
+}
+
+#[cfg(feature = "websocket")]
+#[test]
+fn javascript_websocket_lifecycle_uses_the_platform_transport() {
+    websocket_lifecycle(crate::stdlib::websocket::default_transport());
+}
+
+#[cfg(feature = "websocket")]
+#[test]
+fn javascript_websocket_constructor_validates_before_opening() {
+    let context = crate::bindings::Context::new(crate::grant::GrantSet::none());
+    let mut rt = Hermes::new(DynamicCode::Closed).expect("runtime");
+    let groups = crate::bindings::Groups::PURE
+        | crate::bindings::Groups::EVENTS
+        | crate::bindings::Groups::WEBSOCKET;
+    rt.install_runtime(groups, &context).unwrap();
+    assert_eq!(
+        rt.eval(
+            r#"
+            function thrown(fn) { try { fn(); return 'none'; } catch (error) { return error.name; } }
+            [
+              thrown(function () { WebSocket('ws://example.com/'); }),
+              thrown(function () { new WebSocket('ftp://example.com/'); }),
+              thrown(function () { new WebSocket('ws://example.com/#'); }),
+              thrown(function () { new WebSocket('ws://user@example.com/'); }),
+              thrown(function () { new WebSocket('ws://example.com/', ['chat', 'chat']); }),
+              thrown(function () { new WebSocket('ws://example.com/', ['not a token']); })
+            ].join('|')
+            "#,
+        )
+        .unwrap(),
+        "TypeError|SyntaxError|SyntaxError|SyntaxError|SyntaxError|SyntaxError"
+    );
+}
+
+#[cfg(feature = "websocket")]
+#[test]
+fn javascript_websocket_denial_is_error_then_close_without_transport() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Counting(std::sync::Arc<AtomicUsize>);
+    impl crate::stdlib::websocket::SocketTransport for Counting {
+        fn connect(
+            &self,
+            _: &url::Url,
+            _: usize,
+            _: &crate::stdlib::abort::AbortSignal,
+        ) -> Result<Box<dyn crate::stdlib::websocket::MessageSource>, crate::boundary::HostError>
+        {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(crate::boundary::HostError::Failed(
+                "transport was reached".into(),
+            ))
+        }
+    }
+
+    let opens = std::sync::Arc::new(AtomicUsize::new(0));
+    let bindings = host::Host::new()
+        .with_socket_transport(Box::new(Counting(std::sync::Arc::clone(&opens))))
+        .endow(crate::grant::GrantSet::none());
+    let context = crate::bindings::Context::from_bindings(&bindings);
+    let mut rt = Hermes::new(DynamicCode::Closed).expect("runtime");
+    let groups = crate::bindings::Groups::PURE
+        | crate::bindings::Groups::EVENTS
+        | crate::bindings::Groups::WEBSOCKET;
+    rt.install_runtime(groups, &context).unwrap();
+    rt.eval(
+        r#"
+        var deniedLog = [];
+        var denied = new WebSocket('ws://127.0.0.1:9/');
+        denied.onerror = function () { deniedLog.push('error'); };
+        denied.onclose = function (event) {
+          deniedLog.push('close:' + event.code + ':' + event.wasClean);
+        };
+        "#,
+    )
+    .unwrap();
+    rt.run_to_quiescence(std::time::Duration::from_secs(2));
+    assert_eq!(
+        rt.eval("deniedLog.join('|')").unwrap(),
+        "error|close:1006:false"
+    );
+    assert_eq!(opens.load(Ordering::SeqCst), 0);
+}
+
+#[cfg(all(feature = "websocket", target_vendor = "apple"))]
+#[test]
+fn javascript_websocket_lifecycle_also_uses_portable_rustls_transport_on_apple() {
+    websocket_lifecycle(Box::new(
+        crate::transport::websocket::TcpSocketTransport::new(),
+    ));
+}
+
+#[cfg(not(feature = "websocket"))]
+#[test]
+fn javascript_websocket_reports_a_build_without_the_family() {
+    let context = crate::bindings::Context::new(crate::grant::GrantSet::none());
+    let mut rt = Hermes::new(DynamicCode::Closed).expect("runtime");
+    let groups = crate::bindings::Groups::PURE
+        | crate::bindings::Groups::EVENTS
+        | crate::bindings::Groups::WEBSOCKET;
+    rt.install_runtime(groups, &context).unwrap();
+    assert_eq!(
+        rt.eval(
+            "try { new WebSocket('ws://example.com/'); 'no throw'; } \
+             catch (error) { error.name + '|' + error.message; }"
+        )
+        .unwrap(),
+        "NotSupportedError|WebSocket was omitted from this build"
+    );
+}
+
+#[cfg(feature = "websocket")]
+#[test]
+fn websocket_settlement_and_timer_callbacks_keep_the_one_host_fifo_order() {
+    use std::time::{Duration, Instant};
+
+    let (socket_port, _socket_seen) = crate::transport::websocket::tests::peer();
+    let grants =
+        crate::grant::GrantSet::parse(&format!("net.websocket ws://127.0.0.1:{socket_port}\n"))
+            .unwrap();
+    let bindings = host::Host::new()
+        .with_socket_transport(Box::new(
+            crate::transport::websocket::TcpSocketTransport::new(),
+        ))
+        .endow(grants);
+    let context = crate::bindings::Context::from_bindings(&bindings);
+    let groups = crate::bindings::Groups::PURE
+        | crate::bindings::Groups::CONSOLE
+        | crate::bindings::Groups::TIMERS
+        | crate::bindings::Groups::EVENTS
+        | crate::bindings::Groups::WEBSOCKET;
+    let mut rt = Hermes::new(DynamicCode::Closed).expect("runtime");
+    rt.install_runtime(groups, &context).unwrap();
+    rt.harden().unwrap();
+    // Every async family, including fetch, enters the host FIFO as this same
+    // Settlement variant; the echo seam lets this test control it directly.
+    assert!(rt.install_async_echo());
+    rt.eval(&format!(
+        r#"
+        var fifoOrder = [];
+        var fifoSocket = new WebSocket('ws://127.0.0.1:{socket_port}/echo');
+        fifoSocket.onopen = function () {{ fifoOrder.push('websocket'); }};
+        __ibex2_async_echo('settlement').then(function () {{
+          fifoOrder.push('settlement');
+        }});
+        "#
+    ))
+    .unwrap();
+
+    let state = unsafe { super::ibex2_hermes_state(rt.handle).as_ref() }.unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while state.queue.len() < 2 && Instant::now() < deadline {
+        state.queue.wait(Duration::from_millis(20));
+    }
+    assert_eq!(
+        state.queue.len(),
+        2,
+        "event and settlement were both admitted"
+    );
+
+    rt.eval("setTimeout(function () { fifoOrder.push('timer'); }, 0)")
+        .unwrap();
+    assert_eq!(rt.pump().unwrap(), 1);
+    assert_eq!(rt.pump().unwrap(), 1);
+    assert_eq!(rt.pump().unwrap(), 1);
+    let order = rt.eval("fifoOrder.join(',')").unwrap();
+    assert!(
+        matches!(
+            order.as_str(),
+            "websocket,settlement,timer" | "settlement,websocket,timer"
+        ),
+        "the two off-thread admissions keep their order and the later timer stays last: {order}"
     );
 }
 

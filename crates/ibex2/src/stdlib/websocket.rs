@@ -1,30 +1,67 @@
-//! A WebSocket that only listens (LLP 0059.000 §3.12, the receive-only
-//! subset built first): the socket is opened by the host, admitted by `net.websocket
-//! <origin>`, and read one message at a time. Nothing is sent but what the
-//! protocol requires (the handshake, a pong, the closing handshake): the
-//! consumer has no outbound frame.
+//! A WebSocket client shared by Rust consumers and the JavaScript binding.
 //!
-//! The same split as `fetch` (LLP 0057 §3): the grant check and the message
-//! vocabulary are here, identical everywhere; the platform owns the socket,
-//! TLS and proxies (`NSURLSessionWebSocketTask` on Apple, rustls elsewhere).
+//! The receive-only API (`open`, `MessageSource::next`, and `Incoming`) stays
+//! source-compatible. Sending and event watching are additive: transports
+//! expose a clonable sender, while a watch publishes the WHATWG lifecycle over
+//! L3's executor-independent `Receiver`/`Subscription` pair.
+//!
+//! @ref LLP 0059.000#312-websocket--delegating-capability-bearing-author-required — one WebSocket contract on both doors
+//! @ref LLP 0057.000#l4--websocket — Apple keeps its platform task; portable framing stays in Rust
+
 use crate::boundary::HostError;
 use crate::grant::{GrantSet, Operation, Origin};
-use crate::stdlib::abort::AbortSignal;
+use crate::stdlib::abort::{AbortController, AbortSignal};
+use crate::stdlib::events::Subscription;
+use std::sync::{mpsc, Arc, Mutex};
 
-/// What a socket said next.
+const CONNECTING: u8 = 0;
+const OPEN: u8 = 1;
+const CLOSING: u8 = 2;
+const CLOSED: u8 = 3;
+
+/// What the receive-only Rust API observes next.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Incoming {
     /// One whole text message (fragments joined), UTF-8.
     Text(String),
-    /// A binary message: refused by consumers that take text, so its bytes
-    /// are never read. The length is what the first frame declared.
+    /// A binary message. This legacy variant intentionally carries only the
+    /// length; [`MessageSource::next_event`] is the payload-bearing path.
     Binary(usize),
     /// A message over the consumer's ceiling; the socket is done.
     TooLarge,
     /// The socket closed: the far side's close code and reason, or 1006
-    /// when the connection ended without a closing handshake (as a browser
-    /// reports it).
+    /// when the connection ended without a closing handshake.
     Closed { code: u16, reason: String },
+}
+
+/// A complete WebSocket message for event consumers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Message {
+    Text(String),
+    Binary(Vec<u8>),
+}
+
+/// The events produced by [`watch`], in transport order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Event {
+    Open {
+        protocol: String,
+    },
+    Message(Message),
+    Error(String),
+    Close {
+        code: u16,
+        reason: String,
+        was_clean: bool,
+    },
+}
+
+/// The concurrently usable sending half of an open transport socket.
+pub trait MessageSender: Send + Sync {
+    fn send_text(&self, text: &str) -> Result<(), HostError>;
+    fn send_binary(&self, bytes: &[u8]) -> Result<(), HostError>;
+    fn close(&self, code: Option<u16>, reason: &str) -> Result<(), HostError>;
+    fn buffered_amount(&self) -> usize;
 }
 
 /// An open socket. Dropping it closes the connection.
@@ -32,11 +69,71 @@ pub trait MessageSource: Send {
     /// Block for what comes next. An `Err` is an abort or a protocol
     /// violation; every other end is `Closed`.
     fn next(&mut self) -> Result<Incoming, HostError>;
+
+    /// The payload-bearing receive path used by watches. Receive-only custom
+    /// transports remain source-compatible; they get a precise refusal if a
+    /// binary payload is unavailable through their legacy `next` method.
+    fn next_event(&mut self) -> Result<Event, HostError> {
+        match self.next()? {
+            Incoming::Text(text) => Ok(Event::Message(Message::Text(text))),
+            Incoming::Binary(_) => Err(HostError::Failed(
+                "the socket transport did not expose binary message bytes".into(),
+            )),
+            Incoming::TooLarge => Err(HostError::Failed(
+                "the socket message exceeded its configured limit".into(),
+            )),
+            Incoming::Closed { code, reason } => Ok(Event::Close {
+                code,
+                reason,
+                was_clean: code != 1006,
+            }),
+        }
+    }
+
+    /// A sending half usable while another thread blocks in `next_event`.
+    /// Existing receive-only transports may omit it.
+    fn sender(&self) -> Option<Arc<dyn MessageSender>> {
+        None
+    }
+
+    /// The subprotocol selected by the peer, or the empty string.
+    fn protocol(&self) -> &str {
+        ""
+    }
+
+    fn send_text(&self, text: &str) -> Result<(), HostError> {
+        self.sender()
+            .ok_or(HostError::Unavailable {
+                feature: "WebSocket send on this transport",
+            })?
+            .send_text(text)
+    }
+
+    fn send_binary(&self, bytes: &[u8]) -> Result<(), HostError> {
+        self.sender()
+            .ok_or(HostError::Unavailable {
+                feature: "WebSocket send on this transport",
+            })?
+            .send_binary(bytes)
+    }
+
+    fn close(&self, code: u16, reason: &str) -> Result<(), HostError> {
+        validate_close(code, reason)?;
+        self.sender()
+            .ok_or(HostError::Unavailable {
+                feature: "WebSocket send on this transport",
+            })?
+            .close(Some(code), reason)
+    }
+
+    fn buffered_amount(&self) -> usize {
+        self.sender().map_or(0, |sender| sender.buffered_amount())
+    }
 }
 
 /// The platform half: open `url` (already admitted, `ws` or `wss`) and
-/// complete the opening handshake. A refused handshake is an `Err` naming
-/// the status. Aborting `signal` interrupts the open and every later read.
+/// complete the opening handshake. Aborting `signal` interrupts the open and
+/// every later read.
 pub trait SocketTransport: Send + Sync {
     fn connect(
         &self,
@@ -44,21 +141,28 @@ pub trait SocketTransport: Send + Sync {
         max_message: usize,
         signal: &AbortSignal,
     ) -> Result<Box<dyn MessageSource>, HostError>;
+
+    /// Additive protocol-aware open. A receive-only custom transport keeps
+    /// working for the empty protocol list.
+    fn connect_with_protocols(
+        &self,
+        url: &url::Url,
+        max_message: usize,
+        signal: &AbortSignal,
+        protocols: &[String],
+    ) -> Result<Box<dyn MessageSource>, HostError> {
+        if !protocols.is_empty() {
+            return Err(HostError::Unavailable {
+                feature: "WebSocket subprotocols on this transport",
+            });
+        }
+        self.connect(url, max_message, signal)
+    }
 }
 
-/// Admit and open a socket to `url`, whose messages may be up to
-/// `max_message` bytes. The grant is checked on every open, a reconnect
-/// included; a WebSocket handshake follows no redirect.
-pub fn open(
-    transport: &dyn SocketTransport,
-    grants: &GrantSet,
-    url: &str,
-    max_message: usize,
-    signal: &AbortSignal,
-) -> Result<Box<dyn MessageSource>, HostError> {
-    signal.check()?;
-    let parsed = url::Url::parse(url)
-        .map_err(|e| HostError::Failed(format!("SyntaxError: invalid socket URL: {e}")))?;
+fn parse_and_admit(grants: &GrantSet, value: &str) -> Result<url::Url, HostError> {
+    let parsed = url::Url::parse(value)
+        .map_err(|error| HostError::Failed(format!("SyntaxError: invalid socket URL: {error}")))?;
     if !matches!(parsed.scheme(), "ws" | "wss") || parsed.fragment().is_some() {
         return Err(HostError::Failed(
             "SyntaxError: a socket URL is ws: or wss: with no fragment".into(),
@@ -68,21 +172,392 @@ pub fn open(
         .host_str()
         .ok_or_else(|| HostError::Failed("SyntaxError: socket URL has no host".into()))?;
     let port = parsed.port_or_known_default().unwrap_or(0);
-    let origin = Origin::new(parsed.scheme(), host, port);
-    crate::boundary::admit(grants, &Operation::WebSocket { origin })?;
-    transport.connect(&parsed, max_message, signal)
+    crate::boundary::admit(
+        grants,
+        &Operation::WebSocket {
+            origin: Origin::new(parsed.scheme(), host, port),
+        },
+    )?;
+    Ok(parsed)
 }
 
-/// The `Sec-WebSocket-Accept` a server answers `key` with (RFC 6455 §4.2.2),
-/// for a client checking a handshake and a test peer making one.
+/// Validate the `Sec-WebSocket-Protocol` values before a platform sees them.
+/// RFC 6455 uses the HTTP token grammar and WHATWG rejects duplicates.
+pub fn validate_protocols(protocols: &[String]) -> Result<(), HostError> {
+    fn token(value: &str) -> bool {
+        !value.is_empty()
+            && value.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric()
+                    || matches!(
+                        byte,
+                        b'!' | b'#'
+                            | b'$'
+                            | b'%'
+                            | b'&'
+                            | b'\''
+                            | b'*'
+                            | b'+'
+                            | b'-'
+                            | b'.'
+                            | b'^'
+                            | b'_'
+                            | b'`'
+                            | b'|'
+                            | b'~'
+                    )
+            })
+    }
+    for (index, protocol) in protocols.iter().enumerate() {
+        if !token(protocol) {
+            return Err(HostError::InvalidArgument(
+                "a WebSocket protocol must be a non-empty HTTP token".into(),
+            ));
+        }
+        if protocols[..index]
+            .iter()
+            .any(|other| other.eq_ignore_ascii_case(protocol))
+        {
+            return Err(HostError::InvalidArgument(
+                "WebSocket protocols must not contain duplicates".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Admit and open a socket to `url`, preserving the receive-only Rust API.
+pub fn open(
+    transport: &dyn SocketTransport,
+    grants: &GrantSet,
+    url: &str,
+    max_message: usize,
+    signal: &AbortSignal,
+) -> Result<Box<dyn MessageSource>, HostError> {
+    open_with_protocols(transport, grants, url, max_message, signal, &[])
+}
+
+/// Protocol-aware spelling used by the event and JavaScript projections.
+pub fn open_with_protocols(
+    transport: &dyn SocketTransport,
+    grants: &GrantSet,
+    url: &str,
+    max_message: usize,
+    signal: &AbortSignal,
+    protocols: &[String],
+) -> Result<Box<dyn MessageSource>, HostError> {
+    signal.check()?;
+    validate_protocols(protocols)?;
+    let parsed = parse_and_admit(grants, url)?;
+    transport.connect_with_protocols(&parsed, max_message, signal, protocols)
+}
+
+/// A watch's sending/control handle. It is usable before the opening worker
+/// finishes so `close()` can cancel a CONNECTING socket.
+#[derive(Clone)]
+pub struct Connection {
+    inner: Arc<ConnectionState>,
+}
+
+struct ConnectionState {
+    phase: std::sync::atomic::AtomicU8,
+    sender: Mutex<Option<Arc<dyn MessageSender>>>,
+    discarded: std::sync::atomic::AtomicUsize,
+    abort: AbortController,
+    protocol: Mutex<String>,
+    close: Mutex<(u16, String, bool)>,
+}
+
+impl Connection {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(ConnectionState {
+                phase: std::sync::atomic::AtomicU8::new(CONNECTING),
+                sender: Mutex::new(None),
+                discarded: std::sync::atomic::AtomicUsize::new(0),
+                abort: AbortController::new(),
+                protocol: Mutex::new(String::new()),
+                close: Mutex::new((1006, String::new(), false)),
+            }),
+        }
+    }
+
+    pub fn ready_state(&self) -> u8 {
+        self.inner.phase.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub fn protocol(&self) -> String {
+        self.inner.protocol.lock().unwrap().clone()
+    }
+
+    pub fn close_info(&self) -> (u16, String, bool) {
+        self.inner.close.lock().unwrap().clone()
+    }
+
+    pub fn buffered_amount(&self) -> usize {
+        let transport = self
+            .inner
+            .sender
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map_or(0, |sender| sender.buffered_amount());
+        transport.saturating_add(
+            self.inner
+                .discarded
+                .load(std::sync::atomic::Ordering::Acquire),
+        )
+    }
+
+    pub fn send_text(&self, text: &str) -> Result<(), HostError> {
+        self.send(text.as_bytes(), |sender| sender.send_text(text))
+    }
+
+    pub fn send_binary(&self, bytes: &[u8]) -> Result<(), HostError> {
+        self.send(bytes, |sender| sender.send_binary(bytes))
+    }
+
+    fn send(
+        &self,
+        bytes: &[u8],
+        send: impl FnOnce(&dyn MessageSender) -> Result<(), HostError>,
+    ) -> Result<(), HostError> {
+        match self.ready_state() {
+            CONNECTING => Err(HostError::Failed(
+                "InvalidStateError: the WebSocket is still connecting".into(),
+            )),
+            OPEN => {
+                let sender = self.inner.sender.lock().unwrap();
+                send(
+                    sender.as_deref().ok_or_else(|| {
+                        HostError::Failed("the socket sender is not ready".into())
+                    })?,
+                )
+            }
+            _ => {
+                saturating_add(&self.inner.discarded, bytes.len());
+                Ok(())
+            }
+        }
+    }
+
+    pub fn close(&self, code: Option<u16>, reason: &str) -> Result<(), HostError> {
+        if let Some(code) = code {
+            validate_close(code, reason)?;
+        } else if !reason.is_empty() {
+            return Err(HostError::InvalidArgument(
+                "a WebSocket close reason requires a close code".into(),
+            ));
+        }
+        loop {
+            let phase = self.ready_state();
+            if phase >= CLOSING {
+                return Ok(());
+            }
+            if self
+                .inner
+                .phase
+                .compare_exchange(
+                    phase,
+                    CLOSING,
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                if phase == CONNECTING {
+                    self.inner.abort.abort();
+                    return Ok(());
+                }
+                return self
+                    .inner
+                    .sender
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .ok_or_else(|| HostError::Failed("the socket sender is not ready".into()))?
+                    .close(code, reason);
+            }
+        }
+    }
+
+    pub fn cancel(&self) {
+        self.inner
+            .phase
+            .store(CLOSED, std::sync::atomic::Ordering::Release);
+        self.inner.abort.abort();
+    }
+
+    fn finish(&self, code: u16, reason: String, clean: bool) {
+        *self.inner.close.lock().unwrap() = (code, reason, clean);
+        self.inner
+            .phase
+            .store(CLOSED, std::sync::atomic::Ordering::Release);
+    }
+}
+
+fn saturating_add(amount: &std::sync::atomic::AtomicUsize, bytes: usize) {
+    let _ = amount.fetch_update(
+        std::sync::atomic::Ordering::AcqRel,
+        std::sync::atomic::Ordering::Acquire,
+        |current| Some(current.saturating_add(bytes)),
+    );
+}
+
+/// Start one event-producing socket. Admission happens before the worker is
+/// spawned; a denial therefore publishes `error`, then `close(1006)`, without
+/// touching the transport.
+pub(crate) fn watch_with(
+    transport: Arc<dyn SocketTransport>,
+    grants: Arc<GrantSet>,
+    url: String,
+    protocols: Vec<String>,
+    max_message: usize,
+    publish: Arc<dyn Fn(Event) -> bool + Send + Sync>,
+) -> (Connection, Subscription) {
+    let connection = Connection::new();
+    let cancel = connection.clone();
+    let subscription = Subscription::new(move || cancel.cancel());
+    let parsed = match validate_protocols(&protocols).and_then(|()| parse_and_admit(&grants, &url))
+    {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            publish(Event::Error(error.to_string()));
+            connection.finish(1006, String::new(), false);
+            publish(Event::Close {
+                code: 1006,
+                reason: String::new(),
+                was_clean: false,
+            });
+            return (connection, subscription);
+        }
+    };
+
+    let worker_connection = connection.clone();
+    std::thread::spawn(move || {
+        let mut source = match transport.connect_with_protocols(
+            &parsed,
+            max_message,
+            &worker_connection.inner.abort.signal(),
+            &protocols,
+        ) {
+            Ok(source) => source,
+            Err(error) => {
+                publish(Event::Error(error.to_string()));
+                worker_connection.finish(1006, String::new(), false);
+                publish(Event::Close {
+                    code: 1006,
+                    reason: String::new(),
+                    was_clean: false,
+                });
+                return;
+            }
+        };
+        let sender = source.sender();
+        let protocol = source.protocol().to_string();
+        *worker_connection.inner.sender.lock().unwrap() = sender;
+        *worker_connection.inner.protocol.lock().unwrap() = protocol.clone();
+        if worker_connection
+            .inner
+            .phase
+            .compare_exchange(
+                CONNECTING,
+                OPEN,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_err()
+        {
+            drop(source);
+            worker_connection.finish(1006, String::new(), false);
+            publish(Event::Close {
+                code: 1006,
+                reason: String::new(),
+                was_clean: false,
+            });
+            return;
+        }
+        if !publish(Event::Open { protocol }) {
+            worker_connection.cancel();
+            return;
+        }
+        loop {
+            match source.next_event() {
+                Ok(Event::Message(message)) => {
+                    if !publish(Event::Message(message)) {
+                        worker_connection.cancel();
+                        return;
+                    }
+                }
+                Ok(Event::Close {
+                    code,
+                    reason,
+                    was_clean,
+                }) => {
+                    if code == 1006 {
+                        publish(Event::Error("the socket closed abnormally".into()));
+                    }
+                    worker_connection.finish(code, reason.clone(), was_clean);
+                    publish(Event::Close {
+                        code,
+                        reason,
+                        was_clean,
+                    });
+                    return;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    publish(Event::Error(error.to_string()));
+                    worker_connection.finish(1006, String::new(), false);
+                    publish(Event::Close {
+                        code: 1006,
+                        reason: String::new(),
+                        was_clean: false,
+                    });
+                    return;
+                }
+            }
+        }
+    });
+    (connection, subscription)
+}
+
+/// Watch a socket from Rust without selecting an executor or future type.
+pub fn watch(
+    transport: Arc<dyn SocketTransport>,
+    grants: Arc<GrantSet>,
+    url: String,
+    protocols: Vec<String>,
+    max_message: usize,
+) -> (Connection, mpsc::Receiver<Event>, Subscription) {
+    let (sender, receiver) = mpsc::channel();
+    let publish = Arc::new(move |event| sender.send(event).is_ok());
+    let (connection, subscription) =
+        watch_with(transport, grants, url, protocols, max_message, publish);
+    (connection, receiver, subscription)
+}
+
+pub fn validate_close(code: u16, reason: &str) -> Result<(), HostError> {
+    if code != 1000 && !(3000..=4999).contains(&code) {
+        return Err(HostError::InvalidArgument(
+            "a WebSocket close code is 1000 or in 3000..=4999".into(),
+        ));
+    }
+    if reason.len() > 123 {
+        return Err(HostError::InvalidArgument(
+            "a WebSocket close reason is at most 123 UTF-8 bytes".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// The `Sec-WebSocket-Accept` a server answers `key` with (RFC 6455 §4.2.2).
 pub fn accept_key(key: &str) -> String {
     use base64::Engine as _;
     let input = format!("{key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
     base64::engine::general_purpose::STANDARD.encode(sha1(input.as_bytes()))
 }
 
-/// SHA-1 (FIPS 180-4), for the one place RFC 6455 needs it: the handshake's
-/// accept key. Not used for anything that needs a secure hash.
+/// SHA-1 (FIPS 180-4), used only for RFC 6455's opening handshake.
 pub(crate) fn sha1(input: &[u8]) -> [u8; 20] {
     let mut h: [u32; 5] = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];
     let mut data = input.to_vec();
@@ -126,15 +601,37 @@ pub(crate) fn sha1(input: &[u8]) -> [u8; 20] {
     out
 }
 
-/// This build's platform socket.
+#[cfg(not(feature = "websocket"))]
+struct UnavailableSocketTransport;
+
+#[cfg(not(feature = "websocket"))]
+impl SocketTransport for UnavailableSocketTransport {
+    fn connect(
+        &self,
+        _: &url::Url,
+        _: usize,
+        _: &AbortSignal,
+    ) -> Result<Box<dyn MessageSource>, HostError> {
+        Err(HostError::Unavailable {
+            feature: "websocket",
+        })
+    }
+}
+
+/// This build's platform socket. The shape remains present with the feature
+/// off and refuses with [`HostError::Unavailable`].
 pub fn default_transport() -> Box<dyn SocketTransport> {
-    #[cfg(target_vendor = "apple")]
+    #[cfg(all(feature = "websocket", target_vendor = "apple"))]
     {
         Box::new(crate::transport::darwin_websocket::DarwinSocketTransport)
     }
-    #[cfg(not(target_vendor = "apple"))]
+    #[cfg(all(feature = "websocket", not(target_vendor = "apple")))]
     {
         Box::new(crate::transport::websocket::TcpSocketTransport::new())
+    }
+    #[cfg(not(feature = "websocket"))]
+    {
+        Box::new(UnavailableSocketTransport)
     }
 }
 
@@ -158,7 +655,7 @@ mod tests {
         let grants = GrantSet::parse(grants).unwrap();
         match open(&Never, &grants, url, 1024, &AbortSignal::default()) {
             Ok(_) => unreachable!(),
-            Err(e) => e.to_string(),
+            Err(error) => error.to_string(),
         }
     }
 
@@ -167,8 +664,6 @@ mod tests {
         let url = "wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=a";
         let socket = "net.websocket wss://jetstream2.us-east.bsky.network";
         assert_eq!(opened(socket, url), "reached the transport");
-        // A fetch grant for the same host admits no socket, and a socket
-        // grant is scheme and port exact.
         let fetch = "net.fetch https://jetstream2.us-east.bsky.network";
         assert_eq!(opened(fetch, url), "denied: net.websocket");
         assert_eq!(
@@ -181,5 +676,93 @@ mod tests {
         );
         assert!(opened(socket, "https://jetstream2.us-east.bsky.network/").contains("ws: or wss:"));
         assert!(opened(socket, "wss://jetstream2.us-east.bsky.network/#x").contains("fragment"));
+    }
+
+    #[test]
+    fn close_validation_is_the_whatwg_script_subset() {
+        for code in [1000, 3000, 4999] {
+            assert_eq!(validate_close(code, "ok"), Ok(()));
+        }
+        for code in [0, 999, 1001, 2999, 5000, u16::MAX] {
+            assert!(matches!(
+                validate_close(code, ""),
+                Err(HostError::InvalidArgument(_))
+            ));
+        }
+        assert_eq!(validate_close(1000, &"é".repeat(61)), Ok(()));
+        assert!(validate_close(1000, &"é".repeat(62)).is_err());
+    }
+
+    #[test]
+    fn subprotocols_are_tokens_and_unique_before_transport() {
+        assert_eq!(
+            validate_protocols(&["chat".into(), "superchat.v2".into()]),
+            Ok(())
+        );
+        for protocols in [
+            vec!["".into()],
+            vec!["has space".into()],
+            vec!["line\nbreak".into()],
+            vec!["same".into(), "SAME".into()],
+        ] {
+            assert!(validate_protocols(&protocols).is_err(), "{protocols:?}");
+        }
+    }
+
+    #[test]
+    fn a_denied_watch_reports_error_then_close_without_opening() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Counting(Arc<AtomicUsize>);
+        impl SocketTransport for Counting {
+            fn connect(
+                &self,
+                _: &url::Url,
+                _: usize,
+                _: &AbortSignal,
+            ) -> Result<Box<dyn MessageSource>, HostError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Err(HostError::Failed("transport was reached".into()))
+            }
+        }
+
+        let opens = Arc::new(AtomicUsize::new(0));
+        let (connection, events, _subscription) = watch(
+            Arc::new(Counting(Arc::clone(&opens))),
+            Arc::new(GrantSet::none()),
+            "ws://127.0.0.1:9/".into(),
+            Vec::new(),
+            1024,
+        );
+        assert!(matches!(events.recv().unwrap(), Event::Error(_)));
+        assert_eq!(
+            events.recv().unwrap(),
+            Event::Close {
+                code: 1006,
+                reason: String::new(),
+                was_clean: false,
+            }
+        );
+        assert_eq!(connection.ready_state(), CLOSED);
+        assert_eq!(opens.load(Ordering::SeqCst), 0);
+    }
+
+    #[cfg(not(feature = "websocket"))]
+    #[test]
+    fn an_omitted_transport_has_a_named_refusal() {
+        let grants = GrantSet::parse("net.websocket ws://example.com\n").unwrap();
+        assert_eq!(
+            open(
+                default_transport().as_ref(),
+                &grants,
+                "ws://example.com",
+                1024,
+                &AbortSignal::default()
+            )
+            .err(),
+            Some(HostError::Unavailable {
+                feature: "websocket"
+            })
+        );
     }
 }

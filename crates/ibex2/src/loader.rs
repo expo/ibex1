@@ -957,7 +957,7 @@ fn js_string_literal(text: &str) -> String {
     out
 }
 
-/// The explicit snapshot of names the ordinary runtime adds to the engine.
+/// The explicit inventory of names install groups can add to the engine.
 /// Capability-bearing names are deliberately absent: they arrive as module
 /// parameters. Keep this as the one inventory; per-group views partition it.
 pub const DEFAULT_ADDED_GLOBALS: &[&str] = &[
@@ -995,6 +995,9 @@ pub const DEFAULT_ADDED_GLOBALS: &[&str] = &[
     "onerror",
     "onunhandledrejection",
     "onrejectionhandled",
+    "MessageEvent",
+    "CloseEvent",
+    "WebSocket",
 ];
 
 const GLOBAL_PARTITION: &[(Option<crate::bindings::Groups>, &[usize])] = &[
@@ -1009,8 +1012,11 @@ const GLOBAL_PARTITION: &[(Option<crate::bindings::Groups>, &[usize])] = &[
     (Some(crate::bindings::Groups::ABORT), &[15, 16]),
     (
         Some(crate::bindings::Groups::EVENTS),
-        &[20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33],
+        &[
+            20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
+        ],
     ),
+    (Some(crate::bindings::Groups::WEBSOCKET), &[36]),
 ];
 
 /// The global names a module may see for one installed group set. Anything
@@ -1220,7 +1226,7 @@ mod tests {
         );
         assert_eq!(
             allowed_globals(crate::bindings::Groups::DEFAULT),
-            DEFAULT_ADDED_GLOBALS
+            DEFAULT_ADDED_GLOBALS[..DEFAULT_ADDED_GLOBALS.len() - 1]
         );
     }
 

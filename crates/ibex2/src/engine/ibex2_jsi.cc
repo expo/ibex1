@@ -29,6 +29,17 @@ extern "C" void ibex2_string_free(char*);
 extern "C" void ibex2_report_uncaught(const char*);
 extern "C" void* ibex2_subscription_create(const void*, uint64_t*);
 extern "C" void ibex2_subscription_destroy(void*);
+extern "C" int ibex2_websocket_supported();
+extern "C" uint64_t ibex2_websocket_open(const void*, uint64_t,
+    const uint8_t*, size_t, const uint8_t*, size_t, size_t, char**);
+extern "C" void* ibex2_websocket_owner_create(const void*, uint64_t);
+extern "C" void ibex2_websocket_owner_destroy(void*);
+extern "C" int ibex2_websocket_send(const void*, uint64_t, int,
+    const uint8_t*, size_t, char**);
+extern "C" int ibex2_websocket_close(const void*, uint64_t, int,
+    const uint8_t*, size_t, char**);
+extern "C" int ibex2_websocket_ready_state(const void*, uint64_t);
+extern "C" size_t ibex2_websocket_buffered_amount(const void*, uint64_t);
 
 #if defined(IBEX2_JSI_HAS_INTL)
 namespace ibex2::intl_number_format {
@@ -351,6 +362,7 @@ struct Adapter::State {
   struct EventSubscription {
     void* rust;
     jsi::Function callback;
+    uint64_t websocket = 0;
   };
   const void* queue;
   uint64_t next_task_id = 1;
@@ -364,6 +376,7 @@ struct Adapter::State {
   jsi::Value fetch_factory;
   jsi::Value sqlite_factory;
   jsi::Value event_reporter;
+  jsi::Value trusted_event_dispatch;
   jsi::Value rejection_unhandled;
   jsi::Value rejection_handled;
   std::unique_ptr<Integrity> integrity;
@@ -406,6 +419,7 @@ void Adapter::detach() {
   state_->fetch_factory = jsi::Value::undefined();
   state_->sqlite_factory = jsi::Value::undefined();
   state_->event_reporter = jsi::Value::undefined();
+  state_->trusted_event_dispatch = jsi::Value::undefined();
   state_->rejection_unhandled = jsi::Value::undefined();
   state_->rejection_handled = jsi::Value::undefined();
   state_->integrity.reset();
@@ -418,7 +432,7 @@ void freeze(jsi::Runtime&, const jsi::Object&);
 
 constexpr Groups kKnownGroups = GROUP_PURE | GROUP_CONSOLE | GROUP_TIMERS |
     GROUP_ABORT | GROUP_CRYPTO | GROUP_FETCH | GROUP_STORAGE | GROUP_ENV |
-    GROUP_SECRETS | GROUP_KV | GROUP_INTL | GROUP_EVENTS;
+    GROUP_SECRETS | GROUP_KV | GROUP_INTL | GROUP_EVENTS | GROUP_WEBSOCKET;
 
 bool has(Groups groups, Groups group) { return (groups & group) == group; }
 
@@ -432,6 +446,7 @@ void validate_groups_impl(Groups groups) {
       {GROUP_CRYPTO, GROUP_PURE},
       {GROUP_FETCH, GROUP_PURE | GROUP_ABORT},
       {GROUP_EVENTS, GROUP_PURE},
+      {GROUP_WEBSOCKET, GROUP_PURE | GROUP_EVENTS},
   };
   for (const auto& requirement : requirements) {
     if (has(groups, requirement.group) && !has(groups, requirement.required))
@@ -454,6 +469,7 @@ std::vector<const char*> expected_scripts_impl(Groups groups) {
   if (has(groups, GROUP_CRYPTO)) result.push_back("crypto");
   if (has(groups, GROUP_EVENTS)) result.push_back("events");
   if (has(groups, GROUP_ABORT)) result.push_back("abort");
+  if (has(groups, GROUP_WEBSOCKET)) result.push_back("websocket");
 #if defined(IBEX2_JSI_HAS_INTL)
   if (has(groups, GROUP_INTL)) {
     result.push_back("intl_number_format");
@@ -500,6 +516,12 @@ struct ResponseOwner final : jsi::NativeState {
   void* owner;
   explicit ResponseOwner(void* value) : owner(value) {}
   ~ResponseOwner() override { ibex2_response_owner_destroy(owner); }
+};
+
+struct WebSocketOwner final : jsi::NativeState {
+  void* owner;
+  explicit WebSocketOwner(void* value) : owner(value) {}
+  ~WebSocketOwner() override { ibex2_websocket_owner_destroy(owner); }
 };
 
 jsi::Function make_group_binding(jsi::Runtime& rt, const char* name,
@@ -674,6 +696,22 @@ void remove_global(jsi::Runtime& rt, const jsi::Object& global,
       .getPropertyAsFunction(rt, "deleteProperty")
       .call(rt, global, jsi::String::createFromUtf8(rt, name));
 }
+
+uint64_t websocket_handle(jsi::Runtime& rt, const jsi::Value& value) {
+  if (!value.isNumber()) throw jsi::JSError(rt, "invalid WebSocket handle");
+  double number = value.asNumber();
+  uint64_t handle = static_cast<uint64_t>(number);
+  if (number < 1 || number > 9007199254740991.0 || number != handle)
+    throw jsi::JSError(rt, "invalid WebSocket handle");
+  return handle;
+}
+
+void websocket_result(jsi::Runtime& rt, int status, char* error,
+                      const char* fallback) {
+  std::string message = error == nullptr ? fallback : std::string(error);
+  if (error != nullptr) ibex2_string_free(error);
+  if (status != 0) throw jsi::JSError(rt, message);
+}
 } // namespace
 
 void validate_groups(Groups groups) { validate_groups_impl(groups); }
@@ -681,6 +719,142 @@ void validate_groups(Groups groups) { validate_groups_impl(groups); }
 std::vector<const char*> expected_scripts(Groups groups) {
   validate_groups_impl(groups);
   return expected_scripts_impl(groups);
+}
+
+void Adapter::install_websocket() {
+  auto& rt = *runtime_;
+  auto lifetime = state_->lifetime;
+  std::weak_ptr<State> weak_state = state_;
+  jsi::Object hooks(rt);
+  hooks.setProperty(rt, "supported", ibex2_websocket_supported() != 0);
+
+  hooks.setProperty(rt, "open", jsi::Function::createFromHostFunction(
+      rt, jsi::PropNameID::forAscii(rt, "open"), 4,
+      [lifetime, weak_state](jsi::Runtime& r, const jsi::Value&,
+                            const jsi::Value* args, size_t count) -> jsi::Value {
+        const void* queue = lifetime->require(r);
+        auto state = weak_state.lock();
+        if (!state || !state->alive)
+          throw jsi::JSError(r, "Ibex2 bindings are detached");
+        if (count != 4 || !args[0].isObject() || !args[1].isObject() ||
+            !args[1].getObject(r).isFunction(r))
+          throw jsi::JSError(r, "WebSocket open needs an owner and callback");
+        auto owner_object = args[0].getObject(r);
+        auto callback = args[1].getObject(r).getFunction(r);
+        std::string url = args[2].toString(r).utf8(r);
+        std::string protocols = args[3].toString(r).utf8(r);
+        uint64_t subscription = 0;
+        void* rust = ibex2_subscription_create(queue, &subscription);
+        if (rust == nullptr)
+          throw jsi::JSError(r, "could not create WebSocket subscription");
+        try {
+          state->subscriptions.emplace(subscription,
+              State::EventSubscription{rust, std::move(callback), 0});
+        } catch (...) {
+          ibex2_subscription_destroy(rust);
+          throw;
+        }
+        char* error = nullptr;
+        uint64_t handle = ibex2_websocket_open(
+            queue, subscription,
+            reinterpret_cast<const uint8_t*>(url.data()), url.size(),
+            reinterpret_cast<const uint8_t*>(protocols.data()), protocols.size(),
+            64u << 20, &error);
+        if (handle == 0) {
+          ibex2_subscription_destroy(rust);
+          state->subscriptions.erase(subscription);
+          websocket_result(r, 1, error, "WebSocket open failed");
+        }
+        auto native = std::make_shared<WebSocketOwner>(
+            ibex2_websocket_owner_create(queue, handle));
+        if (native->owner == nullptr) {
+          ibex2_subscription_destroy(rust);
+          state->subscriptions.erase(subscription);
+          throw jsi::JSError(r, "could not retain WebSocket");
+        }
+        try {
+          owner_object.setNativeState(r, native);
+        } catch (...) {
+          ibex2_subscription_destroy(rust);
+          state->subscriptions.erase(subscription);
+          throw;
+        }
+        state->subscriptions.at(subscription).websocket = handle;
+        return jsi::Value(static_cast<double>(handle));
+      }));
+
+  hooks.setProperty(rt, "sendText", jsi::Function::createFromHostFunction(
+      rt, jsi::PropNameID::forAscii(rt, "sendText"), 2,
+      [lifetime](jsi::Runtime& r, const jsi::Value&,
+                 const jsi::Value* args, size_t count) -> jsi::Value {
+        const void* queue = lifetime->require(r);
+        if (count != 2) throw jsi::JSError(r, "WebSocket send needs data");
+        uint64_t handle = websocket_handle(r, args[0]);
+        std::string text = args[1].toString(r).utf8(r);
+        char* error = nullptr;
+        int status = ibex2_websocket_send(
+            queue, handle, 0,
+            reinterpret_cast<const uint8_t*>(text.data()), text.size(), &error);
+        websocket_result(r, status, error, "WebSocket text send failed");
+        return jsi::Value::undefined();
+      }));
+
+  hooks.setProperty(rt, "sendBinary", jsi::Function::createFromHostFunction(
+      rt, jsi::PropNameID::forAscii(rt, "sendBinary"), 2,
+      [lifetime](jsi::Runtime& r, const jsi::Value&,
+                 const jsi::Value* args, size_t count) -> jsi::Value {
+        const void* queue = lifetime->require(r);
+        if (count != 2) throw jsi::JSError(r, "WebSocket send needs data");
+        uint64_t handle = websocket_handle(r, args[0]);
+        std::vector<std::string> owned;
+        auto bytes = to_abi(r, args[1], owned);
+        if (bytes.tag != IBEX2_TAG_BYTES)
+          throw jsi::JSError(r, "WebSocket binary data needs an ArrayBuffer or view");
+        char* error = nullptr;
+        int status = ibex2_websocket_send(
+            queue, handle, 1, bytes.data, bytes.len, &error);
+        websocket_result(r, status, error, "WebSocket binary send failed");
+        return jsi::Value::undefined();
+      }));
+
+  hooks.setProperty(rt, "close", jsi::Function::createFromHostFunction(
+      rt, jsi::PropNameID::forAscii(rt, "close"), 3,
+      [lifetime](jsi::Runtime& r, const jsi::Value&,
+                 const jsi::Value* args, size_t count) -> jsi::Value {
+        const void* queue = lifetime->require(r);
+        if (count != 3) throw jsi::JSError(r, "WebSocket close needs its arguments");
+        uint64_t handle = websocket_handle(r, args[0]);
+        int code = static_cast<int>(args[1].asNumber());
+        std::string reason = args[2].toString(r).utf8(r);
+        char* error = nullptr;
+        int status = ibex2_websocket_close(
+            queue, handle, code,
+            reinterpret_cast<const uint8_t*>(reason.data()), reason.size(), &error);
+        websocket_result(r, status, error, "WebSocket close failed");
+        return jsi::Value::undefined();
+      }));
+
+  hooks.setProperty(rt, "readyState", jsi::Function::createFromHostFunction(
+      rt, jsi::PropNameID::forAscii(rt, "readyState"), 1,
+      [lifetime](jsi::Runtime& r, const jsi::Value&,
+                 const jsi::Value* args, size_t count) -> jsi::Value {
+        const void* queue = lifetime->require(r);
+        if (count != 1) throw jsi::JSError(r, "WebSocket state needs a handle");
+        return jsi::Value(ibex2_websocket_ready_state(
+            queue, websocket_handle(r, args[0])));
+      }));
+
+  hooks.setProperty(rt, "bufferedAmount", jsi::Function::createFromHostFunction(
+      rt, jsi::PropNameID::forAscii(rt, "bufferedAmount"), 1,
+      [lifetime](jsi::Runtime& r, const jsi::Value&,
+                 const jsi::Value* args, size_t count) -> jsi::Value {
+        const void* queue = lifetime->require(r);
+        if (count != 1) throw jsi::JSError(r, "WebSocket amount needs a handle");
+        return jsi::Value(static_cast<double>(ibex2_websocket_buffered_amount(
+            queue, websocket_handle(r, args[0]))));
+      }));
+
+  rt.global().setProperty(rt, "__ibex2_websocket", std::move(hooks));
 }
 
 void Adapter::install(Groups groups, const Ibex2Bindings* bindings,
@@ -739,6 +913,7 @@ void Adapter::install(Groups groups, const Ibex2Bindings* bindings,
     if (has(groups, GROUP_TIMERS)) install_timers(rt, state_->lifetime);
     if (has(groups, GROUP_CRYPTO)) install_crypto(rt, state_->lifetime);
     if (has(groups, GROUP_EVENTS)) install_events(rt, state_->lifetime);
+    if (has(groups, GROUP_WEBSOCKET)) install_websocket();
     if (has(groups, GROUP_FETCH)) install_fetch(rt, *this, state_->lifetime);
 #if defined(IBEX2_JSI_HAS_INTL)
     if (has(groups, GROUP_INTL)) {
@@ -749,6 +924,10 @@ void Adapter::install(Groups groups, const Ibex2Bindings* bindings,
 
     for (size_t i = 0; i < script_count; ++i) {
       const auto& script = scripts[i];
+      if (std::strcmp(script.name, "websocket") == 0) {
+        rt.global().setProperty(rt, "__ibex2_fire_trusted_event",
+                                jsi::Value(rt, state_->trusted_event_dispatch));
+      }
       auto buffer = std::make_shared<CompiledBytes>(script.bytes, script.len);
       auto value = rt.evaluateJavaScript(buffer, std::string(script.name) + ".js");
       if (std::strcmp(script.name, "fetch") == 0) {
@@ -776,16 +955,13 @@ void Adapter::install(Groups groups, const Ibex2Bindings* bindings,
         capture("reportException", state_->event_reporter);
         capture("onUnhandled", state_->rejection_unhandled);
         capture("onHandled", state_->rejection_handled);
+        capture("fireTrustedEvent", state_->trusted_event_dispatch);
         if (has(groups, GROUP_ABORT)) {
-          auto trusted_event = hooks.getProperty(rt, "fireTrustedEvent");
-          if (!trusted_event.isObject() ||
-              !trusted_event.getObject(rt).isFunction(rt))
-            throw jsi::JSError(
-                rt, "events binding returned an invalid trusted-event hook");
           // The hook crosses only the next installation step. abort.js takes
           // and deletes it before any application entrance can run.
           rt.global().setProperty(
-              rt, "__ibex2_fire_trusted_event", std::move(trusted_event));
+              rt, "__ibex2_fire_trusted_event",
+              jsi::Value(rt, state_->trusted_event_dispatch));
           auto set_abort_hooks = hooks.getProperty(rt, "setAbortHooks");
           if (!set_abort_hooks.isObject() ||
               !set_abort_hooks.getObject(rt).isFunction(rt))
@@ -811,6 +987,9 @@ void Adapter::install(Groups groups, const Ibex2Bindings* bindings,
     if (has(groups, GROUP_EVENTS) && has(groups, GROUP_ABORT)) {
       remove_global(rt, rt.global(), "__ibex2_fire_trusted_event");
       remove_global(rt, rt.global(), "__ibex2_set_event_abort_hooks");
+    }
+    if (has(groups, GROUP_WEBSOCKET)) {
+      remove_global(rt, rt.global(), "__ibex2_fire_trusted_event");
     }
 
     // @ref LLP 0057.000#l3--events-abort-and-the-second-direction — vanilla Hermes has delayed tracker callbacks, not the patched checkpoint hook
@@ -1104,8 +1283,17 @@ void Adapter::deliver_event(uint64_t id, Ibex2AbiValue& value) {
   } release{value};
   auto found = state_->subscriptions.find(id);
   if (!state_->alive || found == state_->subscriptions.end()) return;
+  bool terminal = found->second.websocket != 0 &&
+      value.tag == IBEX2_TAG_BYTES && value.data != nullptr &&
+      value.len > 0 && value.data[0] == 4;
   auto payload = from_abi(*runtime_, value);
-  found->second.callback.call(*runtime_, payload);
+  try {
+    found->second.callback.call(*runtime_, payload);
+  } catch (...) {
+    if (terminal) unsubscribe(id);
+    throw;
+  }
+  if (terminal) unsubscribe(id);
 }
 
 void Adapter::report_error(const jsi::Value& error) {

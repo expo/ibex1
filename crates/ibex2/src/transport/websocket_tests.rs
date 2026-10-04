@@ -24,12 +24,24 @@ fn frame(fin: bool, opcode: u8, payload: &[u8]) -> Vec<u8> {
     out
 }
 
-/// One client frame, unmasked: (opcode, payload), or `None` at the end.
-fn client_frame(s: &mut TcpStream) -> Option<(u8, Vec<u8>)> {
+/// One client frame, unmasked: (fin, opcode, payload), or `None` at the end.
+fn client_frame(s: &mut impl Read) -> Option<(bool, u8, Vec<u8>)> {
     let mut head = [0u8; 2];
     s.read_exact(&mut head).ok()?;
     assert!(head[1] & 0x80 != 0, "a client frame is masked");
-    let len = (head[1] & 0x7f) as usize;
+    let len = match head[1] & 0x7f {
+        126 => {
+            let mut bytes = [0u8; 2];
+            s.read_exact(&mut bytes).ok()?;
+            u16::from_be_bytes(bytes) as usize
+        }
+        127 => {
+            let mut bytes = [0u8; 8];
+            s.read_exact(&mut bytes).ok()?;
+            usize::try_from(u64::from_be_bytes(bytes)).ok()?
+        }
+        len => len as usize,
+    };
     let mut mask = [0u8; 4];
     s.read_exact(&mut mask).ok()?;
     let mut payload = vec![0u8; len];
@@ -37,7 +49,7 @@ fn client_frame(s: &mut TcpStream) -> Option<(u8, Vec<u8>)> {
     for (i, b) in payload.iter_mut().enumerate() {
         *b ^= mask[i % 4];
     }
-    Some((head[0] & 0x0f, payload))
+    Some((head[0] & 0x80 != 0, head[0] & 0x0f, payload))
 }
 
 /// A local peer; what it saw from the client arrives on the receiver.
@@ -75,10 +87,12 @@ fn serve(mut s: TcpStream, saw: Sender<String>) {
         .unwrap()
         .trim();
     let accept = crate::stdlib::websocket::accept_key(key);
-    let _ = write!(
-        s,
-        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
-    );
+    let selected = if path == "/protocol" && head.contains("Sec-WebSocket-Protocol: chat") {
+        "Sec-WebSocket-Protocol: chat\r\n"
+    } else {
+        ""
+    };
+    let _ = write!(s, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n{selected}\r\n");
     let mut out = Vec::new();
     match path.as_str() {
         "/three" => {
@@ -94,6 +108,7 @@ fn serve(mut s: TcpStream, saw: Sender<String>) {
         "/big" => out.extend(frame(true, 1, &[b'x'; 2000])),
         "/binary" => out.extend(frame(true, 2, &[1, 2, 3])),
         "/drop" => out.extend(frame(true, 1, b"x")),
+        "/echo" | "/protocol" | "/drain" => {}
         _ => out.extend(frame(true, 1, b"held")),
     }
     let _ = s.write_all(&out);
@@ -102,16 +117,45 @@ fn serve(mut s: TcpStream, saw: Sender<String>) {
         return;
     }
     s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-    while let Some((opcode, payload)) = client_frame(&mut s) {
+    if path == "/drain" {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let mut message: Option<(u8, Vec<u8>)> = None;
+    while let Some((fin, opcode, payload)) = client_frame(&mut s) {
+        if matches!(opcode, 1 | 2) {
+            message = Some((opcode, Vec::new()));
+        }
+        if matches!(opcode, 0 | 1 | 2) {
+            let Some((_kind, whole)) = message.as_mut() else {
+                return;
+            };
+            whole.extend_from_slice(&payload);
+            if fin {
+                let (kind, whole) = message.take().unwrap();
+                let _ = saw.send(format!("{path} message {kind} {}", whole.len()));
+                if matches!(path.as_str(), "/echo" | "/protocol") {
+                    let _ = s.write_all(&frame(true, kind, &whole));
+                }
+            }
+            continue;
+        }
         let text = String::from_utf8_lossy(&payload).into_owned();
-        let _ = saw.send(match opcode {
+        let report = match opcode {
             0xA => format!("{path} pong {text}"),
             0x8 if payload.len() >= 2 => format!(
-                "{path} close {}",
-                u16::from_be_bytes([payload[0], payload[1]])
+                "{path} close {} {}",
+                u16::from_be_bytes([payload[0], payload[1]]),
+                String::from_utf8_lossy(&payload[2..])
             ),
             other => format!("{path} opcode {other}"),
-        });
+        };
+        let _ = saw.send(report);
+        if opcode == 0x8 {
+            if matches!(path.as_str(), "/echo" | "/protocol" | "/drain") {
+                let _ = s.write_all(&frame(true, 8, &payload));
+            }
+            break;
+        }
     }
     let _ = saw.send(format!("{path} gone"));
 }
@@ -162,7 +206,7 @@ pub(crate) fn conversation(transport: &dyn SocketTransport) {
     assert_eq!(wait(&seen), "/three pong are you there");
     assert_eq!(
         wait(&seen),
-        "/three close 1000",
+        "/three close 1000 bye",
         "the closing handshake is answered"
     );
     drop(s);
@@ -202,11 +246,166 @@ pub(crate) fn conversation(transport: &dyn SocketTransport) {
             _ => {}
         }
     }
+
+    let url = url::Url::parse(&format!("ws://127.0.0.1:{port}/protocol")).unwrap();
+    let mut s = transport
+        .connect_with_protocols(&url, 128 << 10, &none, &["chat".into()])
+        .unwrap();
+    assert_eq!(s.protocol(), "chat");
+    s.send_text("hello").unwrap();
+    assert_eq!(s.next().unwrap(), text("hello"));
+    assert_eq!(wait(&seen), "/protocol message 1 5");
+    s.send_binary(&[1, 2, 3, 4]).unwrap();
+    assert_eq!(
+        s.next_event().unwrap(),
+        Event::Message(Message::Binary(vec![1, 2, 3, 4]))
+    );
+    assert_eq!(wait(&seen), "/protocol message 2 4");
+    let fragmented = "x".repeat((FRAGMENT * 2) + 7);
+    s.send_text(&fragmented).unwrap();
+    assert_eq!(s.next().unwrap(), text(&fragmented));
+    assert_eq!(
+        wait(&seen),
+        format!("/protocol message 1 {}", fragmented.len())
+    );
+    s.close(3001, "done").unwrap();
+    assert_eq!(
+        s.next().unwrap(),
+        Incoming::Closed {
+            code: 3001,
+            reason: "done".into()
+        }
+    );
+    assert_eq!(wait(&seen), "/protocol close 3001 done");
+    let before = s.buffered_amount();
+    s.send_text("discarded").unwrap();
+    assert_eq!(s.buffered_amount(), before + "discarded".len());
+    drop(s);
+    assert_eq!(wait(&seen), "/protocol gone");
+
+    let mut s = open_on(transport, port, "/drain", &none).unwrap();
+    let payload = vec![7; 8 << 20];
+    s.send_binary(&payload).unwrap();
+    assert!(
+        s.buffered_amount() > 0,
+        "queued bytes are accounted immediately"
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while s.buffered_amount() != 0 && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        s.buffered_amount(),
+        0,
+        "sent bytes drain from bufferedAmount"
+    );
+    assert_eq!(wait(&seen), format!("/drain message 2 {}", payload.len()));
+    s.close(1000, "").unwrap();
+    assert!(matches!(
+        s.next().unwrap(),
+        Incoming::Closed { code: 1000, .. }
+    ));
 }
 
 #[test]
 fn the_rust_transport_holds_the_whole_conversation() {
     conversation(&TcpSocketTransport::new());
+}
+
+const LOCAL_CERT: &str = "MIIBcDCCARagAwIBAgIJAL/L9Qemvq28MAoGCCqGSM49BAMCMBQxEjAQBgNVBAMMCWxvY2FsaG9zdDAeFw0yNjEwMDQxMzQ2MTBaFw0yNzEwMDQxMzQ2MTBaMBQxEjAQBgNVBAMMCWxvY2FsaG9zdDBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABB+9b/H/REalNbaY5CeIowEsLfdmeVL8M/iQgCo4BrJM+IgYXRIUDI6EdvgZkkyBFTr8dIRFr/5u/AX/0vRU3p2jUTBPMBoGA1UdEQQTMBGCCWxvY2FsaG9zdIcEfwAAATAMBgNVHRMBAf8EAjAAMA4GA1UdDwEB/wQEAwIHgDATBgNVHSUEDDAKBggrBgEFBQcDATAKBggqhkjOPQQDAgNIADBFAiBU7Mu0QDVetJW9tm7u7aoPrVQcEqkO0IUkZ0aMgPA6GwIhAPMuBqpj21v+kfb7/bCjL94nmzgQkNzpdDPei6+PzVpa";
+const LOCAL_KEY: &str = "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgNuGe4B07FBTDauLEJyJRWafyt3Hlvuh33z/wS96uBu2hRANCAAQfvW/x/0RGpTW2mOQniKMBLC33ZnlS/DP4kIAqOAayTPiIGF0SFAyOhHb4GZJMgRU6/HSERa/+bvwF/9L0VN6d";
+
+fn local_tls() -> (
+    Vec<u8>,
+    Arc<rustls::ClientConfig>,
+    Arc<rustls::ServerConfig>,
+) {
+    use base64::Engine as _;
+    let cert_bytes = base64::engine::general_purpose::STANDARD
+        .decode(LOCAL_CERT)
+        .unwrap();
+    let cert = rustls::pki_types::CertificateDer::from(cert_bytes.clone());
+    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(
+        base64::engine::general_purpose::STANDARD
+            .decode(LOCAL_KEY)
+            .unwrap(),
+    ));
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(cert.clone()).unwrap();
+    let client = rustls::ClientConfig::builder_with_provider(Arc::clone(&provider))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let server = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert], key)
+        .unwrap();
+    (cert_bytes, Arc::new(client), Arc::new(server))
+}
+
+pub(crate) fn tls_echo_peer() -> (
+    u16,
+    Vec<u8>,
+    Arc<rustls::ClientConfig>,
+    std::thread::JoinHandle<()>,
+) {
+    let (certificate, client, server) = local_tls();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let peer = std::thread::spawn(move || {
+        let tcp = listener.accept().unwrap().0;
+        tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let connection = rustls::ServerConnection::new(server).unwrap();
+        let mut wire = rustls::StreamOwned::new(connection, tcp);
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            wire.read_exact(&mut byte).unwrap();
+            head.push(byte[0]);
+        }
+        let head = String::from_utf8(head).unwrap();
+        let key = head
+            .lines()
+            .find_map(|line| line.strip_prefix("Sec-WebSocket-Key: "))
+            .unwrap()
+            .trim();
+        let accept = crate::stdlib::websocket::accept_key(key);
+        write!(wire, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n").unwrap();
+        let (fin, opcode, payload) = client_frame(&mut wire).unwrap();
+        assert!(fin);
+        assert_eq!(opcode, 1);
+        wire.write_all(&frame(true, 1, &payload)).unwrap();
+        let (fin, opcode, payload) = client_frame(&mut wire).unwrap();
+        assert!(fin);
+        assert_eq!(opcode, 8);
+        wire.write_all(&frame(true, 8, &payload)).unwrap();
+    });
+    (port, certificate, client, peer)
+}
+
+#[test]
+fn the_rust_transport_echoes_and_closes_over_local_tls() {
+    let (port, _certificate, client, peer) = tls_echo_peer();
+    let transport = TcpSocketTransport::with_tls(client);
+    let url = url::Url::parse(&format!("wss://localhost:{port}/echo")).unwrap();
+    let mut socket = transport
+        .connect(&url, 1024, &AbortSignal::default())
+        .unwrap();
+    socket.send_text("secure").unwrap();
+    assert_eq!(socket.next().unwrap(), text("secure"));
+    socket.close(1000, "tls done").unwrap();
+    assert_eq!(
+        socket.next().unwrap(),
+        Incoming::Closed {
+            code: 1000,
+            reason: "tls done".into(),
+        }
+    );
+    peer.join().unwrap();
 }
 
 #[test]

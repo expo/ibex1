@@ -96,6 +96,10 @@ fn compiled_script(name: &str) -> CompiledScript {
             b"abort\0",
             include_bytes!(concat!(env!("OUT_DIR"), "/abort.hbc")),
         ),
+        "websocket" => (
+            b"websocket\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/websocket.hbc")),
+        ),
         "fetch" => (
             b"fetch\0",
             include_bytes!(concat!(env!("OUT_DIR"), "/fetch.hbc")),
@@ -460,6 +464,7 @@ fn rust_and_cpp_group_validation_tables_agree() {
         Groups::KV,
         Groups::INTL,
         Groups::EVENTS,
+        Groups::WEBSOCKET,
     ];
     for mask in 0..(1usize << group_bits.len()) {
         let mut groups = Groups::empty();

@@ -82,7 +82,7 @@ rustls-native-certs = "0.7"
 webpki-roots = "1"
 
 [features]
-default = ["loader"]
+default = ["loader", "websocket"]
 # The loader: TypeScript and JSX stripping, ESM lowering, and package
 # resolution — everything that turns source into a wrapper and a specifier
 # into a file. `ibex2 build` needs it; a `run --precompiled` does not, since
@@ -102,3 +102,6 @@ loader = [
 # Link against vanilla Hermes from the platform's Frameworks-vanilla install.
 # Off by default so the workspace builds without an engine present.
 hermes = []
+# Application WebSockets. The grant grammar and the refusing Rust/JS surface
+# remain present when this is off; only the transport implementation is cut.
+websocket = []

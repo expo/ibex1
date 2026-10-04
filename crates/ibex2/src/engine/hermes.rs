@@ -167,6 +167,10 @@ fn compiled_binding(name: &str) -> CompiledScript {
             b"abort\0",
             include_bytes!(concat!(env!("OUT_DIR"), "/abort.hbc")),
         ),
+        "websocket" => (
+            b"websocket\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/websocket.hbc")),
+        ),
         "fetch" => (
             b"fetch\0",
             include_bytes!(concat!(env!("OUT_DIR"), "/fetch.hbc")),

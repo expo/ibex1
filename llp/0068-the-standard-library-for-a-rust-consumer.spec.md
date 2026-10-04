@@ -5,7 +5,7 @@
 **Systems:** Rust Stdlib, Host ABI, CapSec, Build
 **Author:** Charlie Cheever / Claude (Fable 5)
 **Date:** 2026-08-29
-**Revised:** 2026-10-04 (§3: borrowed-adapter delivery contains callback exceptions and reports them through the cancelable error-event path); 2026-10-04 (§3: wake callbacks are serialized edge-triggered notifications; concurrent admissions coalesce, re-entrant close returns, and cross-thread close waits for the sole invocation); 2026-10-04 (OQ2: the off-Apple HTTP transport loads the native trust store lazily and at most once per process; §3: a default `Context` defers its platform transport so adoption does not build and discard it); 2026-10-04 (§3: bytecode preflight requires the pin's complete 128-byte `BytecodeFileHeader` before reading prefix fields or mutating the runtime); 2026-10-04 (§3: a late completion and queue closure serialize with FIFO insertion, so the result is dropped with its resources); 2026-10-04 (§3: Hermes adoption snapshots configuration applied through the source `Context` after construction); 2026-10-04 (§3: the last owner lease, not the last worker reference, begins shutdown and retires the wake callback); 2026-10-04 (§3: the install input is a typed, validated endowment handle; bytecode preflight checks the complete header and declared length; a failed one-shot install spends the adapter, and failure after publication requires discarding the runtime; the Hermes bootstrap order is stated as implemented); 2026-10-04 (§3: named install groups and their explicit dependency graph); 2026-09-11 (OQ2: Snapback2 0.0.24 separately qualifies and publishes the selected Linux engine-facing Intl tier; broader Intl conformance remains open); 2026-09-11 (OQ2: Linux's selected engine-facing Intl stubs are replaced by the native standard-library tier; this does not expand the no-engine Rust surface or qualify publication); 2026-09-11 (OQ2: the same transport qualified through the Linux Hermes runtime; Linux Intl and publication remain unqualified); 2026-09-07 (app-scoped filesystem and separate SQLite provider); 2026-09-06 (§2: author-required streaming and cancellation); 2026-09-03 (LLP 0057.000 plans how `Bindings` grows — one field per family, feature-gated where a family pulls a dependency or a framework, present and refusing when the feature is off — and answers OQ3 in its lane L3 with a `Receiver`; neither is built yet) 2026-08-30 (§1: `Bindings` grew `secrets` (LLP 0069) and `kv` (LLP 0070), and `Host` carries their stores beside the transport — caught by the LLP 0070 review as drift on this page; §3: the whole-surface sentence now says where the fourth and fifth bindings' tests live, caught by its round 2)
+**Revised:** 2026-10-04 (§1/§3: WebSocket sending/watch and explicit `WEBSOCKET` group; OQ3's Receiver is now used by L4); 2026-10-04 (§3: borrowed-adapter delivery contains callback exceptions and reports them through the cancelable error-event path); 2026-10-04 (§3: wake callbacks are serialized edge-triggered notifications; concurrent admissions coalesce, re-entrant close returns, and cross-thread close waits for the sole invocation); 2026-10-04 (OQ2: the off-Apple HTTP transport loads the native trust store lazily and at most once per process; §3: a default `Context` defers its platform transport so adoption does not build and discard it); 2026-10-04 (§3: bytecode preflight requires the pin's complete 128-byte `BytecodeFileHeader` before reading prefix fields or mutating the runtime); 2026-10-04 (§3: a late completion and queue closure serialize with FIFO insertion, so the result is dropped with its resources); 2026-10-04 (§3: Hermes adoption snapshots configuration applied through the source `Context` after construction); 2026-10-04 (§3: the last owner lease, not the last worker reference, begins shutdown and retires the wake callback); 2026-10-04 (§3: the install input is a typed, validated endowment handle; bytecode preflight checks the complete header and declared length; a failed one-shot install spends the adapter, and failure after publication requires discarding the runtime; the Hermes bootstrap order is stated as implemented); 2026-10-04 (§3: named install groups and their explicit dependency graph); 2026-09-11 (OQ2: Snapback2 0.0.24 separately qualifies and publishes the selected Linux engine-facing Intl tier; broader Intl conformance remains open); 2026-09-11 (OQ2: Linux's selected engine-facing Intl stubs are replaced by the native standard-library tier; this does not expand the no-engine Rust surface or qualify publication); 2026-09-11 (OQ2: the same transport qualified through the Linux Hermes runtime; Linux Intl and publication remain unqualified); 2026-09-07 (app-scoped filesystem and separate SQLite provider); 2026-09-06 (§2: author-required streaming and cancellation); 2026-09-03 (LLP 0057.000 plans how `Bindings` grows — one field per family, feature-gated where a family pulls a dependency or a framework, present and refusing when the feature is off — and answers OQ3 in its lane L3 with a `Receiver`; neither is built yet) 2026-08-30 (§1: `Bindings` grew `secrets` (LLP 0069) and `kv` (LLP 0070), and `Host` carries their stores beside the transport — caught by the LLP 0070 review as drift on this page; §3: the whole-surface sentence now says where the fourth and fifth bindings' tests live, caught by its round 2)
 **Related:** LLP 0057 (§3.1 — the split, and the reason for a Rust standard library that survived: the non-JS consumer), LLP 0067 (the capability model this states in Rust), LLP 0059.000 (§4 — the families; §3.8 — the env snapshot), `rules/NOT-DOING.md` (the bar: a no-JS consumer gets the same standard library with no engine in the process)
 
 ## Summary
@@ -31,7 +31,7 @@ let home     = app.env.get("HOME");                               // None if not
 
 `Host` is the runtime without an engine: the platform transport, the secret
 store, the kv store, and nothing else. `endow` is instantiation:
-`Bindings { fetch, fs, env, secrets, kv, sqlite }` (secrets and kv are LLP 0069 and LLP 0070; SQLite is LLP 0059.000 §3.15) is the module parameter list as a struct, each binding holding an
+`Bindings { fetch, websocket, fs, env, secrets, kv, sqlite }` (WebSocket is LLP 0059.000 §3.12; secrets and kv are LLP 0069 and LLP 0070; SQLite is LLP 0059.000 §3.15) is the module parameter list as a struct, each binding holding an
 `Arc` of the grant set for its whole life. A binding handed from one consumer to another carries the
 first's authority, as LLP 0067 §3 says a JavaScript binding does. A consumer
 granted nothing holds bindings that refuse — not absent bindings — so the
@@ -82,6 +82,13 @@ interrupts the native request through its signal, including blocked header and
 body reads. Buffered `send`/`get` collect this same transport path; origin grants
 are checked on every redirect. Cancellation introduces no Rust timer or runtime.
 
+`Bindings::websocket.open` preserves the original blocking receive API.
+`Bindings::websocket.watch` adds the executor-neutral event path: it returns a
+`Connection`, `std::sync::mpsc::Receiver<Event>`, and `Subscription`. The
+connection sends text/binary, starts the closing handshake, and exposes
+backpressure; the consumer blocks, polls, or adapts the receiver to its own
+executor. No async runtime enters the crate.
+
 ## 3. No engine in the process
 
 The `hermes` feature is the engine. With it off — the crate's default — no
@@ -118,6 +125,7 @@ selection on the caller's behalf. The groups are:
 | `KV` | no JSI projection yet; named for the existing Rust binding | `storage.kv` library operations | — | core/platform backend |
 | `INTL` (Linux) | selected `Intl`, locale methods on Number/BigInt/String/Date | ICU-backed formatting/case operations | — | `hermes` on Linux today |
 | `EVENTS` | `Event`, `EventTarget`, event subclasses, global error/rejection hooks, `self`, `navigator.userAgent` | JavaScript listener state; subscribed host deliveries use the shared task FIFO | `PURE` | core |
+| `WEBSOCKET` | `WebSocket` (`MessageEvent` and `CloseEvent` come from `EVENTS`) | admitted socket open/send/close, shared subscription FIFO | `PURE`, `EVENTS` | cargo feature `websocket`, default on; group explicit |
 
 `bindings::scripts(groups)` returns the ordered `(name, source_path)` inputs
 for the caller to compile with its own engine compiler. It excludes the
@@ -316,3 +324,6 @@ projection of the same subscription: sources admit `HostTask::Event` into the
 runtime's one sequence-numbered FIFO, and the callback runs only when the
 embedder pumps. Unsubscribe removes an event admitted but not yet reserved;
 an already-running callback may finish.
+L4 is the first production user: `Bindings::websocket.watch` returns that
+receiver for `Open`, payload-bearing `Message`, `Error`, and `Close` events,
+while the JavaScript `WebSocket` projects the same source through the pump.

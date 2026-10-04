@@ -47,6 +47,7 @@ inline constexpr Groups GROUP_SECRETS = 1u << 8;
 inline constexpr Groups GROUP_KV = 1u << 9;
 inline constexpr Groups GROUP_INTL = 1u << 10;
 inline constexpr Groups GROUP_EVENTS = 1u << 11;
+inline constexpr Groups GROUP_WEBSOCKET = 1u << 12;
 
 // The dependency/availability table used by Adapter::install. Exposed so an
 // embedder can mechanically compare its public group-selection rules.
@@ -148,6 +149,7 @@ public:
   // for a timer task, which belongs to an owning runtime's driver.
   bool deliver_one();
 private:
+  void install_websocket();
   struct State;
   jsi::Runtime* runtime_;
   std::shared_ptr<State> state_;

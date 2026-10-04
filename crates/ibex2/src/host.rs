@@ -198,6 +198,45 @@ impl WebSocket {
             signal,
         )
     }
+
+    /// Start a socket as an L3 event subscription. Admission failures are
+    /// reported as `Error`, then `Close { code: 1006, .. }` on the receiver;
+    /// the platform transport is never called for a denial.
+    pub fn watch(
+        &self,
+        url: &str,
+        protocols: &[String],
+        max_message: usize,
+    ) -> (
+        websocket::Connection,
+        std::sync::mpsc::Receiver<websocket::Event>,
+        crate::stdlib::events::Subscription,
+    ) {
+        websocket::watch(
+            Arc::clone(&self.transport),
+            Arc::clone(&self.grants),
+            url.to_string(),
+            protocols.to_vec(),
+            max_message,
+        )
+    }
+
+    pub(crate) fn watch_with(
+        &self,
+        url: String,
+        protocols: Vec<String>,
+        max_message: usize,
+        publish: Arc<dyn Fn(websocket::Event) -> bool + Send + Sync>,
+    ) -> (websocket::Connection, crate::stdlib::events::Subscription) {
+        websocket::watch_with(
+            Arc::clone(&self.transport),
+            Arc::clone(&self.grants),
+            url,
+            protocols,
+            max_message,
+            publish,
+        )
+    }
 }
 
 /// The secrets a consumer keeps across launches, carrying their grant

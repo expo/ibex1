@@ -1,16 +1,16 @@
 // NSURLSessionWebSocketTask behind SocketTransport: the platform half of a
-// listening WebSocket (LLP 0057 §3; LLP 0059.000 §3.12). The platform
+// WebSocket (LLP 0057 §3; LLP 0059.000 §3.12). The platform
 // owns TLS with the system trust store, proxies, pings and the closing
-// handshake; Rust owns the grant check and the message vocabulary.
+// handshake and send queue; Rust owns admission and the message vocabulary.
 //
 // Each socket has its own ephemeral session (no cookies, no cache) whose
 // delegate refuses redirects: a handshake that redirects fails, as it does in
 // a browser, and the grant was checked for this origin only. Nothing is ever
-// sent: the task is only asked to receive.
-//
 // @ref LLP 0057#3-the-boundary — the platform executes; it does not decide
+// @ref LLP 0057.000#l4--websocket — send does not require replacing the platform task
 
 #import <Foundation/Foundation.h>
+#import <Security/Security.h>
 
 #include <cerrno>
 #include <cstdlib>
@@ -37,6 +37,11 @@ char *dup_utf8(NSString *value) {
 @property(nonatomic, assign) BOOL ended;
 @property(nonatomic, assign) BOOL cancelled;
 @property(nonatomic, strong) NSString *failure;
+@property(nonatomic, strong) NSString *protocol;
+@property(nonatomic, assign) NSUInteger pendingBytes;
+// A test-only pinned anchor supplied by the Rust unit-test transport. The
+// production entry point always leaves this nil and uses normal system trust.
+@property(nonatomic, strong) NSData *testCertificate;
 // One received message, or the error that ended the receive.
 @property(nonatomic, assign) BOOL waiting;
 @property(nonatomic, assign) BOOL received;
@@ -49,6 +54,7 @@ char *dup_utf8(NSString *value) {
           webSocketTask:(NSURLSessionWebSocketTask *)task
     didOpenWithProtocol:(NSString *)protocol {
   [self.condition lock];
+  self.protocol = protocol ?: @"";
   self.opened = YES;
   [self.condition broadcast];
   [self.condition unlock];
@@ -84,17 +90,53 @@ char *dup_utf8(NSString *value) {
              completionHandler:(void (^)(NSURLRequest *))completionHandler {
   completionHandler(nil);
 }
+- (void)URLSession:(NSURLSession *)session
+    didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge
+      completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition,
+                                  NSURLCredential *))completionHandler {
+  if (self.testCertificate == nil ||
+      ![challenge.protectionSpace.authenticationMethod
+          isEqualToString:NSURLAuthenticationMethodServerTrust] ||
+      challenge.protectionSpace.serverTrust == nil) {
+    completionHandler(NSURLSessionAuthChallengePerformDefaultHandling, nil);
+    return;
+  }
+  SecCertificateRef anchor = SecCertificateCreateWithData(
+      kCFAllocatorDefault, (__bridge CFDataRef)self.testCertificate);
+  if (anchor == nullptr) {
+    completionHandler(NSURLSessionAuthChallengeCancelAuthenticationChallenge, nil);
+    return;
+  }
+  NSArray *anchors = @[ (__bridge id)anchor ];
+  SecTrustRef trust = challenge.protectionSpace.serverTrust;
+  OSStatus setStatus = SecTrustSetAnchorCertificates(
+      trust, (__bridge CFArrayRef)anchors);
+  if (setStatus == errSecSuccess)
+    setStatus = SecTrustSetAnchorCertificatesOnly(trust, true);
+  CFErrorRef trustError = nullptr;
+  BOOL trusted = setStatus == errSecSuccess &&
+                 SecTrustEvaluateWithError(trust, &trustError);
+  if (trustError != nullptr) CFRelease(trustError);
+  CFRelease(anchor);
+  if (trusted) {
+    completionHandler(NSURLSessionAuthChallengeUseCredential,
+                      [NSURLCredential credentialForTrust:trust]);
+  } else {
+    completionHandler(NSURLSessionAuthChallengeCancelAuthenticationChallenge, nil);
+  }
+}
 @end
 
 extern "C" {
 
-// Start opening `url`; the handle is retained for Rust until release.
-void *ibex2_darwin_ws_start(const char *url, size_t max_message) {
+void *start_socket(const char *url, const char *protocols, size_t max_message,
+                   NSData *test_certificate) {
   @autoreleasepool {
     NSURL *target = [NSURL URLWithString:[NSString stringWithUTF8String:url]];
     if (target == nil) return nullptr;
     Ibex2Socket *socket = [[Ibex2Socket alloc] init];
     socket.condition = [[NSCondition alloc] init];
+    socket.testCertificate = test_certificate;
     NSURLSessionConfiguration *config = [NSURLSessionConfiguration ephemeralSessionConfiguration];
     config.HTTPCookieStorage = nil;
     config.URLCache = nil;
@@ -103,6 +145,10 @@ void *ibex2_darwin_ws_start(const char *url, size_t max_message) {
     queue.maxConcurrentOperationCount = 1;
     socket.session = [NSURLSession sessionWithConfiguration:config delegate:socket delegateQueue:queue];
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:target];
+    if (protocols != nullptr && protocols[0] != '\0') {
+      [request setValue:[NSString stringWithUTF8String:protocols]
+          forHTTPHeaderField:@"Sec-WebSocket-Protocol"];
+    }
     request.timeoutInterval = 15;
     socket.task = [socket.session webSocketTaskWithRequest:request];
     // One over the ceiling, so a message exactly at it still arrives and
@@ -113,15 +159,36 @@ void *ibex2_darwin_ws_start(const char *url, size_t max_message) {
   }
 }
 
+// Start opening `url`; the handle is retained for Rust until release.
+void *ibex2_darwin_ws_start(const char *url, const char *protocols,
+                            size_t max_message) {
+  return start_socket(url, protocols, max_message, nil);
+}
+
+// Unit-test seam for a loopback TLS server with a pinned self-signed leaf.
+// No production Rust path calls this entry point.
+void *ibex2_darwin_ws_start_with_test_certificate(
+    const char *url, const char *protocols, size_t max_message,
+    const unsigned char *certificate, size_t certificate_len) {
+  @autoreleasepool {
+    NSData *data = [NSData dataWithBytes:certificate length:certificate_len];
+    return start_socket(url, protocols, max_message, data);
+  }
+}
+
 // Block until the handshake completes. Nonzero on failure, with a message.
-int ibex2_darwin_ws_wait_open(void *handle, char **out_error) {
+int ibex2_darwin_ws_wait_open(void *handle, char **out_error,
+                              char **out_protocol) {
   Ibex2Socket *socket = (__bridge Ibex2Socket *)handle;
   [socket.condition lock];
   while (!socket.opened && !socket.ended && !socket.cancelled) [socket.condition wait];
   BOOL opened = socket.opened && !socket.cancelled;
   NSString *failure = socket.cancelled ? @"aborted" : socket.failure;
   [socket.condition unlock];
-  if (opened) return 0;
+  if (opened) {
+    *out_protocol = dup_utf8(socket.protocol ?: @"");
+    return 0;
+  }
   *out_error = dup_utf8(failure ?: @"the connection failed");
   return 1;
 }
@@ -153,7 +220,8 @@ int ibex2_darwin_ws_next(void *handle, int *out_kind, char **out_data, size_t *o
     [strong.condition unlock];
   }];
   [socket.condition lock];
-  while (!socket.received && !socket.cancelled) [socket.condition wait];
+  while (!socket.received && !socket.cancelled && !socket.ended)
+    [socket.condition wait];
   socket.waiting = NO;
   if (socket.cancelled) {
     [socket.condition unlock];
@@ -175,6 +243,11 @@ int ibex2_darwin_ws_next(void *handle, int *out_kind, char **out_data, size_t *o
   if (message != nil) {
     *out_kind = 1;
     *out_len = message.data.length;
+    if (*out_len > 0) {
+      *out_data = static_cast<char *>(std::malloc(*out_len));
+      if (*out_data == nullptr) return 1;
+      std::memcpy(*out_data, message.data.bytes, *out_len);
+    }
     return 0;
   }
   // The platform refuses a message over maximumMessageSize with EMSGSIZE.
@@ -193,6 +266,74 @@ int ibex2_darwin_ws_next(void *handle, int *out_kind, char **out_data, size_t *o
   return 0;
 }
 
+int send_message(Ibex2Socket *socket, NSURLSessionWebSocketMessage *message,
+                 size_t length) {
+  [socket.condition lock];
+  socket.pendingBytes += length;
+  BOOL ended = socket.ended || socket.cancelled;
+  [socket.condition unlock];
+  // WHATWG keeps bytes handed to a closing/closed socket in bufferedAmount.
+  if (ended) return 0;
+  __weak Ibex2Socket *weak = socket;
+  [socket.task sendMessage:message completionHandler:^(NSError *error) {
+    Ibex2Socket *strong = weak;
+    if (strong == nil) return;
+    [strong.condition lock];
+    if (error == nil) {
+      strong.pendingBytes = strong.pendingBytes >= length
+                                ? strong.pendingBytes - length
+                                : 0;
+    } else {
+      strong.error = error;
+      strong.ended = YES;
+    }
+    [strong.condition broadcast];
+    [strong.condition unlock];
+  }];
+  return 0;
+}
+
+int ibex2_darwin_ws_send_text(void *handle, const unsigned char *data,
+                              size_t len) {
+  Ibex2Socket *socket = (__bridge Ibex2Socket *)handle;
+  NSData *bytes = [NSData dataWithBytes:data length:len];
+  NSString *text = [[NSString alloc] initWithData:bytes
+                                         encoding:NSUTF8StringEncoding];
+  if (text == nil) return 1;
+  return send_message(socket,
+      [[NSURLSessionWebSocketMessage alloc] initWithString:text], len);
+}
+
+int ibex2_darwin_ws_send_binary(void *handle, const unsigned char *data,
+                                size_t len) {
+  Ibex2Socket *socket = (__bridge Ibex2Socket *)handle;
+  NSData *bytes = [NSData dataWithBytes:data length:len];
+  return send_message(socket,
+      [[NSURLSessionWebSocketMessage alloc] initWithData:bytes], len);
+}
+
+void ibex2_darwin_ws_close(void *handle, int code,
+                           const unsigned char *reason, size_t len) {
+  Ibex2Socket *socket = (__bridge Ibex2Socket *)handle;
+  NSData *data = len == 0 ? nil : [NSData dataWithBytes:reason length:len];
+  // NSURLSession has no spelling for an empty RFC 6455 close payload. Its
+  // `Invalid` enum produces a transport cancellation, not a clean handshake,
+  // so the no-argument WHATWG close uses the platform's normal closure.
+  NSURLSessionWebSocketCloseCode platformCode =
+      code == 0 ? NSURLSessionWebSocketCloseCodeNormalClosure
+                : (NSURLSessionWebSocketCloseCode)code;
+  [socket.task cancelWithCloseCode:platformCode
+                            reason:data];
+}
+
+size_t ibex2_darwin_ws_buffered_amount(void *handle) {
+  Ibex2Socket *socket = (__bridge Ibex2Socket *)handle;
+  [socket.condition lock];
+  NSUInteger amount = socket.pendingBytes;
+  [socket.condition unlock];
+  return (size_t)amount;
+}
+
 // Close the socket (idempotent); a blocked open or read returns aborted.
 void ibex2_darwin_ws_cancel(void *handle) {
   Ibex2Socket *socket = (__bridge Ibex2Socket *)handle;
@@ -201,7 +342,7 @@ void ibex2_darwin_ws_cancel(void *handle) {
   socket.cancelled = YES;
   [socket.condition broadcast];
   [socket.condition unlock];
-  if (!already) [socket.task cancelWithCloseCode:NSURLSessionWebSocketCloseCodeNormalClosure reason:nil];
+  if (!already) [socket.task cancel];
 }
 
 // Close and release Rust's reference; the session ends with it.

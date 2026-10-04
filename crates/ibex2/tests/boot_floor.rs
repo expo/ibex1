@@ -218,3 +218,37 @@ fn event_group_floor_delta() {
     println!("  with EVENTS:    {:.1} us", median(with_samples));
     println!("  paired delta:   {:+.1} us", median(paired_deltas));
 }
+
+/// WEBSOCKET is explicit rather than part of DEFAULT, so measure its bytecode
+/// install, hardening, and first-evaluation delta directly.
+#[cfg(feature = "websocket")]
+#[test]
+#[ignore]
+fn websocket_group_floor_delta() {
+    let without = ibex2::bindings::Groups::DEFAULT;
+    let with = without | ibex2::bindings::Groups::WEBSOCKET;
+
+    let _ = post_create_floor(without);
+    let _ = post_create_floor(with);
+    let mut with_samples = Vec::new();
+    let mut without_samples = Vec::new();
+    let mut paired_deltas = Vec::new();
+    for index in 0..101 {
+        let (without_elapsed, with_elapsed) = if index % 2 == 0 {
+            (post_create_floor(without), post_create_floor(with))
+        } else {
+            let with_elapsed = post_create_floor(with);
+            (post_create_floor(without), with_elapsed)
+        };
+        let without_us = without_elapsed.as_secs_f64() * 1_000_000.0;
+        let with_us = with_elapsed.as_secs_f64() * 1_000_000.0;
+        without_samples.push(without_us);
+        with_samples.push(with_us);
+        paired_deltas.push(with_us - without_us);
+    }
+
+    println!("\n=== WEBSOCKET incremental boot floor (release) ===");
+    println!("  without WEBSOCKET: {:.1} us", median(without_samples));
+    println!("  with WEBSOCKET:    {:.1} us", median(with_samples));
+    println!("  paired delta:      {:+.1} us", median(paired_deltas));
+}

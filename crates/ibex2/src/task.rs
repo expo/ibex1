@@ -370,6 +370,7 @@ pub struct RuntimeState {
     responses: Mutex<std::collections::HashMap<u64, Arc<StoredResponse>>>,
     controls: Mutex<std::collections::HashMap<u64, crate::stdlib::abort::AbortController>>,
     subscriptions: Mutex<HashMap<u64, ()>>,
+    websockets: Mutex<HashMap<u64, StoredWebSocket>>,
     shutdown: std::sync::atomic::AtomicBool,
     /// References held by workers keep storage alive but do not keep the
     /// runtime open. Only Contexts and owning engine handles increment this.
@@ -420,6 +421,36 @@ struct StoredResponse {
     control_handle: Option<u64>,
 }
 
+struct StoredWebSocket {
+    connection: crate::stdlib::websocket::Connection,
+    _subscription: crate::stdlib::events::Subscription,
+    activity: Arc<WebSocketActivity>,
+}
+
+struct WebSocketActivity {
+    state: Weak<RuntimeState>,
+    finished: std::sync::atomic::AtomicBool,
+}
+
+impl WebSocketActivity {
+    fn finish(&self) {
+        if !self
+            .finished
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            if let Some(state) = self.state.upgrade() {
+                state.task_finished();
+            }
+        }
+    }
+}
+
+impl Drop for StoredWebSocket {
+    fn drop(&mut self) {
+        self.activity.finish();
+    }
+}
+
 impl RuntimeState {
     pub fn new(transport: Box<dyn crate::stdlib::fetch::Transport>) -> Self {
         let bindings = host::Host::with_transport(transport).endow(crate::grant::GrantSet::none());
@@ -444,6 +475,7 @@ impl RuntimeState {
             responses: Mutex::new(std::collections::HashMap::new()),
             controls: Mutex::new(std::collections::HashMap::new()),
             subscriptions: Mutex::new(HashMap::new()),
+            websockets: Mutex::new(HashMap::new()),
             shutdown: std::sync::atomic::AtomicBool::new(false),
             owners: std::sync::atomic::AtomicUsize::new(0),
             headers: Mutex::new(std::collections::HashMap::new()),
@@ -490,6 +522,95 @@ impl RuntimeState {
             .unwrap_or(&self.endowment)
             .fetch
             .transport()
+    }
+
+    fn websocket(&self) -> &host::WebSocket {
+        &self
+            .adopted_endowment
+            .get()
+            .unwrap_or(&self.endowment)
+            .websocket
+    }
+
+    /// Start a WebSocket source whose callback identity already belongs to
+    /// this runtime. The platform worker publishes compact byte payloads into
+    /// the same FIFO as settlements and timers; JSI is touched only by pump.
+    // @ref LLP 0057.000#l4--websocket — WebSocket is the first user of L3's subscription FIFO
+    pub(crate) fn open_websocket(
+        self: &Arc<Self>,
+        subscription: u64,
+        url: String,
+        protocols: Vec<String>,
+        max_message: usize,
+    ) -> Result<u64, HostError> {
+        if self.is_shutdown()
+            || !self
+                .subscriptions
+                .lock()
+                .expect("event subscriptions poisoned")
+                .contains_key(&subscription)
+        {
+            return Err(HostError::Failed("the runtime is shutting down".into()));
+        }
+        self.task_started();
+        let activity = Arc::new(WebSocketActivity {
+            state: Arc::downgrade(self),
+            finished: std::sync::atomic::AtomicBool::new(false),
+        });
+        let publisher = Arc::downgrade(self);
+        let worker_activity = Arc::clone(&activity);
+        let publish = Arc::new(move |event: crate::stdlib::websocket::Event| {
+            let terminal = matches!(event, crate::stdlib::websocket::Event::Close { .. });
+            let payload = websocket_event_payload(event);
+            let published = publisher
+                .upgrade()
+                .is_some_and(|state| state.publish_event(subscription, payload));
+            if terminal || !published {
+                worker_activity.finish();
+            }
+            published
+        });
+        let (connection, source_subscription) =
+            self.websocket()
+                .watch_with(url, protocols, max_message, publish);
+        let handle = self
+            .next_handle
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut sockets = self.websockets.lock().expect("WebSockets poisoned");
+        if self.is_shutdown() {
+            drop(sockets);
+            source_subscription.unsubscribe();
+            activity.finish();
+            return Err(HostError::Failed("the runtime is shutting down".into()));
+        }
+        sockets.insert(
+            handle,
+            StoredWebSocket {
+                connection,
+                _subscription: source_subscription,
+                activity,
+            },
+        );
+        Ok(handle)
+    }
+
+    pub(crate) fn with_websocket<T>(
+        &self,
+        handle: u64,
+        apply: impl FnOnce(&crate::stdlib::websocket::Connection) -> Result<T, HostError>,
+    ) -> Result<T, HostError> {
+        let sockets = self.websockets.lock().expect("WebSockets poisoned");
+        let socket = sockets
+            .get(&handle)
+            .ok_or_else(|| HostError::Failed("unknown WebSocket handle".into()))?;
+        apply(&socket.connection)
+    }
+
+    pub(crate) fn drop_websocket(&self, handle: u64) {
+        self.websockets
+            .lock()
+            .expect("WebSockets poisoned")
+            .remove(&handle);
     }
 
     /// Snapshot the source endowment together with configuration applied
@@ -636,6 +757,8 @@ impl RuntimeState {
         for response in responses.into_values() {
             response.control.abort();
         }
+        let websockets = std::mem::take(&mut *self.websockets.lock().expect("WebSockets poisoned"));
+        drop(websockets);
         // @ref LLP 0058.000.000#9-teardown-and-lifecycle — shutdown removes callback identities and their unreserved event tasks as one locked transition
         let mut subscriptions = self
             .subscriptions
@@ -884,6 +1007,42 @@ impl RuntimeState {
     }
 }
 
+/// One compact, non-JSON payload for the JSI subscription callback.
+/// Byte 0 is open/text/binary/error/close; close then carries clean and code.
+fn websocket_event_payload(event: crate::stdlib::websocket::Event) -> HostValue {
+    use crate::stdlib::websocket::{Event, Message};
+    let mut bytes = Vec::new();
+    match event {
+        Event::Open { protocol } => {
+            bytes.push(0);
+            bytes.extend_from_slice(protocol.as_bytes());
+        }
+        Event::Message(Message::Text(text)) => {
+            bytes.push(1);
+            bytes.extend_from_slice(text.as_bytes());
+        }
+        Event::Message(Message::Binary(payload)) => {
+            bytes.push(2);
+            bytes.extend_from_slice(&payload);
+        }
+        Event::Error(message) => {
+            bytes.push(3);
+            bytes.extend_from_slice(message.as_bytes());
+        }
+        Event::Close {
+            code,
+            reason,
+            was_clean,
+        } => {
+            bytes.push(4);
+            bytes.push(u8::from(was_clean));
+            bytes.extend_from_slice(&code.to_be_bytes());
+            bytes.extend_from_slice(reason.as_bytes());
+        }
+    }
+    HostValue::Bytes(bytes)
+}
+
 /// Where the loader reads from, and the authority it hands each module.
 #[derive(Debug)]
 pub struct LoaderConfig {
@@ -1106,6 +1265,235 @@ pub unsafe extern "C" fn ibex2_subscription_destroy(subscription: *mut Ibex2Subs
     if !subscription.is_null() {
         drop(Box::from_raw(subscription));
     }
+}
+
+struct WebSocketOwner {
+    state: Weak<RuntimeState>,
+    handle: u64,
+}
+
+unsafe fn websocket_input<'a>(data: *const u8, len: usize) -> Result<&'a str, HostError> {
+    let bytes = if len == 0 {
+        &[]
+    } else if data.is_null() {
+        return Err(HostError::InvalidArgument(
+            "a WebSocket string span was null".into(),
+        ));
+    } else {
+        std::slice::from_raw_parts(data, len)
+    };
+    std::str::from_utf8(bytes)
+        .map_err(|_| HostError::InvalidArgument("a WebSocket string was not UTF-8".into()))
+}
+
+unsafe fn websocket_error(out: *mut *mut std::ffi::c_char, error: HostError) -> i32 {
+    if !out.is_null() {
+        let message = error.to_string().replace('\0', "�");
+        *out = std::ffi::CString::new(message)
+            .expect("NUL was replaced")
+            .into_raw();
+    }
+    1
+}
+
+/// Whether this build linked an application WebSocket transport.
+#[no_mangle]
+pub extern "C" fn ibex2_websocket_supported() -> i32 {
+    i32::from(cfg!(feature = "websocket"))
+}
+
+/// Start one JavaScript WebSocket source for an existing callback identity.
+/// Protocols are newline-delimited validated HTTP tokens; a token cannot
+/// itself contain a newline.
+///
+/// # Safety
+/// `state` is a live runtime-state pointer and every input/out span is valid.
+#[no_mangle]
+pub unsafe extern "C" fn ibex2_websocket_open(
+    state: *const RuntimeState,
+    subscription: u64,
+    url: *const u8,
+    url_len: usize,
+    protocols: *const u8,
+    protocols_len: usize,
+    max_message: usize,
+    out_error: *mut *mut std::ffi::c_char,
+) -> u64 {
+    if !out_error.is_null() {
+        *out_error = std::ptr::null_mut();
+    }
+    let Some(state) = clone_queue(state) else {
+        websocket_error(
+            out_error,
+            HostError::Failed("the runtime is detached".into()),
+        );
+        return 0;
+    };
+    let url = match websocket_input(url, url_len) {
+        Ok(value) => value.to_string(),
+        Err(error) => {
+            websocket_error(out_error, error);
+            return 0;
+        }
+    };
+    let protocols = match websocket_input(protocols, protocols_len) {
+        Ok("") => Vec::new(),
+        Ok(value) => value.split('\n').map(str::to_string).collect(),
+        Err(error) => {
+            websocket_error(out_error, error);
+            return 0;
+        }
+    };
+    match state.open_websocket(subscription, url, protocols, max_message) {
+        Ok(handle) => handle,
+        Err(error) => {
+            websocket_error(out_error, error);
+            0
+        }
+    }
+}
+
+/// Make a GC owner for a JavaScript WebSocket object.
+///
+/// # Safety
+/// `state` is a live runtime-state pointer and `handle` came from open.
+#[no_mangle]
+pub unsafe extern "C" fn ibex2_websocket_owner_create(
+    state: *const RuntimeState,
+    handle: u64,
+) -> *mut std::ffi::c_void {
+    let Some(state) = clone_queue(state) else {
+        return std::ptr::null_mut();
+    };
+    Box::into_raw(Box::new(WebSocketOwner {
+        state: Arc::downgrade(&state),
+        handle,
+    }))
+    .cast()
+}
+
+/// Release a WebSocket object's native connection after it is unreachable.
+///
+/// # Safety
+/// `owner` is null or an unfreed pointer returned by owner_create.
+#[no_mangle]
+pub unsafe extern "C" fn ibex2_websocket_owner_destroy(owner: *mut std::ffi::c_void) {
+    if owner.is_null() {
+        return;
+    }
+    let owner = Box::from_raw(owner.cast::<WebSocketOwner>());
+    if let Some(state) = owner.state.upgrade() {
+        state.drop_websocket(owner.handle);
+    }
+}
+
+/// Queue one text or binary message.
+///
+/// # Safety
+/// `state` and `data` describe live spans for this call; `out_error` is writable.
+#[no_mangle]
+pub unsafe extern "C" fn ibex2_websocket_send(
+    state: *const RuntimeState,
+    handle: u64,
+    binary: i32,
+    data: *const u8,
+    len: usize,
+    out_error: *mut *mut std::ffi::c_char,
+) -> i32 {
+    if !out_error.is_null() {
+        *out_error = std::ptr::null_mut();
+    }
+    let Some(state) = clone_queue(state) else {
+        return websocket_error(
+            out_error,
+            HostError::Failed("the runtime is detached".into()),
+        );
+    };
+    let bytes = if len == 0 {
+        &[]
+    } else if data.is_null() {
+        return websocket_error(
+            out_error,
+            HostError::InvalidArgument("a WebSocket byte span was null".into()),
+        );
+    } else {
+        std::slice::from_raw_parts(data, len)
+    };
+    let result = if binary != 0 {
+        state.with_websocket(handle, |socket| socket.send_binary(bytes))
+    } else {
+        match std::str::from_utf8(bytes) {
+            Ok(text) => state.with_websocket(handle, |socket| socket.send_text(text)),
+            Err(_) => Err(HostError::InvalidArgument(
+                "a WebSocket text message was not UTF-8".into(),
+            )),
+        }
+    };
+    match result {
+        Ok(()) => 0,
+        Err(error) => websocket_error(out_error, error),
+    }
+}
+
+/// Begin the closing handshake. Code zero means the optional code was absent.
+///
+/// # Safety
+/// Input spans are valid for this call and `out_error` is writable.
+#[no_mangle]
+pub unsafe extern "C" fn ibex2_websocket_close(
+    state: *const RuntimeState,
+    handle: u64,
+    code: i32,
+    reason: *const u8,
+    reason_len: usize,
+    out_error: *mut *mut std::ffi::c_char,
+) -> i32 {
+    if !out_error.is_null() {
+        *out_error = std::ptr::null_mut();
+    }
+    let Some(state) = clone_queue(state) else {
+        return websocket_error(
+            out_error,
+            HostError::Failed("the runtime is detached".into()),
+        );
+    };
+    let reason = match websocket_input(reason, reason_len) {
+        Ok(value) => value,
+        Err(error) => return websocket_error(out_error, error),
+    };
+    let code = (code != 0).then_some(code as u16);
+    match state.with_websocket(handle, |socket| socket.close(code, reason)) {
+        Ok(()) => 0,
+        Err(error) => websocket_error(out_error, error),
+    }
+}
+
+/// Read `readyState`; an already-collected handle is CLOSED.
+#[no_mangle]
+pub unsafe extern "C" fn ibex2_websocket_ready_state(
+    state: *const RuntimeState,
+    handle: u64,
+) -> i32 {
+    let Some(state) = clone_queue(state) else {
+        return 3;
+    };
+    state
+        .with_websocket(handle, |socket| Ok(socket.ready_state() as i32))
+        .unwrap_or(3)
+}
+
+/// Read the transport queue plus bytes discarded after closing.
+#[no_mangle]
+pub unsafe extern "C" fn ibex2_websocket_buffered_amount(
+    state: *const RuntimeState,
+    handle: u64,
+) -> usize {
+    let Some(state) = clone_queue(state) else {
+        return 0;
+    };
+    state
+        .with_websocket(handle, |socket| Ok(socket.buffered_amount()))
+        .unwrap_or(0)
 }
 
 /// Test-source seam used by the engine fixtures; production event sources call

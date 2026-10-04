@@ -47,6 +47,9 @@ impl Groups {
     pub const KV: Self = Self(1 << 9);
     pub const INTL: Self = Self(1 << 10);
     pub const EVENTS: Self = Self(1 << 11);
+    /// Application WebSockets. Deliberately absent from `DEFAULT`: a runtime
+    /// opts into this capability-bearing global explicitly.
+    pub const WEBSOCKET: Self = Self(1 << 12);
 
     const PORTABLE_ALL: Self = Self(
         Self::PURE.0
@@ -97,6 +100,7 @@ impl Groups {
             (Self::CRYPTO, Self::PURE),
             (Self::FETCH, Self(Self::PURE.0 | Self::ABORT.0)),
             (Self::EVENTS, Self::PURE),
+            (Self::WEBSOCKET, Self(Self::PURE.0 | Self::EVENTS.0)),
         ];
         for (group, required) in requirements {
             if self.contains(group) && !self.contains(required) {
@@ -117,7 +121,7 @@ impl Groups {
     }
 
     fn names(self) -> impl Iterator<Item = &'static str> {
-        const NAMES: [(Groups, &str); 12] = [
+        const NAMES: [(Groups, &str); 13] = [
             (Groups::PURE, "PURE"),
             (Groups::CONSOLE, "CONSOLE"),
             (Groups::TIMERS, "TIMERS"),
@@ -130,6 +134,7 @@ impl Groups {
             (Groups::KV, "KV"),
             (Groups::INTL, "INTL"),
             (Groups::EVENTS, "EVENTS"),
+            (Groups::WEBSOCKET, "WEBSOCKET"),
         ];
         NAMES
             .into_iter()
@@ -211,6 +216,7 @@ pub fn scripts(groups: Groups) -> Result<Vec<Script>, GroupError> {
         "crypto" => concat!(env!("CARGO_MANIFEST_DIR"), "/src/bindings/crypto.js"),
         "abort" => concat!(env!("CARGO_MANIFEST_DIR"), "/src/bindings/abort.js"),
         "events" => concat!(env!("CARGO_MANIFEST_DIR"), "/src/bindings/events.js"),
+        "websocket" => concat!(env!("CARGO_MANIFEST_DIR"), "/src/bindings/websocket.js"),
         "fetch" => concat!(env!("CARGO_MANIFEST_DIR"), "/src/bindings/fetch.js"),
         "sqlite" => SQLITE_SOURCE,
         #[cfg(target_os = "linux")]
@@ -251,6 +257,9 @@ pub fn scripts(groups: Groups) -> Result<Vec<Script>, GroupError> {
     }
     if groups.contains(Groups::ABORT) {
         push("abort");
+    }
+    if groups.contains(Groups::WEBSOCKET) {
+        push("websocket");
     }
     #[cfg(target_os = "linux")]
     if groups.contains(Groups::INTL) {
@@ -501,6 +510,10 @@ mod tests {
         let error = (Groups::PURE | Groups::FETCH).validate().unwrap_err();
         assert_eq!(error.group, Groups::FETCH);
         assert_eq!(error.missing, Groups::ABORT);
+
+        let error = Groups::WEBSOCKET.validate().unwrap_err();
+        assert_eq!(error.group, Groups::WEBSOCKET);
+        assert_eq!(error.missing, Groups::PURE | Groups::EVENTS);
     }
 
     #[test]

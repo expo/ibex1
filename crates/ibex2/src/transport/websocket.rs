@@ -1,18 +1,27 @@
-//! A listening WebSocket client off Apple (RFC 6455): TCP from the standard
+//! A WebSocket client off Apple (RFC 6455): TCP from the standard
 //! library, TLS from the same rustls and trust store as `RustlsHttpTransport`.
-//! It sends only what the protocol requires — the opening handshake, a pong
-//! for each ping, and the closing handshake — always masked, as a client must.
+//! One writer queue serializes masked client frames and accounts queued data;
+//! the reader joins both text and binary fragments and owns control replies.
 //! @ref LLP 0057#3-the-boundary — the platform owns the socket and TLS
 
 use crate::boundary::HostError;
 use crate::stdlib::abort::{AbortRegistration, AbortSignal};
-use crate::stdlib::websocket::{Incoming, MessageSource, SocketTransport};
+use crate::stdlib::websocket::{
+    Event, Incoming, Message, MessageSender, MessageSource, SocketTransport,
+};
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU8, AtomicUsize, Ordering},
+    mpsc, Arc, Mutex,
+};
 use std::time::Duration;
 
 const MAX_HEAD: usize = 16 << 10;
+const FRAGMENT: usize = 16 << 10;
+const OPEN: u8 = 1;
+const CLOSING: u8 = 2;
+const CLOSED: u8 = 3;
 
 /// Plaintext `ws:` and rustls `wss:`, one connection per socket. The trust
 /// store loads on the first `wss:` open, never at construction (a host that
@@ -25,6 +34,13 @@ pub struct TcpSocketTransport {
 impl TcpSocketTransport {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_tls(config: Arc<rustls::ClientConfig>) -> Self {
+        let tls = std::sync::OnceLock::new();
+        tls.set(config).expect("a fresh TLS configuration");
+        Self { tls }
     }
 
     fn tls(&self) -> Arc<rustls::ClientConfig> {
@@ -90,6 +106,16 @@ impl SocketTransport for TcpSocketTransport {
         max_message: usize,
         signal: &AbortSignal,
     ) -> Result<Box<dyn MessageSource>, HostError> {
+        self.connect_with_protocols(url, max_message, signal, &[])
+    }
+
+    fn connect_with_protocols(
+        &self,
+        url: &url::Url,
+        max_message: usize,
+        signal: &AbortSignal,
+        protocols: &[String],
+    ) -> Result<Box<dyn MessageSource>, HostError> {
         let host = url.host_str().ok_or_else(|| failed("no host"))?;
         let port = url
             .port_or_known_default()
@@ -136,11 +162,34 @@ impl SocketTransport for TcpSocketTransport {
         } else {
             Wire::Plain(tcp)
         };
-        let buffered = handshake(&mut wire, url).map_err(|e| match signal.check() {
-            Err(aborted) => aborted,
-            Ok(()) => e,
-        })?;
-        shutdown.set_read_timeout(None).map_err(failed)?;
+        let (buffered, protocol) =
+            handshake(&mut wire, url, protocols).map_err(|e| match signal.check() {
+                Err(aborted) => aborted,
+                Ok(()) => e,
+            })?;
+        shutdown
+            .set_read_timeout(Some(Duration::from_millis(25)))
+            .map_err(failed)?;
+        let wire = Arc::new(Mutex::new(wire));
+        let buffered_amount = Arc::new(AtomicUsize::new(0));
+        let phase = Arc::new(AtomicU8::new(OPEN));
+        let (commands, outgoing) = mpsc::channel();
+        let sender = Arc::new(TcpSender {
+            commands,
+            buffered: Arc::clone(&buffered_amount),
+            phase: Arc::clone(&phase),
+        });
+        let writer_wire = Arc::clone(&wire);
+        let writer_shutdown = shutdown.try_clone().map_err(failed)?;
+        std::thread::spawn(move || {
+            writer_loop(
+                outgoing,
+                writer_wire,
+                writer_shutdown,
+                buffered_amount,
+                phase,
+            )
+        });
         Ok(Box::new(Socket {
             wire,
             buffered,
@@ -149,14 +198,19 @@ impl SocketTransport for TcpSocketTransport {
             shutdown,
             signal: signal.clone(),
             _registration: registration,
-            closed: false,
+            sender,
+            protocol,
         }))
     }
 }
 
 /// Send the opening handshake and check the answer. Returns bytes read past
 /// the head (the first frames, if the server was quick).
-fn handshake(wire: &mut Wire, url: &url::Url) -> Result<Vec<u8>, HostError> {
+fn handshake(
+    wire: &mut Wire,
+    url: &url::Url,
+    protocols: &[String],
+) -> Result<(Vec<u8>, String), HostError> {
     let mut nonce = [0u8; 16];
     getrandom::getrandom(&mut nonce).map_err(failed)?;
     use base64::Engine as _;
@@ -169,9 +223,14 @@ fn handshake(wire: &mut Wire, url: &url::Url) -> Result<Vec<u8>, HostError> {
         Some(q) => format!("{}?{q}", url.path()),
         None => url.path().to_string(),
     };
+    let protocols_header = if protocols.is_empty() {
+        String::new()
+    } else {
+        format!("Sec-WebSocket-Protocol: {}\r\n", protocols.join(", "))
+    };
     let head = format!(
         "GET {target} HTTP/1.1\r\nHost: {host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
-         Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+         Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n{protocols_header}\r\n"
     );
     wire.write_all(head.as_bytes()).map_err(failed)?;
     wire.flush().map_err(failed)?;
@@ -216,28 +275,204 @@ fn handshake(wire: &mut Wire, url: &url::Url) -> Result<Vec<u8>, HostError> {
     if !upgrade || !connection || header("sec-websocket-accept").as_deref() != Some(&expected) {
         return Err(failed("the server's handshake was not a WebSocket upgrade"));
     }
-    // Nothing was offered, so nothing may be accepted.
-    if header("sec-websocket-extensions").is_some() || header("sec-websocket-protocol").is_some() {
-        return Err(failed(
-            "the server chose an extension or protocol never offered",
-        ));
+    if header("sec-websocket-extensions").is_some() {
+        return Err(failed("the server chose an extension never offered"));
     }
-    Ok(bytes[end..].to_vec())
+    let selected = header("sec-websocket-protocol").unwrap_or_default();
+    if !selected.is_empty() && !protocols.iter().any(|value| value == &selected) {
+        return Err(failed("the server chose a subprotocol never offered"));
+    }
+    Ok((bytes[end..].to_vec(), selected))
 }
 
 struct Socket {
-    wire: Wire,
+    wire: Arc<Mutex<Wire>>,
     buffered: Vec<u8>,
     at: usize,
     limit: usize,
     shutdown: TcpStream,
     signal: AbortSignal,
     _registration: AbortRegistration,
-    closed: bool,
+    sender: Arc<TcpSender>,
+    protocol: String,
 }
 
 fn protocol(what: &str) -> HostError {
     HostError::Failed(format!("the socket broke the protocol: {what}"))
+}
+
+enum Command {
+    Data {
+        opcode: u8,
+        payload: Vec<u8>,
+        accounted: usize,
+    },
+    Control {
+        opcode: u8,
+        payload: Vec<u8>,
+    },
+}
+
+struct TcpSender {
+    commands: mpsc::Sender<Command>,
+    buffered: Arc<AtomicUsize>,
+    phase: Arc<AtomicU8>,
+}
+
+impl TcpSender {
+    fn enqueue(&self, opcode: u8, payload: &[u8]) -> Result<(), HostError> {
+        saturating_add(&self.buffered, payload.len());
+        if self.phase.load(Ordering::Acquire) != OPEN {
+            return Ok(());
+        }
+        self.commands
+            .send(Command::Data {
+                opcode,
+                payload: payload.to_vec(),
+                accounted: payload.len(),
+            })
+            .map_err(|_| HostError::Failed("the socket is closed".into()))
+    }
+
+    fn control(&self, opcode: u8, payload: Vec<u8>) {
+        let _ = self.commands.send(Command::Control { opcode, payload });
+    }
+
+    fn mark_closed(&self) {
+        self.phase.store(CLOSED, Ordering::Release);
+    }
+}
+
+impl MessageSender for TcpSender {
+    fn send_text(&self, text: &str) -> Result<(), HostError> {
+        self.enqueue(0x1, text.as_bytes())
+    }
+
+    fn send_binary(&self, bytes: &[u8]) -> Result<(), HostError> {
+        self.enqueue(0x2, bytes)
+    }
+
+    fn close(&self, code: Option<u16>, reason: &str) -> Result<(), HostError> {
+        if self
+            .phase
+            .compare_exchange(OPEN, CLOSING, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Ok(());
+        }
+        let mut payload = Vec::new();
+        if let Some(code) = code {
+            payload.extend_from_slice(&code.to_be_bytes());
+            payload.extend_from_slice(reason.as_bytes());
+        }
+        self.control(0x8, payload);
+        Ok(())
+    }
+
+    fn buffered_amount(&self) -> usize {
+        self.buffered.load(Ordering::Acquire)
+    }
+}
+
+fn saturating_add(amount: &AtomicUsize, bytes: usize) {
+    let _ = amount.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+        Some(current.saturating_add(bytes))
+    });
+}
+
+fn writer_loop(
+    commands: mpsc::Receiver<Command>,
+    wire: Arc<Mutex<Wire>>,
+    shutdown: TcpStream,
+    buffered: Arc<AtomicUsize>,
+    phase: Arc<AtomicU8>,
+) {
+    while let Ok(command) = commands.recv() {
+        let (result, accounted, closing) = match command {
+            Command::Data {
+                opcode,
+                payload,
+                accounted,
+            } => (write_message(&wire, opcode, &payload), accounted, false),
+            Command::Control { opcode, payload } => {
+                let result = write_one(&wire, true, opcode, &payload);
+                (result, 0, opcode == 0x8)
+            }
+        };
+        if result.is_err() {
+            phase.store(CLOSED, Ordering::Release);
+            let _ = shutdown.shutdown(Shutdown::Both);
+            return;
+        }
+        if accounted != 0 {
+            buffered.fetch_sub(accounted, Ordering::AcqRel);
+        }
+        if closing {
+            // Keep reading until the peer answers the closing handshake.
+        }
+    }
+}
+
+fn write_message(wire: &Arc<Mutex<Wire>>, opcode: u8, payload: &[u8]) -> std::io::Result<()> {
+    let mut wire = wire.lock().expect("socket wire poisoned");
+    if payload.is_empty() {
+        wire.write_all(&masked_frame(true, opcode, payload)?)?;
+        return wire.flush();
+    }
+    for (index, chunk) in payload.chunks(FRAGMENT).enumerate() {
+        let fin = (index + 1) * FRAGMENT >= payload.len();
+        wire.write_all(&masked_frame(
+            fin,
+            if index == 0 { opcode } else { 0 },
+            chunk,
+        )?)?;
+    }
+    wire.flush()
+}
+
+fn write_one(
+    wire: &Arc<Mutex<Wire>>,
+    fin: bool,
+    opcode: u8,
+    payload: &[u8],
+) -> std::io::Result<()> {
+    let frame = masked_frame(fin, opcode, payload)?;
+    let mut wire = wire.lock().expect("socket wire poisoned");
+    wire.write_all(&frame)?;
+    wire.flush()
+}
+
+fn masked_frame(fin: bool, opcode: u8, payload: &[u8]) -> std::io::Result<Vec<u8>> {
+    let mut mask = [0u8; 4];
+    getrandom::getrandom(&mut mask).map_err(|error| std::io::Error::other(error.to_string()))?;
+    let mut frame = Vec::with_capacity(payload.len().saturating_add(14));
+    frame.push((if fin { 0x80 } else { 0 }) | opcode);
+    match payload.len() {
+        length if length < 126 => frame.push(0x80 | length as u8),
+        length if length <= u16::MAX as usize => {
+            frame.push(0x80 | 126);
+            frame.extend_from_slice(&(length as u16).to_be_bytes());
+        }
+        length => {
+            frame.push(0x80 | 127);
+            frame.extend_from_slice(&(length as u64).to_be_bytes());
+        }
+    }
+    frame.extend_from_slice(&mask);
+    frame.extend(
+        payload
+            .iter()
+            .enumerate()
+            .map(|(index, byte)| byte ^ mask[index % 4]),
+    );
+    Ok(frame)
+}
+
+enum Received {
+    Text(String),
+    Binary(Vec<u8>),
+    TooLarge,
+    Closed { code: u16, reason: String },
 }
 
 impl Socket {
@@ -254,11 +489,28 @@ impl Socket {
         let mut chunk = [0u8; 16 << 10];
         while out.len() < n {
             let want = (n - out.len()).min(chunk.len());
-            match self.wire.read(&mut chunk[..want]) {
+            let read = self
+                .wire
+                .lock()
+                .expect("socket wire poisoned")
+                .read(&mut chunk[..want]);
+            match read {
                 // An abort shuts the connection down: that end is ours.
                 Ok(0) => return self.signal.check().map(|()| None),
                 Ok(k) => out.extend_from_slice(&chunk[..k]),
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    // Reading and writing share rustls's connection state.
+                    // Yield after releasing the lock so an outbound burst is
+                    // not starved by this receive loop immediately relocking.
+                    std::thread::yield_now();
+                    continue;
+                }
                 Err(_) if self.signal.aborted() => return Err(self.signal.check().unwrap_err()),
                 // A reset is the far side going away: 1006, as a browser says.
                 Err(_) => return Ok(None),
@@ -267,35 +519,22 @@ impl Socket {
         Ok(Some(out))
     }
 
-    /// Send a control frame (masked, as a client must).
-    fn send(&mut self, opcode: u8, payload: &[u8]) {
-        let mut mask = [0u8; 4];
-        let _ = getrandom::getrandom(&mut mask);
-        let mut frame = vec![0x80 | opcode, 0x80 | payload.len() as u8];
-        frame.extend_from_slice(&mask);
-        frame.extend(payload.iter().enumerate().map(|(i, b)| b ^ mask[i % 4]));
-        let _ = self.wire.write_all(&frame).and_then(|_| self.wire.flush());
-    }
-
-    fn closed(&mut self, code: u16, reason: String) -> Incoming {
-        self.closed = true;
-        Incoming::Closed { code, reason }
-    }
-}
-
-impl MessageSource for Socket {
-    fn next(&mut self) -> Result<Incoming, HostError> {
-        if self.closed {
-            return Ok(Incoming::Closed {
+    fn receive(&mut self) -> Result<Received, HostError> {
+        if self.sender.phase.load(Ordering::Acquire) == CLOSED {
+            return Ok(Received::Closed {
                 code: 1006,
                 reason: String::new(),
             });
         }
-        let mut message: Option<Vec<u8>> = None;
+        let mut message: Option<(u8, Vec<u8>)> = None;
         loop {
             self.signal.check()?;
             let Some(head) = self.take(2)? else {
-                return Ok(self.closed(1006, String::new()));
+                self.sender.mark_closed();
+                return Ok(Received::Closed {
+                    code: 1006,
+                    reason: String::new(),
+                });
             };
             let (fin, opcode) = (head[0] & 0x80 != 0, head[0] & 0x0f);
             if head[0] & 0x70 != 0 || head[1] & 0x80 != 0 {
@@ -304,11 +543,23 @@ impl MessageSource for Socket {
             let len = match head[1] & 0x7f {
                 126 => match self.take(2)? {
                     Some(b) => u16::from_be_bytes([b[0], b[1]]) as u64,
-                    None => return Ok(self.closed(1006, String::new())),
+                    None => {
+                        self.sender.mark_closed();
+                        return Ok(Received::Closed {
+                            code: 1006,
+                            reason: String::new(),
+                        });
+                    }
                 },
                 127 => match self.take(8)? {
                     Some(b) => u64::from_be_bytes(b.try_into().unwrap()),
-                    None => return Ok(self.closed(1006, String::new())),
+                    None => {
+                        self.sender.mark_closed();
+                        return Ok(Received::Closed {
+                            code: 1006,
+                            reason: String::new(),
+                        });
+                    }
                 },
                 n => n as u64,
             };
@@ -317,7 +568,11 @@ impl MessageSource for Socket {
                     return Err(protocol("a fragmented or long control frame"));
                 }
                 let Some(payload) = self.take(len as usize)? else {
-                    return Ok(self.closed(1006, String::new()));
+                    self.sender.mark_closed();
+                    return Ok(Received::Closed {
+                        code: 1006,
+                        reason: String::new(),
+                    });
                 };
                 match opcode {
                     0x8 => {
@@ -326,52 +581,110 @@ impl MessageSource for Socket {
                             1 => return Err(protocol("a one-byte close")),
                             _ => u16::from_be_bytes([payload[0], payload[1]]),
                         };
-                        let reason = String::from_utf8_lossy(payload.get(2..).unwrap_or(&[]));
+                        if code != 1005
+                            && (!(1000..=4999).contains(&code)
+                                || matches!(code, 1004 | 1005 | 1006 | 1015))
+                        {
+                            return Err(protocol("an invalid close code"));
+                        }
+                        let reason = std::str::from_utf8(payload.get(2..).unwrap_or(&[]))
+                            .map_err(|_| protocol("a close reason that is not UTF-8"))?;
                         let echo = if code == 1005 {
                             vec![]
                         } else {
-                            payload[..2].to_vec()
+                            payload.clone()
                         };
-                        self.send(0x8, &echo);
-                        return Ok(self.closed(code, reason.into_owned()));
+                        if self.sender.phase.load(Ordering::Acquire) == OPEN {
+                            self.sender.control(0x8, echo);
+                        }
+                        self.sender.mark_closed();
+                        return Ok(Received::Closed {
+                            code,
+                            reason: reason.to_string(),
+                        });
                     }
-                    0x9 => self.send(0xA, &payload),
+                    0x9 => self.sender.control(0xA, payload),
                     0xA => {}
                     _ => return Err(protocol("an unknown control opcode")),
                 }
                 continue;
             }
             match (opcode, &message) {
-                (0x2, None) => return Ok(Incoming::Binary(len as usize)),
-                (0x1, None) => message = Some(Vec::new()),
+                (0x1, None) | (0x2, None) => message = Some((opcode, Vec::new())),
                 (0x0, Some(_)) => {}
                 _ => return Err(protocol("a frame out of sequence")),
             }
-            let so_far = message.as_ref().map_or(0, Vec::len) as u64;
+            let so_far = message.as_ref().map_or(0, |(_, bytes)| bytes.len()) as u64;
             if so_far + len > self.limit as u64 {
-                return Ok(Incoming::TooLarge);
+                self.sender.control(0x8, 1009u16.to_be_bytes().to_vec());
+                self.sender.phase.store(CLOSING, Ordering::Release);
+                return Ok(Received::TooLarge);
             }
             let Some(payload) = self.take(len as usize)? else {
-                return Ok(self.closed(1006, String::new()));
+                self.sender.mark_closed();
+                return Ok(Received::Closed {
+                    code: 1006,
+                    reason: String::new(),
+                });
             };
-            let whole = message.as_mut().unwrap();
+            let (_, whole) = message.as_mut().unwrap();
             whole.extend_from_slice(&payload);
             if fin {
-                let bytes = message.take().unwrap();
-                return String::from_utf8(bytes)
-                    .map(Incoming::Text)
-                    .map_err(|_| protocol("a text message that is not UTF-8"));
+                let (kind, bytes) = message.take().unwrap();
+                return if kind == 0x1 {
+                    String::from_utf8(bytes)
+                        .map(Received::Text)
+                        .map_err(|_| protocol("a text message that is not UTF-8"))
+                } else {
+                    Ok(Received::Binary(bytes))
+                };
             }
         }
     }
 }
 
+impl MessageSource for Socket {
+    fn next(&mut self) -> Result<Incoming, HostError> {
+        Ok(match self.receive()? {
+            Received::Text(text) => Incoming::Text(text),
+            Received::Binary(bytes) => Incoming::Binary(bytes.len()),
+            Received::TooLarge => Incoming::TooLarge,
+            Received::Closed { code, reason } => Incoming::Closed { code, reason },
+        })
+    }
+
+    fn next_event(&mut self) -> Result<Event, HostError> {
+        Ok(match self.receive()? {
+            Received::Text(text) => Event::Message(Message::Text(text)),
+            Received::Binary(bytes) => Event::Message(Message::Binary(bytes)),
+            Received::TooLarge => {
+                return Err(HostError::Failed(
+                    "the socket message exceeded its configured limit".into(),
+                ));
+            }
+            Received::Closed { code, reason } => Event::Close {
+                code,
+                reason,
+                was_clean: code != 1006,
+            },
+        })
+    }
+
+    fn sender(&self) -> Option<Arc<dyn MessageSender>> {
+        Some(self.sender.clone())
+    }
+
+    fn protocol(&self) -> &str {
+        &self.protocol
+    }
+}
+
 impl Drop for Socket {
     fn drop(&mut self) {
-        // Say goodbye if the far side has not, then hang up either way.
-        if !self.closed && !self.signal.aborted() {
-            self.send(0x8, &1000u16.to_be_bytes());
+        if self.sender.phase.load(Ordering::Acquire) == OPEN && !self.signal.aborted() {
+            let _ = self.sender.close(Some(1000), "");
         }
+        self.sender.mark_closed();
         let _ = self.shutdown.shutdown(Shutdown::Both);
     }
 }
