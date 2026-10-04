@@ -453,10 +453,12 @@ pub(super) fn generate_pair(
     extractable: bool,
     usages: &[KeyUsage],
 ) -> Result<CryptoKeyPair> {
-    if usages.is_empty() {
-        return Err(Error::syntax("generated key pairs need at least one usage"));
-    }
     let usages = validate_usages(usages, &[KeyUsage::Sign, KeyUsage::Verify])?;
+    if !usages.contains(&KeyUsage::Sign) {
+        return Err(Error::syntax(
+            "generated private keys need at least one usage",
+        ));
+    }
     let private_usages = usages
         .iter()
         .copied()
@@ -642,6 +644,18 @@ mod tests {
         );
         assert!(verify(SignatureAlgorithm::Ed25519, &public, &expected, b"").unwrap());
         assert!(!verify(SignatureAlgorithm::Ed25519, &public, &expected, b"x").unwrap());
+    }
+
+    #[test]
+    fn generation_requires_a_private_key_usage() {
+        for algorithm in [GenerateAlgorithm::EcdsaP256, GenerateAlgorithm::Ed25519] {
+            for usages in [&[KeyUsage::Verify][..], &[]] {
+                assert_eq!(
+                    generate_pair(algorithm, true, usages).unwrap_err().name,
+                    super::super::ErrorName::SyntaxError
+                );
+            }
+        }
     }
 
     #[test]

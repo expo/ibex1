@@ -264,6 +264,24 @@ fn ecdsa_p256_key_pair_formats_and_stock_ring_hashes() {
     );
 }
 
+#[cfg(feature = "crypto-asymmetric")]
+#[test]
+fn asymmetric_generation_requires_a_private_key_usage() {
+    let mut runtime = runtime();
+    run_async(
+        &mut runtime,
+        r#"
+        for (const algorithm of [
+          {name: "ECDSA", namedCurve: "P-256"},
+          {name: "Ed25519"}
+        ]) {
+          await rejects("SyntaxError", () => crypto.subtle.generateKey(algorithm, true, ["verify"]));
+          await rejects("SyntaxError", () => crypto.subtle.generateKey(algorithm, true, []));
+        }
+        "#,
+    );
+}
+
 #[cfg(feature = "crypto")]
 #[test]
 fn hostile_integer_sizes_are_rejected_by_name() {

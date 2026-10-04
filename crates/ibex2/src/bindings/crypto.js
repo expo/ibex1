@@ -380,6 +380,10 @@
         const algorithm = normalizeKeyAlgorithm(algorithmValue, true);
         const extractable = Boolean(extractableValue);
         const usages = usageList(usagesValue);
+        if ((algorithm.name === "ECDSA" || algorithm.name === "ED25519") &&
+            usages.indexOf("sign") < 0) {
+          throw new DOMException("generated private keys need at least one usage", "SyntaxError");
+        }
         const handle = native.generateKey(
           algorithm.name, algorithm.hash, algorithm.length, extractable, usages.join(","), algorithm.namedCurve
         );
