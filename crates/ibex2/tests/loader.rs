@@ -316,28 +316,32 @@ fn the_artifact_does_not_depend_on_the_modules_grants() {
 #[test]
 fn fs_authority_is_per_module_and_per_prefix() {
     let p = Project::new("fs");
-    let data = p.0.join("data");
+    let data = p.0.join("data café");
     std::fs::create_dir_all(&data).expect("data dir");
-    let dir = data.to_string_lossy().into_owned();
+    let dir = serde_json::to_string(&data.canonicalize().unwrap().to_string_lossy()).unwrap();
+    p.file("outside.txt", "not granted");
+    let outside = serde_json::to_string(&p.0.join("outside.txt").to_string_lossy()).unwrap();
 
     p.file(
         "index.js",
-        "(async () => {
-           try { await fs.readFile('/etc/hosts'); console.log('index: LEAKED'); }
-           catch (e) { console.log('index: ' + e.message); }
+        &format!(
+            "(async () => {{
+           try {{ await fs.readFile({outside}); console.log('index: LEAKED'); }}
+           catch (e) {{ console.log('index: ' + e.message); }}
            await require('./worker').run();
-         })();",
+         }})();"
+        ),
     )
     .file(
         "worker.js",
         &format!(
             "exports.run = async () => {{
-               const dir = '{dir}';
+               const dir = {dir};
                await fs.writeFile(dir + '/note.txt', new TextEncoder().encode('payload'));
                const back = await fs.readFile(dir + '/note.txt');
                console.log('worker: ' + new TextDecoder().decode(back));
                console.log('worker: ls ' + (await fs.readdir(dir)));
-               try {{ await fs.readFile('/etc/hosts'); console.log('worker: LEAKED'); }}
+               try {{ await fs.readFile({outside}); console.log('worker: LEAKED'); }}
                catch (e) {{ console.log('worker: ' + e.message); }}
              }};"
         ),
@@ -363,12 +367,13 @@ fn fs_paths_are_normalized_before_they_are_admitted() {
     let p = Project::new("fstraversal");
     let data = p.0.join("data");
     std::fs::create_dir_all(&data).expect("data dir");
-    let dir = data.to_string_lossy().into_owned();
+    let dir = serde_json::to_string(&data.canonicalize().unwrap().to_string_lossy()).unwrap();
+    p.file("outside", "not granted");
     p.file(
         "index.js",
         &format!(
             "(async () => {{
-               try {{ await fs.readFile('{dir}' + '/../outside'); console.log('LEAKED'); }}
+               try {{ await fs.readFile({dir} + '/../outside'); console.log('LEAKED'); }}
                catch (e) {{ console.log(e.message); }}
              }})();"
         ),
@@ -385,12 +390,12 @@ fn fs_read_and_write_are_separate_grants() {
     let p = Project::new("fssplit");
     let data = p.0.join("data");
     std::fs::create_dir_all(&data).expect("data dir");
-    let dir = data.to_string_lossy().into_owned();
+    let dir = serde_json::to_string(&data.canonicalize().unwrap().to_string_lossy()).unwrap();
     p.file(
         "index.js",
         &format!(
             "(async () => {{
-               const dir = '{dir}';
+               const dir = {dir};
                await fs.writeFile(dir + '/x.txt', new TextEncoder().encode('ok'));
                console.log('wrote');
                try {{ await fs.readFile(dir + '/x.txt'); console.log('LEAKED'); }}
@@ -990,7 +995,8 @@ fn fetch_resolves_to_a_response_object() {
 /// reach outside it — a module with write on the prefix could plant the link
 /// itself. The request is admitted only if both its spelling and its real path
 /// are covered. And a grant on a directory that is itself a symlink still
-/// works, because the grant's prefix is realized the same way.
+/// works on Unix, because the grant's prefix is realized the same way. Windows
+/// native grants deliberately refuse every reparse node, including grant roots.
 #[test]
 #[cfg_attr(
     windows,
@@ -1028,11 +1034,12 @@ fn a_symlink_inside_a_granted_prefix_does_not_reach_outside_it() {
     );
     let manifest = format!(
         "[./index.js]\nfs.read {}\nfs.read {}\n",
-        allowed.to_string_lossy(),
-        p.0.join("linkdir").to_string_lossy()
+        serde_json::to_string(&allowed.to_string_lossy()).unwrap(),
+        serde_json::to_string(&p.0.join("linkdir").to_string_lossy()).unwrap()
     );
     let (out, err) = p.run("./index.js", &manifest);
     assert_eq!(err, None);
+    #[cfg(unix)]
     assert_eq!(
         out,
         vec![
@@ -1041,6 +1048,15 @@ fn a_symlink_inside_a_granted_prefix_does_not_reach_outside_it() {
             "via linkdir: INSIDE"
         ]
     );
+    #[cfg(windows)]
+    {
+        assert_eq!(out.len(), 3, "{out:?}");
+        assert_eq!(out[0], "inside: INSIDE");
+        for (line, tag) in out[1..].iter().zip(["through link", "via linkdir"]) {
+            assert!(line.starts_with(&format!("{tag}: filesystem:")), "{line}");
+            assert!(line.contains("symlinks or reparse points"), "{line}");
+        }
+    }
 }
 
 /// An ES module runs strict, as the specification says it does; a CommonJS

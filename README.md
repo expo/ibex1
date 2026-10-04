@@ -195,8 +195,12 @@ runtime, but no Hermes DLL. The Rust-only surface still builds without the
 `hermes` feature. Host-selected Windows `app:/data`, `app:/cache`, and
 `app:/tmp` storage uses retained directory handles. SQLite accepts those
 logical grants through its native Windows provider; the embedder must keep
-database ancestry stable for the connection lifetime. Native Windows filesystem
-grant spellings and the Linux Intl projection remain unqualified; see
+database ancestry stable for the connection lifetime. Native filesystem grants
+accept local drive paths, including canonical `\\?\C:\...` paths, and refuse
+symlinks and other reparse points. Quote targets with spaces as JSON strings,
+for example `fs.read "C:/Users/Name With Spaces/data"`; grant component spelling
+is exact even on a case-insensitive filesystem. UNC paths, native SQLite grants,
+and the Linux Intl projection remain unqualified; see
 [LLP 0068](./llp/0068-the-standard-library-for-a-rust-consumer.spec.md#windows-host-and-engine).
 
 ## Crypto profiles

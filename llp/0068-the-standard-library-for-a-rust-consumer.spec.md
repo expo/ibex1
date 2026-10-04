@@ -440,10 +440,186 @@ documented above. Linux cross-check cannot build the existing ring dependency
 because this Windows machine lacks `x86_64-linux-gnu-gcc`; no Unix execution or
 Apple build is claimed for this slice.
 
-`ref-check` and formatting pass. The caps CLI's existing file-URL entry guard
-does not run on Windows; invoking exported `runCaps` directly reveals the
-existing 137 oversized source files against the 133-file baseline. This slice
-does not change those legacy files or increase the oversized-file count.
+`ref-check` and formatting pass. At that qualification the caps CLI's file-URL
+entry guard did not run on Windows; invoking exported `runCaps` directly exposed
+137 oversized source files against the 133-file baseline. The subsequent
+`66e7c96b` caps fix makes that same failure visible through the actual CLI.
+These Windows slices do not change those legacy files or the oversized count.
+
+### Proposed Windows native filesystem grants
+
+Implementation owner: Codex, 2026-10-04. The independent parent-agent review
+approved this amendment; see `reviews/0068-windows-native-grants.gpt.md`.
+The amendment is implemented and qualified below. This slice covers
+`fs.read` and `fs.write`; native SQLite grants,
+UNC storage and additional namespace kinds remain separate work.
+
+**Observed gap and fixture separation.** Three loader filesystem fixtures fail
+at manifest parsing because `PathPrefix` accepts only POSIX and `app:/` names.
+`fs::normalize` also accepts only a leading slash, and `realized_fs` reconstructs
+a POSIX spelling; admitting a drive string alone would leave both subsequent
+checks wrong. Those fixtures also interpolate unescaped Windows backslashes
+into JavaScript string literals. They need real native filesystem support plus
+JSON serialization of their owned paths and a valid, owned outside file for the
+denial assertion. The case-manifest fixture fails at its incidental default
+filesystem grant before testing module identity; a default environment grant
+and an empty different-case module section can test that same binding property
+independently. The `/etc/passwd` fixture assumes a Unix file exists. Replace it
+with an owned existing file outside the declared project and assert the actual
+platform refusal and absence of execution. Do not admit absolute module imports
+as part of filesystem grants: Windows drive specifiers already fail the loader's
+scheme guard, independently of `fs` authority.
+
+**Names and comparison.** Add an explicit Windows-drive namespace to the private
+`PathPrefix` representation instead of treating a drive as a POSIX component.
+Only fully qualified local-drive names (`C:\dir\file` and `C:/dir/file`) are
+accepted on Windows. A narrowly recognized `\\?\C:\dir\file` form is accepted
+as another spelling of that same drive namespace, so Rust canonical paths work;
+it receives exactly the same component validation, not Win32 parsing bypass.
+Drive letters fold to ASCII uppercase. Both slash kinds separate components;
+duplicate separators and `.` normalize away for requests, and `..` pops one
+component or refuses at the drive root. Grant prefixes still reject unresolved
+`.`/`..`. Validation applies before folding: reject NUL, ADS colons, reserved
+device names, wildcards/control characters, trailing-dot/space aliases and
+oversized components using the existing Windows name rules.
+
+Reject `C:relative`, bare `C:`, current-drive-rooted `\dir` or `/dir`, UNC,
+verbatim UNC, volume GUID, `\\.\`, `\??\`, GLOBALROOT and arbitrary NT/device
+paths. `app:/`, POSIX and native-drive grants never imply one another; a mixed
+app/native two-path operation remains refused. A `C:\` grant deliberately covers
+that whole drive tree and no other drive. Refuse mapped remote drives before
+opening their root, and require the retained handle's FileFsDeviceInformation
+to identify a disk/CD-ROM without FILE_REMOTE_DEVICE.
+The OS drive namespace is trusted for the initial root
+lookup; subsequent work uses that retained root, not a second drive lookup.
+
+Component comparison remains exact, as the current shared path-grant model is,
+even on a case-insensitive volume; only the drive letter folds. Do not lowercase
+Unicode filenames or infer authority from an OS alias. Thus a grant naming
+`C:\Data\one` does not admit `C:\data\one`, `C:\Data\ONE`, or the sibling
+`C:\Data\one-more`. Native NT traversal omits `OBJ_CASE_INSENSITIVE`, including
+grant ancestors, to respect a case-sensitive directory rather than override it.
+On ordinary NTFS, the grant spelling can still resolve through normal
+case-insensitive lookup; alternate request spellings gain no lexical grant.
+The actual probe distinguishes both behaviors. This is an
+intentional first-slice restriction, and supports least-authority file grants
+without claiming automatic Windows case-alias equivalence. App-path lookup and
+canonical module identity retain their existing behavior. Explicitly granted
+8.3 names can resolve through the filesystem, but do not confer authority on a
+different long-name spelling (or vice versa).
+
+**Admission and ownership.** Both Rust and JavaScript continue through `fs::run`
+and the same carried `GrantSet`. First normalize and admit every required path
+lexically, before any filesystem lookup or mutation. Source read plus target
+write are required for copy; rename additionally requires source write. Then
+realize each admitted path from one held drive handle, one validated component
+at a time, with the existing relative `NtCreateFile` ownership primitive.
+Every opened root, ancestor and final node rejects reparse attributes. An
+existing granted directory is held through all descendant work. A single-file
+grant holds its existing parent and its exact leaf, and does not grant access
+to siblings. A missing grant-root leaf may be created under its existing held
+parent when write authority covers that leaf; missing ancestors outside the
+grant cannot be created. Directory descendants can be created only once inside
+the admitted grant. No `canonicalize`-then-`std::fs` operation follows admission.
+
+Reuse the Windows app-filesystem operations over admitted held parents rather
+than build another path-based executor. Reads and metadata use retained file
+handles; writes validate regularity before truncation; copy validates its source
+before creating a target and rejects identical file IDs before truncation.
+Rename, recursive removal and atomic sibling publication use relative NT
+operations. Pin both operands before a two-path mutation. Cross-volume rename
+may fail normally; never implement it as an unreviewed copy/delete fallback.
+Removing or renaming the drive-root object itself is refused even with a root
+grant. `realpath` obtains a display path from the opened handle; its returned
+spelling grants no new authority and is never reopened to perform an operation.
+
+Symlinks, junctions, mount points and every other reparse node are refused even
+when their apparent destination stays within the grant. This deliberate Windows
+restriction avoids an unqualified link resolver. A path grant names the tree
+observed when that operation pins it; subsequent operations may observe a
+replacement at that same authorized spelling. Within an operation, renaming or
+replacing an ancestor cannot redirect a held handle. A moved held object remains
+the owned object for that operation. This does not promise immutable host data
+or exclusive inode ownership: existing hard-link entries have their normal shared
+contents, and no new link-creation API is added. SQLite keeps its separate
+trusted-embedder/native-VFS contract and its current `app:/` admission only.
+The generic `PathPrefix` constructor also makes an unquoted drive target
+syntactically valid for `sqlite.open`; `resolve_sqlite` still explicitly refuses
+native Windows paths before provider access or creation. A regression preserves
+that distinction. The native SQLite provider retains its existing location
+checks and is not changed by this filesystem-grant slice.
+
+**Qualification before removing refusal.** Cover drive-root and single-file
+grants, both separator styles, canonical verbatim-disk spelling, exact case,
+Unicode/space paths and any available 8.3 alias; all rejected namespace/name
+forms; traversal above a drive and outside a prefix; sibling-prefix denial;
+read/write separation and both operands of copy/rename. Exercise every FsOp,
+creation with a missing authorized leaf, refusal to create a missing ungranted
+ancestor, directory-copy refusal without target damage, and copy-self/hard-link
+identity. Exercise root/intermediate/final junction refusal and replacement at
+read/write/mutation boundaries, plus held-parent rename. Real symlink tests keep
+their privilege limitation explicit; junction tests supplement them, not replace
+them. Test distinct-case entries where the filesystem permits creating them,
+and report any unavailable prerequisite. Rerun the three loader fs fixtures with
+proper JS quoting, the independent case-manifest and absolute-import fixtures,
+app storage, SQLite, no-engine and Hermes suites, strict lint and reference checks.
+
+Platform references: Microsoft's [path namespace rules](https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file),
+[relative NT opens and case flags](https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntcreatefile),
+and [handle-derived final paths](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfinalpathnamebyhandlew).
+
+#### Proposed quoted filesystem targets
+
+Implementation owner: Codex, 2026-10-04; independently reviewed before
+changing the grant grammar. The existing manifest tokenizer rejects spaces in
+native paths, including this computer's long user-profile spelling. Keep its
+unquoted grammar unchanged. Only `fs.read` and `fs.write` additionally accept a
+JSON string as the complete target after the capability and separating space.
+Decode that entire remainder as `String` with `serde_json`; malformed escapes,
+non-string JSON, trailing tokens or comments refuse the entire grant set.
+Decoded NUL/control characters are refused by this new quoted-target form,
+before passing the value through the same `PathPrefix` namespace validation.
+Decoding must never feed the result back through the manifest line parser.
+No quoting extension is made for network, SQLite, environment or other grants.
+
+Add `PathPrefix` Display for use in filesystem grant lines: reconstruct its
+normalized namespace spelling, emitting a JSON string whenever whitespace,
+quotes or backslashes require it. Use serde_json for encoding too, with a
+Display/`GrantSet::parse` round-trip witness for non-control filesystem targets
+accepted by the manifest grammar, including native-drive names. Existing
+programmatic POSIX/app prefixes can contain controls; their Display remains
+unambiguous but the new quoted manifest form refuses them. Neither those
+legacy constructors nor the unquoted grammar are tightened in this slice.
+The dependency is promoted from the existing dev dependency to the no-engine
+library; it introduces neither an engine requirement nor a second JSON parser.
+Test Windows space/backslash paths, literal quotes where the namespace permits
+them, escaped controls/NUL, malformed/truncated escapes, trailing material,
+escaped-newline multi-grant injection, whole-set refusal and unchanged unquoted
+fixtures. Exact's patch 4 delegates this grammar to `exact-grants`; propagating
+this change there is a separate reviewed consumer change and must not overwrite
+Exact's vendored `grant.rs` with Ibex's standalone implementation.
+
+Qualification on Windows x64 MSVC includes 13 backend tests covering every
+operation, ordinary and explicitly sensitive NTFS directories, an available
+8.3 alias, hostile junction replacement and held source/destination parents.
+Five quoted-target tests cover parsing, refusal and Display. The no-engine
+library passes 222 tests with 4 existing ignores and the Rust-consumer suite
+passes 2; fresh-process CLI source, build and
+precompiled execution all read/write an explicitly granted space/Unicode path
+and deny a real file outside it. The loader and module-resolution suites pass
+their non-privileged cases. Three actual symlink fixtures retain the previously
+measured Windows privilege limitation (error 1314); junction tests do not
+substitute for those fixtures. The Rust consumer fixture now quotes its native
+grant, uses the platform home variable, and checks denial against its own
+existing executable instead of a Unix-only pathname. Native SQLite execution
+remains refused even with a syntactically admitted native SQLite grant.
+The complete `cargo test -p ibex2 --features hermes --tests` sweep passes 586
+tests across 37 binaries, with 21 existing ignored measurements/prerequisite
+fixtures; the library accounts for 369 passed and 7 ignored. Strict
+`cargo clippy -p ibex2 -p ibex2-sqlite --features hermes --all-targets -- -D warnings`,
+formatting and reference validation pass. The existing caps failure remains
+137 oversized files against 133. These are Windows qualifications; no fresh
+Apple/Linux execution or cross-link is claimed for this slice.
 
 ## 5. Open questions
 

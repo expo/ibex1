@@ -338,10 +338,32 @@ fn an_exports_target_cannot_escape_its_package() {
 #[test]
 fn an_absolute_specifier_is_refused() {
     let p = Project::new("atk-abs");
-    p.file("index.js", "require('/etc/passwd');");
-    let (_, err) = p.run("./index.js", "");
+    let outside = Project::new("atk-abs-outside");
+    outside.file("outside.js", "console.log('LEAKED');");
+    let path = outside
+        .0
+        .join("outside.js")
+        .to_string_lossy()
+        .replace('\\', "/");
+    // Oxc accepts a current-drive rooted absolute path on Windows too. Use an
+    // existing file so this proves containment, not an incidental ENOENT.
+    #[cfg(windows)]
+    let path = &path[2..];
+    let quoted = serde_json::to_string(&path).unwrap();
+    p.file("index.js", &format!("require({quoted});"));
+    let (out, err) = p.run("./index.js", "");
     let err = err.expect("an absolute specifier must not resolve");
     assert!(err.contains("outside the project root"), "{err}");
+    assert!(out.is_empty(), "{out:?}");
+    #[cfg(windows)]
+    {
+        let quoted =
+            serde_json::to_string(&outside.0.join("outside.js").to_string_lossy()).unwrap();
+        p.file("drive.js", &format!("require({quoted});"));
+        let (out, err) = p.run("./drive.js", "");
+        assert!(err.unwrap().contains("not over"));
+        assert!(out.is_empty(), "{out:?}");
+    }
 }
 
 /// The attack containment exists for: Node resolution walks UP, so a package
@@ -923,25 +945,25 @@ fn a_package_section_beats_a_directory_section_for_a_workspace_package() {
 #[test]
 fn a_section_spelt_in_another_case_still_names_the_file() {
     let p = Project::new("case-manifest");
-    let secret = p.0.join("secret.txt");
-    std::fs::write(&secret, "secret").unwrap();
-    p.file("index.js", "require('./locked.js');").file(
+    assert!(std::env::var_os("PATH").is_some());
+    p.file(
+        "index.js",
+        "console.log('index: ' + typeof process.env.PATH); require('./locked.js');",
+    )
+    .file(
         "locked.js",
-        &format!(
-            "fs.readFile({:?}).then(() => console.log('locked: default grant leaked'), e => console.log('locked: ' + e.message));",
-            secret.to_string_lossy()
-        ),
+        "console.log('locked: ' + typeof process.env.PATH);",
     );
     // Only meaningful where the filesystem folds case; elsewhere the section
     // names a file that does not exist and bind refuses it, which is also right.
     let folds_case = p.0.join("LOCKED.js").exists();
-    let manifest = format!("[*]\nfs.read {}\n[./LOCKED.js]\n", p.0.to_string_lossy());
+    let manifest = "[*]\nenv.read PATH\n[./LOCKED.js]\n";
     if folds_case {
-        let (out, err) = p.run("./index.js", &manifest);
+        let (out, err) = p.run("./index.js", manifest);
         assert_eq!(err, None);
-        assert_eq!(out, vec!["locked: denied: fs.read"]);
+        assert_eq!(out, vec!["index: string", "locked: undefined"]);
     } else {
-        let mut grants = ModuleGrants::parse(&manifest).unwrap();
+        let mut grants = ModuleGrants::parse(manifest).unwrap();
         assert!(grants.bind(&p.0).is_err());
     }
 }
