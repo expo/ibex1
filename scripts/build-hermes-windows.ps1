@@ -4,6 +4,7 @@ param(
   [string]$Ref = "",
   [switch]$Debug,
   [switch]$Clean,
+  [switch]$Vanilla,
   [switch]$PrintIdentity,
   [switch]$PrintCMakeGenerator
 )
@@ -16,6 +17,16 @@ $builderScriptPath = $MyInvocation.MyCommand.Path
 $repoRoot = Resolve-Path (Join-Path $scriptDir "..")
 $versionScript = Join-Path $scriptDir "hermes-version.sh"
 $versionText = Get-Content -LiteralPath $versionScript -Raw
+
+# @ref LLP 0068#windows-host-and-engine — the vanilla cache and static
+# install cannot alias the legacy patched Windows engine.
+if ($Vanilla) {
+  if ($Debug -or $PrintIdentity -or $PrintCMakeGenerator) {
+    throw "The vanilla profile supports -Arch, -Ref, and -Clean only"
+  }
+  & (Join-Path $scriptDir "build-hermes-windows-vanilla.ps1") -Arch $Arch -Ref $Ref -Clean:$Clean
+  return
+}
 $sourceVersionMatch = [regex]::Match(
   $versionText,
   'IBEX_HERMES_VERSION="\$\{IBEX_HERMES_VERSION:-([^}]+)\}"'
