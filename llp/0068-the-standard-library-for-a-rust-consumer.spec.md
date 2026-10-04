@@ -5,7 +5,7 @@
 **Systems:** Rust Stdlib, Host ABI, CapSec, Build
 **Author:** Charlie Cheever / Claude (Fable 5)
 **Date:** 2026-08-29
-**Revised:** 2026-09-11 (OQ2: Snapback2 0.0.24 separately qualifies and publishes the selected Linux engine-facing Intl tier; broader Intl conformance remains open); 2026-09-11 (OQ2: Linux's selected engine-facing Intl stubs are replaced by the native standard-library tier; this does not expand the no-engine Rust surface or qualify publication); 2026-09-11 (OQ2: the same transport qualified through the Linux Hermes runtime; Linux Intl and publication remain unqualified); 2026-09-07 (app-scoped filesystem and separate SQLite provider); 2026-09-06 (§2: author-required streaming and cancellation); 2026-09-03 (LLP 0057.000 plans how `Bindings` grows — one field per family, feature-gated where a family pulls a dependency or a framework, present and refusing when the feature is off — and answers OQ3 in its lane L3 with a `Receiver`; neither is built yet) 2026-08-30 (§1: `Bindings` grew `secrets` (LLP 0069) and `kv` (LLP 0070), and `Host` carries their stores beside the transport — caught by the LLP 0070 review as drift on this page; §3: the whole-surface sentence now says where the fourth and fifth bindings' tests live, caught by its round 2)
+**Revised:** 2026-10-04 (§3: named install groups and their explicit dependency graph); 2026-09-11 (OQ2: Snapback2 0.0.24 separately qualifies and publishes the selected Linux engine-facing Intl tier; broader Intl conformance remains open); 2026-09-11 (OQ2: Linux's selected engine-facing Intl stubs are replaced by the native standard-library tier; this does not expand the no-engine Rust surface or qualify publication); 2026-09-11 (OQ2: the same transport qualified through the Linux Hermes runtime; Linux Intl and publication remain unqualified); 2026-09-07 (app-scoped filesystem and separate SQLite provider); 2026-09-06 (§2: author-required streaming and cancellation); 2026-09-03 (LLP 0057.000 plans how `Bindings` grows — one field per family, feature-gated where a family pulls a dependency or a framework, present and refusing when the feature is off — and answers OQ3 in its lane L3 with a `Receiver`; neither is built yet) 2026-08-30 (§1: `Bindings` grew `secrets` (LLP 0069) and `kv` (LLP 0070), and `Host` carries their stores beside the transport — caught by the LLP 0070 review as drift on this page; §3: the whole-surface sentence now says where the fourth and fifth bindings' tests live, caught by its round 2)
 **Related:** LLP 0057 (§3.1 — the split, and the reason for a Rust standard library that survived: the non-JS consumer), LLP 0067 (the capability model this states in Rust), LLP 0059.000 (§4 — the families; §3.8 — the env snapshot), `rules/NOT-DOING.md` (the bar: a no-JS consumer gets the same standard library with no engine in the process)
 
 ## Summary
@@ -96,6 +96,33 @@ on the engine by accident of `build.rs`, which would have left a Rust
 consumer with the development TCP transport and no TLS.
 
 ### Caller-owned JavaScript runtimes
+
+`bindings::Groups` is the install-time surface selection. It is a dependency-
+free bitset, separate from cargo features: features choose what family code is
+linked, groups choose what one runtime receives. `Groups::DEFAULT` and
+`Groups::ALL` reproduce Ibex's current runtime profile (including `INTL` only
+on Linux). An omitted dependency is an error; installation never widens the
+selection on the caller's behalf. The groups are:
+
+| group | JavaScript globals or module bindings | host operations / native work | requires | linked by |
+|---|---|---|---|---|
+| `PURE` | `URL`, `URLSearchParams`, `Headers`, `TextEncoder`, `TextDecoder`, `atob`, `btoa`, `DOMException`, `QuotaExceededError` | URL/search params 29–39, headers 40–51, text 20–22; the current Hermes profile supplies conforming text/base64 globals as engine intrinsics | — | core |
+| `CONSOLE` | `console` | console 1–5 | — | core |
+| `TIMERS` | `setTimeout`, `setInterval`, both clears, `queueMicrotask`, `performance`; private pump callback | timers/performance 60–63 | `CONSOLE` | core |
+| `ABORT` | `AbortController`, `AbortSignal` | JavaScript state; timer use is conditional when `TIMERS` is present | `PURE` | core |
+| `CRYPTO` | `Crypto`, `crypto` | entropy/UUID 70–71 | `PURE` | core today; a family feature is L2 work |
+| `FETCH` | endowed `fetch` (module-bound in Ibex's secure runtime) | fetch 101, response read 102, control 72, response handles | `PURE`, `ABORT` | core today; a family feature is later work |
+| `STORAGE` | endowed `fs`, `sqlite` | filesystem 110–120, SQLite 150–158 and result 80 | — | filesystem is core; SQLite provider is a separately linked artifact |
+| `ENV` | endowed `process.env` snapshot | grant-selected environment snapshot | — | core |
+| `SECRETS` | no JSI projection yet; named for the existing Rust binding | `secret.keep` library operations | — | core/platform backend |
+| `KV` | no JSI projection yet; named for the existing Rust binding | `storage.kv` library operations | — | core/platform backend |
+| `INTL` (Linux) | selected `Intl`, locale methods on Number/BigInt/String/Date | ICU-backed formatting/case operations | — | `hermes` on Linux today |
+
+`bindings::scripts(groups)` returns the ordered `(name, source_path)` inputs
+for the caller to compile with its own engine compiler. It excludes the
+runtime-only `esm.js`, `harden.js`, and test harness. The order preserves the
+shipping runtime's established bootstrap order while filtering out unselected
+groups.
 
 Implemented 2026-09-07 (Charlie: make the bindings available in Rust and
 TypeScript; Codex). `ibex2::bindings::Context` supplies a separate Rust state

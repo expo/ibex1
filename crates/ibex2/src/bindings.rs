@@ -7,13 +7,249 @@
 //!
 //! @ref LLP 0068#2-synchronous-and-why — the consumer owns execution
 use crate::{grant::GrantSet, task::RuntimeState};
-use std::{ffi::c_void, sync::Arc, time::Duration};
+use std::{ffi::c_void, fmt, ops, sync::Arc, time::Duration};
 
 pub const JSI_SOURCE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/engine/ibex2_jsi.cc");
 pub const JSI_HEADER: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/include/ibex2_jsi.h");
 pub const HARDEN_SOURCE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/bindings/harden.js");
 pub const SQLITE_SOURCE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/bindings/sqlite.js");
 pub const TYPESCRIPT: &str = include_str!("bindings/storage.d.ts");
+
+/// Named projections of the Rust standard library into a JavaScript runtime.
+///
+/// Cargo features decide what code is linked; this set independently decides
+/// what one caller-owned runtime receives. Dependencies are checked rather
+/// than silently added, so the installed surface is exactly the surface the
+/// caller requested.
+///
+/// @ref LLP 0057.000#51-included-gated-or-a-crate — D6 chooses linked code and installed globals separately
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Groups(u16);
+
+impl Groups {
+    pub const PURE: Self = Self(1 << 0);
+    pub const CONSOLE: Self = Self(1 << 1);
+    pub const TIMERS: Self = Self(1 << 2);
+    pub const ABORT: Self = Self(1 << 3);
+    pub const CRYPTO: Self = Self(1 << 4);
+    pub const FETCH: Self = Self(1 << 5);
+    pub const STORAGE: Self = Self(1 << 6);
+    pub const ENV: Self = Self(1 << 7);
+    pub const SECRETS: Self = Self(1 << 8);
+    pub const KV: Self = Self(1 << 9);
+    pub const INTL: Self = Self(1 << 10);
+
+    const PORTABLE_ALL: Self = Self(
+        Self::PURE.0
+            | Self::CONSOLE.0
+            | Self::TIMERS.0
+            | Self::ABORT.0
+            | Self::CRYPTO.0
+            | Self::FETCH.0
+            | Self::STORAGE.0
+            | Self::ENV.0
+            | Self::SECRETS.0
+            | Self::KV.0,
+    );
+
+    /// The groups Ibex's runtime installs today.
+    #[cfg(target_os = "linux")]
+    pub const ALL: Self = Self(Self::PORTABLE_ALL.0 | Self::INTL.0);
+    /// The groups Ibex's runtime installs today.
+    #[cfg(not(target_os = "linux"))]
+    pub const ALL: Self = Self::PORTABLE_ALL;
+
+    /// The ordinary runtime profile. Kept distinct so a later family can be
+    /// linked by default without silently entering every runtime's globals.
+    pub const DEFAULT: Self = Self::ALL;
+
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    pub const fn bits(self) -> u16 {
+        self.0
+    }
+
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    pub const fn intersects(self, other: Self) -> bool {
+        self.0 & other.0 != 0
+    }
+
+    /// Refuse a selection that omits something its installed JavaScript uses.
+    pub fn validate(self) -> Result<(), GroupError> {
+        let requirements = [
+            (Self::TIMERS, Self::CONSOLE),
+            (Self::ABORT, Self::PURE),
+            (Self::CRYPTO, Self::PURE),
+            (Self::FETCH, Self(Self::PURE.0 | Self::ABORT.0)),
+        ];
+        for (group, required) in requirements {
+            if self.contains(group) && !self.contains(required) {
+                return Err(GroupError {
+                    group,
+                    missing: Self(required.0 & !self.0),
+                });
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        if self.contains(Self::INTL) {
+            return Err(GroupError {
+                group: Self::INTL,
+                missing: Self::INTL,
+            });
+        }
+        Ok(())
+    }
+
+    fn names(self) -> impl Iterator<Item = &'static str> {
+        const NAMES: [(Groups, &str); 11] = [
+            (Groups::PURE, "PURE"),
+            (Groups::CONSOLE, "CONSOLE"),
+            (Groups::TIMERS, "TIMERS"),
+            (Groups::ABORT, "ABORT"),
+            (Groups::CRYPTO, "CRYPTO"),
+            (Groups::FETCH, "FETCH"),
+            (Groups::STORAGE, "STORAGE"),
+            (Groups::ENV, "ENV"),
+            (Groups::SECRETS, "SECRETS"),
+            (Groups::KV, "KV"),
+            (Groups::INTL, "INTL"),
+        ];
+        NAMES
+            .into_iter()
+            .filter_map(move |(group, name)| self.contains(group).then_some(name))
+    }
+}
+
+impl fmt::Debug for Groups {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_set().entries(self.names()).finish()
+    }
+}
+
+impl Default for Groups {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+impl ops::BitOr for Groups {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl ops::BitOrAssign for Groups {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
+impl ops::BitAnd for Groups {
+    type Output = Self;
+
+    fn bitand(self, rhs: Self) -> Self::Output {
+        Self(self.0 & rhs.0)
+    }
+}
+
+/// A refused group selection and the dependency bits it omitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GroupError {
+    pub group: Groups,
+    pub missing: Groups,
+}
+
+impl fmt::Display for GroupError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "binding group {:?} requires missing group(s) {:?}",
+            self.group, self.missing
+        )
+    }
+}
+
+impl std::error::Error for GroupError {}
+
+/// One engine-specific bytecode input, in the order `Adapter::install` takes
+/// the compiled results. The embedder compiles each path with the compiler
+/// belonging to the engine that owns its JSI runtime.
+pub type Script = (&'static str, &'static str);
+
+/// JavaScript shapes needed by `groups`, in deterministic installation order.
+/// Runtime-only files (`esm.js`, `harden.js`, and `testharness.js`) are not
+/// bindings and therefore are deliberately absent.
+pub fn scripts(groups: Groups) -> Result<Vec<Script>, GroupError> {
+    groups.validate()?;
+    let mut result = Vec::new();
+    let path = |name| match name {
+        "headers" => concat!(env!("CARGO_MANIFEST_DIR"), "/src/bindings/headers.js"),
+        "timers" => concat!(env!("CARGO_MANIFEST_DIR"), "/src/bindings/timers.js"),
+        "url" => concat!(env!("CARGO_MANIFEST_DIR"), "/src/bindings/url.js"),
+        "domexception" => {
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src/bindings/domexception.js")
+        }
+        "crypto" => concat!(env!("CARGO_MANIFEST_DIR"), "/src/bindings/crypto.js"),
+        "abort" => concat!(env!("CARGO_MANIFEST_DIR"), "/src/bindings/abort.js"),
+        "fetch" => concat!(env!("CARGO_MANIFEST_DIR"), "/src/bindings/fetch.js"),
+        "sqlite" => SQLITE_SOURCE,
+        #[cfg(target_os = "linux")]
+        "intl_number_format" => {
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/bindings/intl_number_format.js"
+            )
+        }
+        #[cfg(target_os = "linux")]
+        "intl_case" => {
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src/bindings/intl_case.js")
+        }
+        #[cfg(target_os = "linux")]
+        "intl_datetime" => {
+            concat!(env!("CARGO_MANIFEST_DIR"), "/src/bindings/intl_datetime.js")
+        }
+        _ => unreachable!("known binding script"),
+    };
+    let mut push = |name| result.push((name, path(name)));
+
+    // Preserve the shipping runtime's existing bytecode evaluation order.
+    if groups.contains(Groups::PURE) {
+        push("headers");
+    }
+    if groups.contains(Groups::TIMERS) {
+        push("timers");
+    }
+    if groups.contains(Groups::PURE) {
+        push("url");
+        push("domexception");
+    }
+    if groups.contains(Groups::CRYPTO) {
+        push("crypto");
+    }
+    if groups.contains(Groups::ABORT) {
+        push("abort");
+    }
+    #[cfg(target_os = "linux")]
+    if groups.contains(Groups::INTL) {
+        push("intl_number_format");
+        push("intl_case");
+        push("intl_datetime");
+    }
+    if groups.contains(Groups::FETCH) {
+        push("fetch");
+    }
+    if groups.contains(Groups::STORAGE) {
+        push("sqlite");
+    }
+    Ok(result)
+}
 
 /// Rust resources borrowed by one JSI adapter. Create after first pixel,
 /// configure before installation, and detach the adapter before dropping this.
@@ -79,5 +315,42 @@ impl Drop for Context {
     fn drop(&mut self) {
         self.state.queue.set_wake(None);
         self.state.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_group_dependencies_are_refused() {
+        let error = Groups::FETCH.validate().unwrap_err();
+        assert_eq!(error.group, Groups::FETCH);
+        assert_eq!(error.missing, Groups::PURE | Groups::ABORT);
+
+        let error = (Groups::PURE | Groups::FETCH).validate().unwrap_err();
+        assert_eq!(error.group, Groups::FETCH);
+        assert_eq!(error.missing, Groups::ABORT);
+    }
+
+    #[test]
+    fn scripts_follow_the_shipping_install_order() {
+        let names: Vec<_> = scripts(Groups::DEFAULT)
+            .unwrap()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        let mut expected = vec![
+            "headers",
+            "timers",
+            "url",
+            "domexception",
+            "crypto",
+            "abort",
+        ];
+        #[cfg(target_os = "linux")]
+        expected.extend(["intl_number_format", "intl_case", "intl_datetime"]);
+        expected.extend(["fetch", "sqlite"]);
+        assert_eq!(names, expected);
     }
 }
