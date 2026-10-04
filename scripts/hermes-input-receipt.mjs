@@ -22,6 +22,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const SCHEMA = 'ibex/hermes-upstream-pinned-receipt/1';
 
@@ -68,6 +69,7 @@ const commitOverride = flagValue(args, '--commit');
 const engineCandidates = [
   join(engineDir, 'hermesvm.framework/Versions/1/hermesvm'),
   join(engineDir, 'linux-static/libhermesvm_a.a'),
+  join(engineDir, 'windows-static/hermesvm_a.lib'),
 ];
 const engineBinary = engineCandidates.find(existsSync);
 if (!engineBinary) {
@@ -81,7 +83,12 @@ try {
   const nmArgs = process.platform === 'darwin'
     ? ['-gU', engineBinary]
     : ['-g', '--defined-only', engineBinary];
-  exported = execFileSync('nm', nmArgs, { encoding: 'utf8' });
+  exported = process.platform === 'win32'
+    ? execFileSync('dumpbin', ['/symbols', engineBinary], {
+        encoding: 'utf8',
+        maxBuffer: 128 * 1024 * 1024,
+      })
+    : execFileSync('nm', nmArgs, { encoding: 'utf8' });
 } catch (error) {
   die(`cannot read symbols from ${engineBinary}: ${error.message}`);
 }
@@ -91,7 +98,9 @@ try {
 // from methods actually defined on AsyncDebuggerAPI.
 const exportedSymbols = exported
   .split('\n')
-  .map((line) => line.trim().match(/^(?:[0-9a-fA-F]+\s+)?[A-Za-z]\s+(\S+)$/)?.[1])
+  .map((line) => process.platform === 'win32'
+    ? (/\bUNDEF\b/.test(line) ? undefined : line.match(/\bExternal\s+\|\s+(\S+)/)?.[1])
+    : line.trim().match(/^(?:[0-9a-fA-F]+\s+)?[A-Za-z]\s+(\S+)$/)?.[1])
   .filter(Boolean);
 const found = PATCHED_SYMBOLS.filter((patched) =>
   exportedSymbols.some((symbol) => symbol === patched || symbol === `_${patched}`)
@@ -106,17 +115,18 @@ if (found.length > 0) {
 // the tree as a build input. Recorded, so a reader can tell "no patches exist"
 // from "patches exist and were not applied" — only the second needs the check
 // above to mean anything.
-const repoRoot = resolve(new URL('..', import.meta.url).pathname);
+const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 const patchDir = join(repoRoot, 'patches/hermes');
 const patchesPresent = existsSync(patchDir)
   ? readdirSync(patchDir).filter((name) => name.endsWith('.patch')).sort()
   : [];
 
-const hostPlatform = process.platform === 'darwin' ? 'macos' : process.platform;
+const hostPlatform = process.platform === 'darwin' ? 'macos'
+  : process.platform === 'win32' ? 'windows' : process.platform;
 const configuredHermesc = process.env.IBEX2_HERMESC;
 const hermescCandidate = configuredHermesc
   ? resolve(configuredHermesc)
-  : join(repoRoot, 'tools/hermes-vanilla', `hermesc-${hostPlatform}-${process.arch}`);
+  : join(repoRoot, 'tools/hermes-vanilla', `hermesc-${hostPlatform}-${process.arch}${process.platform === 'win32' ? '.exe' : ''}`);
 if (configuredHermesc && !existsSync(hermescCandidate)) {
   die(`IBEX2_HERMESC does not exist: ${hermescCandidate}`);
 }
@@ -129,20 +139,31 @@ let sourceCommit = commitOverride;
 let sourceRef = '';
 let sourceVersion = '';
 try {
-  const pin = execFileSync(
-    'bash',
-    [
-      '-c',
-      'source "$1" && printf "%s\\t%s\\t%s" "$IBEX_HERMES_VANILLA_SOURCE_COMMIT" "$IBEX_HERMES_SOURCE_REF" "$IBEX_HERMES_VERSION"',
-      'hermes-input-receipt',
-      join(repoRoot, 'scripts/hermes-version.sh'),
-    ],
-    { encoding: 'utf8' }
-  ).trim();
-  const [commit, ref, version] = pin.split('\t');
-  sourceCommit = sourceCommit || commit;
-  sourceRef = ref;
-  sourceVersion = version;
+  if (process.platform === 'win32') {
+    // The native PowerShell builder does not require a Bash installation.
+    const pins = readFileSync(join(repoRoot, 'scripts/hermes-version.sh'), 'utf8');
+    const literal = (name) => process.env[name]
+      || pins.match(new RegExp(`${name}="\\$\\{${name}:-([^}]+)\\}"`))?.[1];
+    sourceCommit ||= literal('IBEX_HERMES_VANILLA_SOURCE_COMMIT');
+    sourceVersion = literal('IBEX_HERMES_VERSION');
+    sourceRef = process.env.IBEX_HERMES_SOURCE_REF || `${sourceVersion}-stable`;
+    if (!sourceVersion) throw new Error('source version pin is absent');
+  } else {
+    const pin = execFileSync(
+      'bash',
+      [
+        '-c',
+        'source "$1" && printf "%s\\t%s\\t%s" "$IBEX_HERMES_VANILLA_SOURCE_COMMIT" "$IBEX_HERMES_SOURCE_REF" "$IBEX_HERMES_VERSION"',
+        'hermes-input-receipt',
+        join(repoRoot, 'scripts/hermes-version.sh').replaceAll('\\', '/'),
+      ],
+      { encoding: 'utf8' }
+    ).trim();
+    const [commit, ref, version] = pin.split('\t');
+    sourceCommit = sourceCommit || commit;
+    sourceRef = ref;
+    sourceVersion = version;
+  }
 } catch (error) {
   die(`cannot read vanilla Hermes pin: ${error.message}`);
 }
@@ -165,7 +186,7 @@ const receipt = {
     // Debugger-enabled builds are ~35% slower to boot (LLP 0063 §6), so which
     // variant an artifact is must be part of its identity, not folklore.
     variant: exportedSymbols.some((symbol) =>
-      /16AsyncDebuggerAPI(?:[0-9]|C[123]|D[012])/.test(symbol)
+      /16AsyncDebuggerAPI(?:[0-9]|C[123]|D[012])/.test(symbol) || /\?[^@]+@AsyncDebuggerAPI@/.test(symbol)
     )
       ? 'debugger'
       : 'release',

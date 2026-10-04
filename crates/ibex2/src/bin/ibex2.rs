@@ -163,6 +163,7 @@ fn engine_dir() -> PathBuf {
     match std::env::var("IBEX2_VANILLA_HERMES_DIR") {
         Ok(path) => PathBuf::from(path),
         Err(_) if cfg!(target_vendor = "apple") => repo_root().join("ios/Frameworks-vanilla"),
+        Err(_) if cfg!(windows) => repo_root().join("tools/hermes-vanilla/windows-x64"),
         Err(_) => repo_root().join("linux/Frameworks-vanilla"),
     }
 }

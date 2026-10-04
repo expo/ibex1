@@ -75,11 +75,14 @@
       if (p && typeof p.then === "function") {
         p.then(function () { t.done(); },
                t.step_func_done(function (e) { throw e; }));
+        return p;
       } else {
         t.done();
+        return Promise.resolve();
       }
     } catch (e) {
       t.step_func_done(function () { throw e; })();
+      return Promise.reject(e);
     }
   };
 
@@ -94,7 +97,7 @@
   }
 
   global.assert_equals = function (actual, expected, description) {
-    if (actual !== expected) {
+    if (!Object.is(actual, expected)) {
       fail("expected " + format(expected) + " but got " + format(actual), description);
     }
   };
@@ -141,6 +144,22 @@
       fail("expected DOMException " + name + " but got " + e, description);
     }
     fail("did not throw", description);
+  };
+  global.promise_rejects_dom = function (_, name, promise, description) {
+    return Promise.resolve(promise).then(function () {
+      fail("did not reject", description);
+    }, function (error) {
+      if (!(error instanceof DOMException) || error.name !== name) {
+        fail("expected DOMException " + name + " but got " + error, description);
+      }
+    });
+  };
+  global.promise_rejects_exactly = function (_, expected, promise, description) {
+    return Promise.resolve(promise).then(function () {
+      fail("did not reject", description);
+    }, function (error) {
+      if (error !== expected) fail("rejected with a different value", description);
+    });
   };
   // The overload used by the adopted WebCrypto tests. Preserve upstream's
   // constructor, name, code, quota and requested checks.

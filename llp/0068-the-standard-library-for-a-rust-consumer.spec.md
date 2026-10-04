@@ -5,7 +5,7 @@
 **Systems:** Rust Stdlib, Host ABI, CapSec, Build
 **Author:** Charlie Cheever / Claude (Fable 5)
 **Date:** 2026-08-29
-**Revised:** 2026-10-04 (§3: borrowed-adapter delivery contains callback exceptions and reports them through the cancelable error-event path); 2026-10-04 (§3: wake callbacks are serialized edge-triggered notifications; concurrent admissions coalesce, re-entrant close returns, and cross-thread close waits for the sole invocation); 2026-10-04 (OQ2: the off-Apple HTTP transport loads the native trust store lazily and at most once per process; §3: a default `Context` defers its platform transport so adoption does not build and discard it); 2026-10-04 (§3: bytecode preflight requires the pin's complete 128-byte `BytecodeFileHeader` before reading prefix fields or mutating the runtime); 2026-10-04 (§3: a late completion and queue closure serialize with FIFO insertion, so the result is dropped with its resources); 2026-10-04 (§3: Hermes adoption snapshots configuration applied through the source `Context` after construction); 2026-10-04 (§3: the last owner lease, not the last worker reference, begins shutdown and retires the wake callback); 2026-10-04 (§3: the install input is a typed, validated endowment handle; bytecode preflight checks the complete header and declared length; a failed one-shot install spends the adapter, and failure after publication requires discarding the runtime; the Hermes bootstrap order is stated as implemented); 2026-10-04 (§3: named install groups and their explicit dependency graph); 2026-09-11 (OQ2: Snapback2 0.0.24 separately qualifies and publishes the selected Linux engine-facing Intl tier; broader Intl conformance remains open); 2026-09-11 (OQ2: Linux's selected engine-facing Intl stubs are replaced by the native standard-library tier; this does not expand the no-engine Rust surface or qualify publication); 2026-09-11 (OQ2: the same transport qualified through the Linux Hermes runtime; Linux Intl and publication remain unqualified); 2026-09-07 (app-scoped filesystem and separate SQLite provider); 2026-09-06 (§2: author-required streaming and cancellation); 2026-09-03 (LLP 0057.000 plans how `Bindings` grows — one field per family, feature-gated where a family pulls a dependency or a framework, present and refusing when the feature is off — and answers OQ3 in its lane L3 with a `Receiver`; neither is built yet) 2026-08-30 (§1: `Bindings` grew `secrets` (LLP 0069) and `kv` (LLP 0070), and `Host` carries their stores beside the transport — caught by the LLP 0070 review as drift on this page; §3: the whole-surface sentence now says where the fourth and fifth bindings' tests live, caught by its round 2)
+**Revised:** 2026-10-04 (§3: borrowed-adapter delivery contains callback exceptions and reports them through the cancelable error-event path); 2026-10-04 (§3: the PURE group includes engine-owned `structuredClone` with no host operation); 2026-10-04 (§3: wake callbacks are serialized edge-triggered notifications; concurrent admissions coalesce, re-entrant close returns, and cross-thread close waits for the sole invocation); 2026-10-04 (OQ2: the off-Apple HTTP transport loads the native trust store lazily and at most once per process; §3: a default `Context` defers its platform transport so adoption does not build and discard it); 2026-10-04 (§3: bytecode preflight requires the pin's complete 128-byte `BytecodeFileHeader` before reading prefix fields or mutating the runtime); 2026-10-04 (§3: a late completion and queue closure serialize with FIFO insertion, so the result is dropped with its resources); 2026-10-04 (§3: Hermes adoption snapshots configuration applied through the source `Context` after construction); 2026-10-04 (§3: the last owner lease, not the last worker reference, begins shutdown and retires the wake callback); 2026-10-04 (§3: the install input is a typed, validated endowment handle; bytecode preflight checks the complete header and declared length; a failed one-shot install spends the adapter, and failure after publication requires discarding the runtime; the Hermes bootstrap order is stated as implemented); 2026-10-04 (§3: named install groups and their explicit dependency graph); 2026-09-11 (OQ2: Snapback2 0.0.24 separately qualifies and publishes the selected Linux engine-facing Intl tier; broader Intl conformance remains open); 2026-09-11 (OQ2: Linux's selected engine-facing Intl stubs are replaced by the native standard-library tier; this does not expand the no-engine Rust surface or qualify publication); 2026-09-11 (OQ2: the same transport qualified through the Linux Hermes runtime; Linux Intl and publication remain unqualified); 2026-09-07 (app-scoped filesystem and separate SQLite provider); 2026-09-06 (§2: author-required streaming and cancellation); 2026-09-03 (LLP 0057.000 plans how `Bindings` grows — one field per family, feature-gated where a family pulls a dependency or a framework, present and refusing when the feature is off — and answers OQ3 in its lane L3 with a `Receiver`; neither is built yet) 2026-08-30 (§1: `Bindings` grew `secrets` (LLP 0069) and `kv` (LLP 0070), and `Host` carries their stores beside the transport — caught by the LLP 0070 review as drift on this page; §3: the whole-surface sentence now says where the fourth and fifth bindings' tests live, caught by its round 2)
 **Related:** LLP 0057 (§3.1 — the split, and the reason for a Rust standard library that survived: the non-JS consumer), LLP 0067 (the capability model this states in Rust), LLP 0059.000 (§4 — the families; §3.8 — the env snapshot), `rules/NOT-DOING.md` (the bar: a no-JS consumer gets the same standard library with no engine in the process)
 
 ## Summary
@@ -106,7 +106,7 @@ selection on the caller's behalf. The groups are:
 
 | group | JavaScript globals or module bindings | host operations / native work | requires | linked by |
 |---|---|---|---|---|
-| `PURE` | `URL`, `URLSearchParams`, `Headers`, `TextEncoder`, `TextDecoder`, `atob`, `btoa`, `DOMException`, `QuotaExceededError` | URL/search params 29–39, headers 40–51, text 20–22; the current Hermes profile supplies conforming text/base64 globals as engine intrinsics | — | core |
+| `PURE` | `URL`, `URLSearchParams`, `Headers`, `TextEncoder`, `TextDecoder`, `atob`, `btoa`, `DOMException`, `QuotaExceededError`, `structuredClone` | URL/search params 29–39, headers 40–51, text 20–22; the current Hermes profile supplies conforming text/base64 globals as engine intrinsics; `structuredClone` is engine-owned and has no host operation | — | core |
 | `CONSOLE` | `console` | console 1–5 | — | core |
 | `TIMERS` | `setTimeout`, `setInterval`, both clears, `queueMicrotask`, `performance`; private pump callback | timers/performance 60–63 | `CONSOLE` | core |
 | `ABORT` | `AbortController`, `AbortSignal` | JavaScript state; timer use is conditional when `TIMERS` is present | `PURE` | core |
@@ -260,6 +260,60 @@ application's Rust code is trusted (a crate the author wrote) or endowed
 (code the author did not write, as wasm with explicit imports per LLP 0057
 OQ4) is Exact 2's decision; this surface serves both, since a `Bindings` is
 what a wasm host would hand its module as imports.
+
+### Windows host and engine
+
+Implementation owner: Codex, 2026-10-04. The Windows port is required by
+Skirmish's native Exact 2 host. It preserves the engine-optional split and
+uses the same boundary, grants, task queue, and JavaScript bindings.
+
+The initial engine target is `x86_64-pc-windows-msvc`. The Windows source
+builder gains a vanilla profile that exports the exact vanilla commit from
+`scripts/hermes-version.sh` into a separate source/build/install cache. It
+does not reset the existing patched checkout, apply the patch series, or
+publish a patched-engine receipt. The install is isolated under
+`tools/hermes-vanilla/windows-x64`, with `hermes-headers` and `windows-static`
+directories, plus the matching `hermesc-windows-x64.exe` beside that install.
+The archive is `hermesvm_a.lib`, accompanied by its JSI and Boost.Context
+static dependencies. MSVC compiles the shim as C++17 with exceptions enabled;
+the system ICU import libraries close Hermes's Unicode dependency. The
+Windows profile initially leaves the Linux-only Intl projection disabled.
+
+Cargo selects this layout only for Windows, rejects unsupported targets,
+hashes the archive actually linked as on the other platforms, and compiles
+the runtime bindings with the matching Windows compiler. No engine DLL is
+introduced. Source development and a precompiled application must both run
+in a fresh process on this machine before this profile is called qualified.
+Validation also includes the no-engine Rust library tests, Hermes boundary
+and deadline tests, and DLL dependency inspection of the produced executable.
+
+Native filesystem portability is a separate part of qualification. The
+existing Unix-only `app:/` directory capability implementation must not be
+replaced by a check-then-open path traversal on Windows. Until a Windows
+handle-relative implementation is supplied and tested, that family continues
+to refuse explicitly. No passing engine test establishes filesystem or
+SQLite support. Absolute Windows paths and their capability spelling need
+their own tests before they are admitted by the native filesystem family.
+
+Qualification evidence on 2026-10-04: the pinned vanilla engine builds with
+Visual Studio 2022 and Ninja; `cargo build -p ibex2 --features hermes` links
+and runs. The no-engine library suite passes 173 tests, the engine library
+suite 293, closure 6, embedding 16, hardening 5, and the no-loader run-only
+profile 1. Four Windows symlink fixtures require Developer Mode or the
+symlink privilege and are explicitly ignored; the embedding storage-success
+case is explicitly ignored until the directory-capability backend exists.
+Three engine measurement tests retain their existing ignored status.
+
+Source and precompiled execution both passed from a path containing spaces
+and `café`, importing `módulo.js` and driving a promise and timer. A copy of
+the executable and bytecode cache ran from another directory with deliberately
+invalid entry source and nonexistent compiler/engine overrides. The entry
+file must still exist for CLI path canonicalization, but its source is not
+read on that run. `dumpbin /dependents` found only Windows system and Microsoft
+C++ runtime DLLs, including the Windows ICU libraries, and no Hermes DLL.
+These results qualify this engine slice only; the remaining storage, platform,
+and test-fixture work is tracked in
+[`issues/20261004-ibex2-windows-platform-gaps.md`](../issues/20261004-ibex2-windows-platform-gaps.md).
 
 ## 5. Open questions
 

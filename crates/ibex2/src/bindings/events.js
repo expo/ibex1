@@ -4,6 +4,7 @@
 
   var eventStates = new WeakMap();
   var targetStates = new WeakMap();
+  var brand = global.__ibex2_brand || function (value) { return value; };
   var abortSubscribe = null;
   var nativeReport = global.__ibex2_report_error;
   delete global.__ibex2_report_error;
@@ -34,7 +35,7 @@
     return eventState(this).trusted;
   }
 
-  function initializeEvent(event, type, init) {
+  function initializeEvent(event, type, init, kind) {
     init = dictionary(init);
     eventStates.set(event, {
       type: domString(type),
@@ -61,12 +62,13 @@
       get: isTrusted,
       enumerable: true
     });
+    brand(event, kind || "Event");
   }
 
   function Event(type, init) {
     if (!new.target) throw new TypeError("Event requires new");
     if (arguments.length === 0) throw new TypeError("Event requires a type");
-    initializeEvent(this, type, init);
+    initializeEvent(this, type, init, "Event");
   }
 
   Object.defineProperties(Event.prototype, {
@@ -136,7 +138,7 @@
     if (!new.target) throw new TypeError("CustomEvent requires new");
     if (arguments.length === 0) throw new TypeError("CustomEvent requires a type");
     init = dictionary(init);
-    initializeEvent(this, type, init);
+    initializeEvent(this, type, init, "CustomEvent");
     eventState(this).detail = "detail" in init ? init.detail : null;
   }
   inherit(CustomEvent);
@@ -154,7 +156,7 @@
     if (!new.target) throw new TypeError("ErrorEvent requires new");
     if (arguments.length === 0) throw new TypeError("ErrorEvent requires a type");
     init = dictionary(init);
-    initializeEvent(this, type, init);
+    initializeEvent(this, type, init, "ErrorEvent");
     var state = eventState(this);
     state.message = "message" in init ? domString(init.message) : "";
     state.filename = "filename" in init ? domString(init.filename) : "";
@@ -177,7 +179,7 @@
       throw new TypeError("PromiseRejectionEvent requires a promise");
     }
     init = Object(init);
-    initializeEvent(this, type, init);
+    initializeEvent(this, type, init, "PromiseRejectionEvent");
     var state = eventState(this);
     state.promise = init.promise;
     state.reason = init.reason;
@@ -191,6 +193,7 @@
   function EventTarget() {
     if (!new.target) throw new TypeError("EventTarget requires new");
     targetStates.set(this, { listeners: [] });
+    brand(this, "EventTarget");
   }
 
   function captureOf(options) {
@@ -393,7 +396,7 @@
   global.PromiseRejectionEvent = PromiseRejectionEvent;
   global.reportError = reportError;
   global.self = global;
-  global.navigator = Object.freeze({ userAgent: "Ibex/0.1.0" });
+  global.navigator = Object.freeze(brand({ userAgent: "Ibex/0.1.0" }, "Navigator"));
   global.addEventListener = function () {
     return EventTarget.prototype.addEventListener.apply(global, arguments);
   };

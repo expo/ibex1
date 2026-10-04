@@ -50,6 +50,13 @@
       "fetchedOn": "2026-10-04"
     },
     {
+      "upstream": "html/webappapis/structured-clone/structured-clone.any.js",
+      "local": "third_party/wpt/html/webappapis/structured-clone/structured-clone.any.js",
+      "sha256": "fab6a2c44f860c790873e2e12790d85ad150415aa1b444ef63f6793ef4d42f15",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
       "upstream": "dom/events/Event-isTrusted.any.js",
       "local": "third_party/wpt/dom/events/Event-isTrusted.any.js",
       "sha256": "73925cca5b100206b4070406e0666fa8516373af4a0285132af1fc40d5880084",
@@ -57,9 +64,23 @@
       "fetchedOn": "2026-10-04"
     },
     {
+      "upstream": "html/webappapis/structured-clone/structured-clone-battery-of-tests-harness.js",
+      "local": "third_party/wpt/html/webappapis/structured-clone/structured-clone-battery-of-tests-harness.js",
+      "sha256": "61cf8d71704c1a509a58b51248fbb50f389d9339e68ad0c5520130d59d433ab8",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
       "upstream": "dom/events/EventTarget-add-remove-listener.any.js",
       "local": "third_party/wpt/dom/events/EventTarget-add-remove-listener.any.js",
       "sha256": "f1c1c806afb2a3fa88e8fc8e8c1fbbe2c1c9d3d5b7a5cc0df96680717f46f830",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "html/webappapis/structured-clone/structured-clone-battery-of-tests.js",
+      "local": "third_party/wpt/html/webappapis/structured-clone/structured-clone-battery-of-tests.js",
+      "sha256": "8242d0df5b6a98140e795041c8807a58e32dc8afe971e31be7e7b588fef6d2f8",
       "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
       "fetchedOn": "2026-10-04"
     },
@@ -137,6 +158,13 @@
       "upstream": "dom/abort/resources/abort-signal-any-tests.js",
       "local": "third_party/wpt/dom/abort/resources/abort-signal-any-tests.js",
       "sha256": "2459485339b8f8096e9c39f280cfa9ea6fdf2e62291ad28681fa2b9da00866f2",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "html/webappapis/structured-clone/structured-clone-battery-of-tests-with-transferables.js",
+      "local": "third_party/wpt/html/webappapis/structured-clone/structured-clone-battery-of-tests-with-transferables.js",
+      "sha256": "1d72f2f1ce39a35ea0bf13c157e8e20bbc0b87c959af844ebc32d77b1eaed671",
       "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
       "fetchedOn": "2026-10-04"
     }
