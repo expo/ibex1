@@ -626,6 +626,12 @@ void ibex2_hermes_test_unsubscribe(void *handle,
     rt->bindings->unsubscribe(subscription);
 }
 
+size_t ibex2_hermes_test_websocket_keepalive_count(void *handle) {
+  auto *rt = static_cast<Ibex2Runtime *>(handle);
+  if (rt == nullptr || rt->bindings == nullptr) return 0;
+  return rt->bindings->websocket_keepalive_count_for_test();
+}
+
 /// Block until a host task is ready, or the timeout elapses.
 ///
 /// A real embedder calls this instead of spinning: it wakes when there is work

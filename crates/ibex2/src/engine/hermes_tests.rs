@@ -605,6 +605,68 @@ fn unreachable_websocket_is_collected_and_unsubscribed() {
 
 #[cfg(feature = "websocket")]
 #[test]
+fn websocket_listener_removal_releases_keepalive_before_collection() {
+    let (port, seen) = crate::transport::websocket::tests::peer();
+    let bindings = host::Host::new()
+        .with_socket_transport(Box::new(
+            crate::transport::websocket::TcpSocketTransport::new(),
+        ))
+        .endow(crate::grant::GrantSet::none());
+    let context = crate::bindings::Context::from_bindings(&bindings);
+    let mut rt = Hermes::new(DynamicCode::Closed).unwrap();
+    rt.install_runtime(crate::bindings::Groups::DEFAULT, &context)
+        .unwrap();
+    run_websocket_module(
+        &mut rt,
+        &format!(
+            r#"
+            globalThis.keepaliveAbort = new AbortController();
+            (function () {{
+              var socket = new WebSocket('ws://127.0.0.1:{port}/never');
+              socket.addEventListener('message', function () {{}}, {{
+                signal: keepaliveAbort.signal
+              }});
+            }})();
+
+            globalThis.keepaliveBaseSocket =
+              new WebSocket('ws://127.0.0.1:{port}/never');
+            globalThis.keepaliveBaseListener = function () {{}};
+            keepaliveBaseSocket.addEventListener(
+              'message', keepaliveBaseListener);
+            "#
+        ),
+        &format!("net.websocket ws://127.0.0.1:{port}"),
+    );
+    assert_eq!(rt.pump_until(2), 2, "both sockets reached OPEN");
+    assert_eq!(rt.websocket_keepalive_count_for_test(), 2);
+    rt.eval(
+        r#"
+        keepaliveAbort.abort();
+        keepaliveAbort = null;
+        EventTarget.prototype.removeEventListener.call(
+          keepaliveBaseSocket, 'message', keepaliveBaseListener);
+        keepaliveBaseSocket = null;
+        keepaliveBaseListener = null;
+        "#,
+    )
+    .unwrap();
+    assert_eq!(
+        rt.websocket_keepalive_count_for_test(),
+        0,
+        "real EventTarget removals release WebSocket roots synchronously"
+    );
+    assert!(rt.collect_garbage());
+    for _ in 0..2 {
+        assert_eq!(
+            seen.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap(),
+            "/never gone"
+        );
+    }
+}
+
+#[cfg(feature = "websocket")]
+#[test]
 fn websocket_uses_intrinsics_captured_at_bootstrap() {
     let (port, seen) = crate::transport::websocket::tests::peer();
     let bindings = host::Host::new()

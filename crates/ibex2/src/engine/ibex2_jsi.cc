@@ -406,6 +406,7 @@ struct Adapter::State {
   jsi::Value event_reporter;
   jsi::Value trusted_event_dispatch;
   jsi::Value event_listener_query;
+  jsi::Value event_listener_change_hook;
   jsi::Value rejection_unhandled;
   jsi::Value rejection_handled;
   std::unique_ptr<Integrity> integrity;
@@ -1121,6 +1122,7 @@ void Adapter::install(Groups groups, const Ibex2Bindings* bindings,
         capture("onHandled", state_->rejection_handled);
         capture("fireTrustedEvent", state_->trusted_event_dispatch);
         capture("hasEventListener", state_->event_listener_query);
+        capture("setListenerChangeHook", state_->event_listener_change_hook);
         if (has(groups, GROUP_ABORT)) {
           // The hook crosses only the next installation step. abort.js takes
           // and deletes it before any application entrance can run.
@@ -1336,10 +1338,13 @@ jsi::Function Adapter::websocket(const void* grants) {
   state_->require(rt);
   if (!has(state_->groups, GROUP_WEBSOCKET) ||
       !state_->websocket_factory.isObject() ||
-      !state_->websocket_factory.getObject(rt).isFunction(rt))
+      !state_->websocket_factory.getObject(rt).isFunction(rt) ||
+      !state_->event_listener_change_hook.isObject() ||
+      !state_->event_listener_change_hook.getObject(rt).isFunction(rt))
     throw std::logic_error("Ibex2 WEBSOCKET group is not installed");
   return state_->websocket_factory.getObject(rt).getFunction(rt)
-      .call(rt, websocket_hooks(grants)).getObject(rt).getFunction(rt);
+      .call(rt, websocket_hooks(grants), state_->event_listener_change_hook)
+      .getObject(rt).getFunction(rt);
 }
 
 jsi::Object Adapter::storage(const void* grants) {
@@ -1506,6 +1511,15 @@ void Adapter::refresh_websocket_keepalives() {
 
 void Adapter::prepare_garbage_collection() {
   refresh_websocket_keepalives();
+}
+
+size_t Adapter::websocket_keepalive_count_for_test() const {
+  size_t count = 0;
+  for (const auto& entry : state_->subscriptions) {
+    if (entry.second.websocket != 0 && entry.second.strong_owner.isObject())
+      ++count;
+  }
+  return count;
 }
 
 void Adapter::deliver_event(uint64_t id, Ibex2AbiValue& value) {

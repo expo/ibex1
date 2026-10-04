@@ -17,7 +17,6 @@
   var ArrayFrom = ArrayCtor.from;
   var arrayJoin = ArrayCtor.prototype.join;
   var arrayPush = ArrayCtor.prototype.push;
-  var arraySplice = ArrayCtor.prototype.splice;
   var ArrayBufferCtor = global.ArrayBuffer;
   var ArrayBufferIsView = ArrayBufferCtor.isView;
   var arrayBufferSlice = ArrayBufferCtor.prototype.slice;
@@ -159,19 +158,17 @@
     return call(arrayBufferSlice, packet, [1]);
   }
 
-  function captureOf(options) {
-    if (typeof options === "boolean") return options;
-    return !!(options && options.capture);
-  }
-
   function trackedType(type) {
     return type === "open" || type === "message" ||
       type === "error" || type === "close";
   }
 
-  return function makeWebSocket(hooks) {
+  return function makeWebSocket(hooks, setListenerChangeHook) {
     if (!hooks || typeof hooks.open !== "function") {
       throw new ErrorCtor("WebSocket native hooks are unavailable");
+    }
+    if (typeof setListenerChangeHook !== "function") {
+      throw new ErrorCtor("EventTarget listener hooks are unavailable");
     }
 
     var states = new WeakMapCtor();
@@ -183,10 +180,7 @@
     }
 
     function hasListener(state, type) {
-      for (var i = 0; i < state.listeners.length; i++) {
-        if (state.listeners[i].type === type) return true;
-      }
-      return false;
+      return state.listeners[type] === true;
     }
 
     function updateKeepalive(socket) {
@@ -275,10 +269,15 @@
       state.binaryType = "blob";
       state.readyState = 0;
       state.handlers = privateRecord();
-      state.listeners = [];
+      state.listeners = privateRecord();
       state.closeFired = false;
       call(weakSet, states, [socket, state]);
       brand(socket, "WebSocket");
+      call(setListenerChangeHook, null, [socket, function (type, present) {
+        if (!trackedType(type)) return;
+        state.listeners[type] = present;
+        updateKeepalive(socket);
+      }]);
       state.handle = hooks.open(
         socket, receive, state.url, call(arrayJoin, offered, ["\n"]));
       updateKeepalive(socket);
@@ -308,43 +307,6 @@
         },
         enumerable: true
       }
-    });
-
-    ObjectDefineProperty(WebSocket.prototype, "addEventListener", {
-      value: function (type, callback, options) {
-      var state = stateOf(this);
-      type = domString(type);
-      var capture = captureOf(options);
-      call(eventAdd, this, [type, callback, options]);
-      if (callback == null || !trackedType(type)) return;
-      for (var i = 0; i < state.listeners.length; i++) {
-        var entry = state.listeners[i];
-        if (entry.type === type && entry.callback === callback && entry.capture === capture) return;
-      }
-      var record = privateRecord();
-      record.type = type;
-      record.callback = callback;
-      record.capture = capture;
-      call(arrayPush, state.listeners, [record]);
-      updateKeepalive(this);
-      }, writable: true, configurable: true
-    });
-
-    ObjectDefineProperty(WebSocket.prototype, "removeEventListener", {
-      value: function (type, callback, options) {
-      var state = stateOf(this);
-      type = domString(type);
-      var capture = captureOf(options);
-      call(eventRemove, this, [type, callback, options]);
-      for (var i = 0; i < state.listeners.length; i++) {
-        var entry = state.listeners[i];
-        if (entry.type === type && entry.callback === callback && entry.capture === capture) {
-          call(arraySplice, state.listeners, [i, 1]);
-          updateKeepalive(this);
-          return;
-        }
-      }
-      }, writable: true, configurable: true
     });
 
     ObjectDefineProperty(WebSocket.prototype, "send", {
@@ -406,10 +368,10 @@
         set: function (value) {
           var state = stateOf(this);
           var previous = state.handlers[type];
-          if (previous) this.removeEventListener(type, previous);
+          if (previous) call(eventRemove, this, [type, previous]);
           if (typeof value === "function") {
             state.handlers[type] = value;
-            this.addEventListener(type, value);
+            call(eventAdd, this, [type, value]);
           } else {
             delete state.handlers[type];
           }

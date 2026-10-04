@@ -153,6 +153,9 @@ public:
   // Release WebSocket keepalive roots whose listener/queued-data condition
   // ended before an embedder explicitly requests collection.
   void prepare_garbage_collection();
+  // Test seam for proving listener mutations synchronously release roots,
+  // before the pre-collection reconciliation above has a chance to help.
+  size_t websocket_keepalive_count_for_test() const;
 private:
   jsi::Object websocket_hooks(const void* grants);
   void refresh_websocket_keepalives();

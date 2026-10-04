@@ -286,12 +286,30 @@
 
   function EventTarget() {
     if (!new.target) throw new TypeError("EventTarget requires new");
-    weakMapSet(targetStates, this, privateRecord({ listeners: privateList() }));
+    weakMapSet(targetStates, this, privateRecord({
+      listeners: privateList(), listenerChange: null
+    }));
     brand(this, "EventTarget");
   }
 
   function captureOf(options) {
     return typeof options === "boolean" ? options : !!(options && options.capture);
+  }
+
+  function notifyListenerChange(target, type) {
+    var state = targetState(target);
+    var hook = state.listenerChange;
+    if (!hook) return;
+    var present = false;
+    for (var i = 0; i < state.listeners.length; i++) {
+      var entry = state.listeners[i];
+      if (!entry.removed && entry.type === type) {
+        present = true;
+        break;
+      }
+    }
+    // @ref LLP 0059.000#312-websocket--delegating-capability-bearing-author-required — keepalive follows the real EventTarget mutation, including signal and once removal
+    functionCall(hook, target, type, present);
   }
 
   function removeEntry(target, entry) {
@@ -300,6 +318,7 @@
     if (index < 0) return;
     entry.removed = true;
     arraySplice(listeners, index, 1);
+    notifyListenerChange(target, entry.type);
     if (entry.abortRelease) {
       var release = entry.abortRelease;
       entry.abortRelease = null;
@@ -339,6 +358,7 @@
       // @ref LLP 0057.000#l3--events-abort-and-the-second-direction — signal-bound listener removal is an abort algorithm, before abort event dispatch
       entry.abortRelease = abortSubscribe(signal, function () { removeEntry(target, entry); });
     }
+    notifyListenerChange(target, type);
   };
 
   EventTarget.prototype.removeEventListener = function (type, callback, options) {
@@ -464,6 +484,13 @@
     abortSubscribe = hooks.subscribe;
   }
 
+  function setListenerChangeHook(target, hook) {
+    if (typeof hook !== "function") {
+      throw new TypeError("invalid listener-change hook");
+    }
+    targetState(target).listenerChange = hook;
+  }
+
   function defineEventHandler(name, type, errorHandler) {
     var callback = null;
     var wrapper = null;
@@ -490,7 +517,9 @@
   }
 
   // @ref LLP 0057.000#l3--events-abort-and-the-second-direction — keep the engine global's prototype intact; only its private target record is new
-  weakMapSet(targetStates, global, privateRecord({ listeners: privateList() }));
+  weakMapSet(targetStates, global, privateRecord({
+    listeners: privateList(), listenerChange: null
+  }));
   global.Event = Event;
   global.EventTarget = EventTarget;
   global.CustomEvent = CustomEvent;
@@ -531,6 +560,7 @@
     reportException: reportException,
     fireTrustedEvent: fireTrustedEvent,
     hasEventListener: hasEventListener,
+    setListenerChangeHook: setListenerChangeHook,
     setAbortHooks: setAbortHooks,
     onUnhandled: function (_, reason, promise) {
       var event = new PromiseRejectionEvent("unhandledrejection", {
