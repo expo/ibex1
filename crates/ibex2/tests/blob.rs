@@ -601,8 +601,11 @@ fn fetch_without_blob_matches_the_pre_lane_surface_and_wire_behavior() {
         );
         let (head, body) = server.join().unwrap();
         assert_eq!(body, expected_body, "{name}");
-        let expected_type =
-            (!expected_body.is_empty()).then_some("application/x-www-form-urlencoded");
+        // The pre-lane wire behavior is the platform transport's own: NSURLSession
+        // supplies a form-encoded Content-Type for a POST body that has none,
+        // while the rustls transport off Apple sends no Content-Type at all.
+        let expected_type = (cfg!(target_vendor = "apple") && !expected_body.is_empty())
+            .then_some("application/x-www-form-urlencoded");
         assert_eq!(header(&head, "content-type"), expected_type, "{name}");
     }
 }
