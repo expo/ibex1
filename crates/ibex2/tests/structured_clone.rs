@@ -274,6 +274,32 @@ fn transfer_is_empty_or_refused_and_intrinsics_are_captured() {
         typeError(() => structuredClone({}, { transfer: 1 }));
         typeError(() => structuredClone({}, { transfer: { [Symbol.iterator]: 0 } }));
         typeError(() => structuredClone({}, { transfer: [1] }));
+        typeError(() => structuredClone({}, 1));
+        assert(structuredClone({ x: 1 }, null).x === 1);
+
+        let iteratorReads = 0;
+        const changingIterable = {};
+        Object.defineProperty(changingIterable, Symbol.iterator, {
+          get() {
+            iteratorReads++;
+            if (iteratorReads === 1) return [][Symbol.iterator];
+            return function* () { throw new Error("iterator read twice"); };
+          }
+        });
+        assert(structuredClone({ x: 1 }, { transfer: changingIterable }).x === 1);
+        assert(iteratorReads === 1, "transfer iterator method read more than once");
+
+        let iteratorClosed = false;
+        function* primitiveThenThrow() {
+          try {
+            yield 1;
+            throw new Error("conversion pulled the iterator twice");
+          } finally {
+            iteratorClosed = true;
+          }
+        }
+        typeError(() => structuredClone({}, { transfer: primitiveThenThrow() }));
+        assert(iteratorClosed, "transfer iterator was not closed after conversion failure");
         dataCloneError(() => structuredClone(new ArrayBuffer(1), { transfer: [new ArrayBuffer(1)] }));
         const source = new Map([[{ x: 1 }, { y: 2 }]]);
         Object.defineProperty(source, "forEach", {

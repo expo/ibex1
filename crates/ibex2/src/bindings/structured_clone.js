@@ -9,6 +9,7 @@
   var FunctionCall = Function.prototype.call;
   var FunctionBind = Function.prototype.bind;
   function uncurry(fn) { return FunctionCall.call(FunctionBind, FunctionCall, fn); }
+  var functionCall = uncurry(Function.prototype.call);
 
   var ObjectCtor = Object;
   var ObjectPrototype = Object.prototype;
@@ -21,8 +22,8 @@
 
   var ArrayCtor = Array;
   var arrayIsArray = Array.isArray;
-  var arrayFrom = Array.from;
   var arrayBufferIsView = ArrayBuffer.isView;
+  var iteratorSymbol = Symbol.iterator;
 
   var MapCtor = Map;
   var mapHas = uncurry(Map.prototype.has);
@@ -380,26 +381,51 @@
     return cloneObject(value, memory);
   }
 
+  function convertTransferSequence(transfer) {
+    var transferType = typeof transfer;
+    if (transfer === null ||
+        (transferType !== "object" && transferType !== "function")) {
+      throw new TypeError("transfer must be a sequence of objects");
+    }
+
+    // WebIDL GetMethod reads @@iterator exactly once. Iterating through this
+    // wrapper uses that one result, and for-of performs IteratorClose if the
+    // element conversion below throws.
+    var iteratorMethod = transfer[iteratorSymbol];
+    if (typeof iteratorMethod !== "function") {
+      throw new TypeError("transfer must be a sequence of objects");
+    }
+    var iterator = functionCall(iteratorMethod, transfer);
+    var iteratorType = typeof iterator;
+    if (iterator === null ||
+        (iteratorType !== "object" && iteratorType !== "function")) {
+      throw new TypeError("transfer iterator must be an object");
+    }
+    var iterable = {};
+    objectDefineProperty(iterable, iteratorSymbol, {
+      value: function () { return iterator; }
+    });
+    var hasEntries = false;
+    for (var item of iterable) {
+      var itemType = typeof item;
+      if (item === null || (itemType !== "object" && itemType !== "function")) {
+        throw new TypeError("transfer entries must be objects");
+      }
+      hasEntries = true;
+    }
+    return hasEntries;
+  }
+
   function structuredClone(value) {
     var options = arguments.length > 1 ? arguments[1] : undefined;
     if (options !== undefined && options !== null) {
+      var optionsType = typeof options;
+      if (optionsType !== "object" && optionsType !== "function") {
+        throw new TypeError("options must be a dictionary");
+      }
       var transfer = options.transfer;
       if (transfer !== undefined) {
-        var transferType = typeof transfer;
-        if (transfer === null ||
-            (transferType !== "object" && transferType !== "function") ||
-            typeof transfer[Symbol.iterator] !== "function") {
-          throw new TypeError("transfer must be a sequence of objects");
-        }
-        var transferList = arrayFrom(transfer);
-        for (var i = 0; i < transferList.length; i++) {
-          var itemType = typeof transferList[i];
-          if (transferList[i] === null ||
-              (itemType !== "object" && itemType !== "function")) {
-            throw new TypeError("transfer entries must be objects");
-          }
-        }
-        if (transferList.length !== 0) {
+        if (convertTransferSequence(transfer)) {
           dataCloneError("transfer is not supported");
         }
       }
