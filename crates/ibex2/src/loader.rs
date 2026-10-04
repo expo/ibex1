@@ -981,6 +981,7 @@ pub const DEFAULT_ADDED_GLOBALS: &[&str] = &[
     "crypto",
     "URL",
     "URLSearchParams",
+    "structuredClone",
 ];
 
 const GLOBAL_PARTITION: &[(Option<crate::bindings::Groups>, &[usize])] = &[

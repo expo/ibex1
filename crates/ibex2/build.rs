@@ -181,6 +181,7 @@ fn main() {
         "domexception",
         "crypto",
         "abort",
+        "structured_clone",
         "fetch",
         "sqlite",
         "harden",
