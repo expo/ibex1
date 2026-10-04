@@ -1,6 +1,10 @@
 //! Storage installed into an independently created runtime, without its loader.
 #![cfg(feature = "hermes")]
-use ibex2::{bindings::Context, grant::GrantSet, stdlib::app_fs::AppDirectories};
+use ibex2::{
+    bindings::{Context, Groups},
+    grant::GrantSet,
+    stdlib::app_fs::AppDirectories,
+};
 use std::{
     ffi::{c_char, c_void, CStr},
     path::PathBuf,
@@ -10,7 +14,23 @@ use std::{
     },
     time::{Duration, Instant},
 };
+
+#[repr(C)]
+struct CompiledScript {
+    name: *const c_char,
+    bytes: *const u8,
+    len: usize,
+}
+
 extern "C" {
+    fn bindings_consumer_create(
+        queue: *const c_void,
+        grants: *const c_void,
+        groups: u16,
+        scripts: *const CompiledScript,
+        script_count: usize,
+        error: *mut *mut c_char,
+    ) -> *mut c_void;
     fn storage_consumer_create(
         queue: *const c_void,
         grants: *const c_void,
@@ -31,6 +51,146 @@ extern "C" {
     fn storage_consumer_destroy(h: *mut c_void);
     fn storage_consumer_free(s: *mut c_char);
 }
+
+fn compiled_script(name: &str) -> CompiledScript {
+    let (name, bytes): (&'static [u8], &'static [u8]) = match name {
+        "headers" => (
+            b"headers\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/headers.hbc")),
+        ),
+        "timers" => (
+            b"timers\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/timers.hbc")),
+        ),
+        "url" => (
+            b"url\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/url.hbc")),
+        ),
+        "domexception" => (
+            b"domexception\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/domexception.hbc")),
+        ),
+        "crypto" => (
+            b"crypto\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/crypto.hbc")),
+        ),
+        "abort" => (
+            b"abort\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/abort.hbc")),
+        ),
+        "fetch" => (
+            b"fetch\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/fetch.hbc")),
+        ),
+        "sqlite" => (
+            b"sqlite\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/sqlite.hbc")),
+        ),
+        #[cfg(target_os = "linux")]
+        "intl_number_format" => (
+            b"intl_number_format\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/intl_number_format.hbc")),
+        ),
+        #[cfg(target_os = "linux")]
+        "intl_case" => (
+            b"intl_case\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/intl_case.hbc")),
+        ),
+        #[cfg(target_os = "linux")]
+        "intl_datetime" => (
+            b"intl_datetime\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/intl_datetime.hbc")),
+        ),
+        _ => unreachable!(),
+    };
+    CompiledScript {
+        name: name.as_ptr().cast(),
+        bytes: bytes.as_ptr(),
+        len: bytes.len(),
+    }
+}
+
+struct BareConsumer {
+    handle: *mut c_void,
+    _context: Context,
+    directory: PathBuf,
+}
+
+impl BareConsumer {
+    fn new(groups: Groups) -> Self {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let directory = std::env::temp_dir().join(format!(
+            "ibex2-groups-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let context = Context::new(GrantSet::none());
+        let scripts: Vec<_> = ibex2::bindings::scripts(groups)
+            .unwrap()
+            .into_iter()
+            .map(|(name, _)| compiled_script(name))
+            .collect();
+        let mut error = std::ptr::null_mut();
+        let handle = unsafe {
+            bindings_consumer_create(
+                context.state_ptr(),
+                context.grants_ptr(),
+                groups.bits(),
+                scripts.as_ptr(),
+                scripts.len(),
+                &mut error,
+            )
+        };
+        assert!(!handle.is_null(), "{}", take(error));
+        Self {
+            handle,
+            _context: context,
+            directory,
+        }
+    }
+
+    fn eval(&self, source: &str) -> String {
+        let input = self.directory.join("test.js");
+        let output = self.directory.join("test.hbc");
+        std::fs::write(&input, source).unwrap();
+        let compiler = std::env::var("IBEX2_HERMESC")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                let arch = if cfg!(target_arch = "aarch64") {
+                    "arm64"
+                } else {
+                    "x64"
+                };
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+                    "../../tools/hermes-vanilla/hermesc-{}-{arch}",
+                    std::env::consts::OS
+                ))
+            });
+        assert!(std::process::Command::new(compiler)
+            .args(["-O", "-emit-binary", "-out"])
+            .arg(&output)
+            .arg(&input)
+            .status()
+            .unwrap()
+            .success());
+        let bytes = std::fs::read(output).unwrap();
+        let mut out = std::ptr::null_mut();
+        let status =
+            unsafe { storage_consumer_eval(self.handle, bytes.as_ptr(), bytes.len(), &mut out) };
+        let text = take(out);
+        assert_eq!(status, 0, "{text}");
+        text
+    }
+}
+
+impl Drop for BareConsumer {
+    fn drop(&mut self) {
+        unsafe { storage_consumer_destroy(self.handle) };
+        let _ = std::fs::remove_dir_all(&self.directory);
+    }
+}
+
 struct Consumer {
     handle: *mut c_void,
     context: Context,
@@ -162,6 +322,47 @@ impl Drop for Consumer {
         // Context shutdown follows destruction; all tests explicitly close DBs.
         let _ = std::fs::remove_dir_all(&self.directory);
     }
+}
+
+fn global_names(consumer: &BareConsumer) -> std::collections::BTreeSet<String> {
+    consumer
+        .eval("Object.getOwnPropertyNames(globalThis).sort().join(',')")
+        .split(',')
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn pure_installs_exactly_its_globals_into_a_bare_runtime() {
+    let baseline = global_names(&BareConsumer::new(Groups::empty()));
+    let installed = global_names(&BareConsumer::new(Groups::PURE));
+    let added: std::collections::BTreeSet<_> = installed.difference(&baseline).cloned().collect();
+    let expected: std::collections::BTreeSet<_> = [
+        "URL",
+        "URLSearchParams",
+        "Headers",
+        "TextEncoder",
+        "TextDecoder",
+        "atob",
+        "btoa",
+        "DOMException",
+        "QuotaExceededError",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .filter(|name| !baseline.contains(name))
+    .collect();
+    assert_eq!(added, expected);
+}
+
+#[test]
+fn fetch_group_does_not_install_timers_or_crypto() {
+    let consumer = BareConsumer::new(Groups::PURE | Groups::ABORT | Groups::FETCH);
+    assert_eq!(
+        consumer.eval("[typeof fetch, typeof setTimeout, typeof crypto].join(',')"),
+        "function,undefined,undefined"
+    );
 }
 
 #[test]

@@ -23,6 +23,21 @@ char *copy(const std::string &s) {
 }
 }
 extern "C" {
+void *bindings_consumer_create(const void *queue, const void *grants,
+                               uint16_t groups,
+                               const ibex2::jsi_adapter::CompiledScript *scripts,
+                               size_t script_count, char **error) {
+  try {
+    auto c = std::make_unique<Consumer>();
+    auto config = ::hermes::vm::RuntimeConfig::Builder()
+        .withEnableEval(false).withMicrotaskQueue(true).build();
+    c->runtime = facebook::hermes::makeHermesRuntimeNoThrow(config);
+    if (!c->runtime) return nullptr;
+    c->adapter = std::make_unique<ibex2::jsi_adapter::Adapter>(*c->runtime, queue);
+    c->adapter->install(groups, grants, scripts, script_count);
+    return c.release();
+  } catch (const std::exception &e) { *error = copy(e.what()); return nullptr; }
+}
 void *storage_consumer_create(const void *queue, const void *grants,
                               const uint8_t *factory, size_t len,
                               const uint8_t *harden, size_t harden_len, char **error) {
