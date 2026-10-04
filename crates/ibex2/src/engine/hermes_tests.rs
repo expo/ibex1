@@ -1098,6 +1098,13 @@ fn two_runtimes_endowed_from_one_context_never_take_each_others_fetches() {
     use std::collections::BTreeSet;
     use std::sync::{mpsc, Arc, Condvar, Mutex};
 
+    // Both entries happen inside Transport::open, before either worker can
+    // publish a completion into L3's FIFO. Under the full parallel suite the
+    // production host pool is also exercised by deliberate saturation tests,
+    // so allow scheduling delay without replacing the production pool this
+    // isolation test is meant to cover.
+    const FETCH_TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
     struct Gate {
         released: Mutex<BTreeSet<String>>,
         changed: Condvar,
@@ -1177,11 +1184,7 @@ fn two_runtimes_endowed_from_one_context_never_take_each_others_fetches() {
     first.run_entry("./index.js").unwrap();
     second.run_entry("./index.js").unwrap();
     let entered: BTreeSet<_> = (0..2)
-        .map(|_| {
-            entered_rx
-                .recv_timeout(std::time::Duration::from_secs(2))
-                .unwrap()
-        })
+        .map(|_| entered_rx.recv_timeout(FETCH_TEST_TIMEOUT).unwrap())
         .collect();
     assert_eq!(entered, BTreeSet::from(["first".into(), "second".into()]));
 
@@ -1193,7 +1196,7 @@ fn two_runtimes_endowed_from_one_context_never_take_each_others_fetches() {
             .len()
     };
     let wait_for_task = |runtime: &Hermes| {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let deadline = std::time::Instant::now() + FETCH_TEST_TIMEOUT;
         while queued(runtime) == 0 {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -1214,12 +1217,12 @@ fn two_runtimes_endowed_from_one_context_never_take_each_others_fetches() {
         0,
         "the first runtime took the second runtime's fetch completion"
     );
-    second.run_to_quiescence(std::time::Duration::from_secs(2));
+    second.run_to_quiescence(FETCH_TEST_TIMEOUT);
     assert_eq!(second.eval("result").unwrap(), "second");
     assert_eq!(first.eval("result").unwrap(), "");
 
     release("first");
-    first.run_to_quiescence(std::time::Duration::from_secs(2));
+    first.run_to_quiescence(FETCH_TEST_TIMEOUT);
     assert_eq!(first.eval("result").unwrap(), "first");
     std::fs::remove_dir_all(root).unwrap();
 }
