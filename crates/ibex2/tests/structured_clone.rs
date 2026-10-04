@@ -32,6 +32,52 @@ fn check(body: &str) {
     check_with_groups(body, ibex2::bindings::Groups::DEFAULT);
 }
 
+fn check_websocket_module(body: &str) {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ibex2-structured-clone-websocket-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join("index.js"),
+        format!(
+            r#"
+            function assert(value, message) {{
+              if (!value) throw new Error(message || "assertion failed");
+            }}
+            function dataCloneError(fn, label) {{
+              try {{ fn(); }} catch (error) {{
+                assert(error instanceof DOMException, "not a DOMException");
+                assert(error.name === "DataCloneError", "wrong error name: " + error.name);
+                return;
+              }}
+              throw new Error("expected DataCloneError" + (label ? ": " + label : ""));
+            }}
+            {body}
+            "#
+        ),
+    )
+    .unwrap();
+    let mut runtime = Hermes::new(DynamicCode::Closed).expect("runtime");
+    let context = ibex2::bindings::Context::new(ibex2::grant::GrantSet::none());
+    runtime
+        .install_runtime(ibex2::bindings::Groups::DEFAULT, &context)
+        .expect("bindings");
+    runtime.harden().expect("harden");
+    runtime
+        .set_loader(
+            ibex2::loader::Root::Declared(directory.clone()),
+            ibex2::loader::ModuleGrants::none(),
+        )
+        .unwrap();
+    runtime
+        .run_entry("./index.js")
+        .unwrap_or_else(|error| panic!("{body}\n{error}"));
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 #[test]
 fn blob_and_file_clone_while_other_l6_platform_objects_are_refused() {
     check_with_groups(
@@ -312,14 +358,19 @@ fn events_and_websockets_are_private_platform_objects() {
           new ErrorEvent("error"),
           new MessageEvent("message", { data: 1 }),
           new CloseEvent("close", { code: 1000 }),
-          new EventTarget(),
-          new WebSocket("ws://127.0.0.1:9/")
+          new EventTarget()
         ];
         for (const value of values) {
           dataCloneError(() => structuredClone(value));
         }
         "#,
         ibex2::bindings::Groups::DEFAULT | ibex2::bindings::Groups::WEBSOCKET,
+    );
+    check_websocket_module(
+        r#"
+        const socket = new WebSocket("ws://127.0.0.1:9/");
+        dataCloneError(() => structuredClone(socket), "WebSocket");
+        "#,
     );
 }
 

@@ -154,13 +154,13 @@ fn a_wrapped_module_ends_cleanly_after_a_trailing_comment() {
     let wrapped = wrap("exports.x = 1; // trailing comment");
     assert!(wrapped.ends_with("\n})"), "{wrapped}");
     assert!(wrapped.starts_with(
-        "(function (module, exports, require, fetch, fs, process, __ibex2_meta, sqlite) {"
+        "(function (module, exports, require, fetch, fs, process, __ibex2_meta, sqlite, WebSocket) {"
     ));
 }
 
 #[test]
 fn capability_names_are_parameters_and_not_globals() {
-    for capability in ["fetch", "fs", "sqlite"] {
+    for capability in ["fetch", "fs", "sqlite", "WebSocket"] {
         assert!(MODULE_PARAMETERS.contains(&capability));
         assert!(
             !allowed_globals(crate::bindings::Groups::DEFAULT).contains(&capability),
@@ -185,11 +185,12 @@ fn group_partition_covers_the_installable_global_snapshot_exactly() {
         coverage.iter().all(|count| *count == 1),
         "each snapshot name must belong to exactly one partition: {coverage:?}"
     );
-    let ordinary = &DEFAULT_ADDED_GLOBALS[..DEFAULT_ADDED_GLOBALS.len() - 1];
-    assert_eq!(allowed_globals(crate::bindings::Groups::ALL), ordinary);
-    assert_eq!(allowed_globals(crate::bindings::Groups::DEFAULT), ordinary);
     assert_eq!(
-        allowed_globals(crate::bindings::Groups::DEFAULT | crate::bindings::Groups::WEBSOCKET),
+        allowed_globals(crate::bindings::Groups::ALL),
+        DEFAULT_ADDED_GLOBALS
+    );
+    assert_eq!(
+        allowed_globals(crate::bindings::Groups::DEFAULT),
         DEFAULT_ADDED_GLOBALS
     );
 }

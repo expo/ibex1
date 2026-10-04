@@ -107,12 +107,30 @@ fn serve(mut s: TcpStream, saw: Sender<String>) {
         }
         "/big" => out.extend(frame(true, 1, &[b'x'; 2000])),
         "/binary" => out.extend(frame(true, 2, &[1, 2, 3])),
+        "/legacy-large" => {
+            out.extend([0x82, 127]);
+            out.extend_from_slice(&(64u64 << 20).to_be_bytes());
+        }
+        "/legacy-fragment" => {
+            out.extend(frame(false, 2, &[1, 2, 3]));
+            out.extend(frame(true, 0, &[4; 64]));
+        }
         "/drop" => out.extend(frame(true, 1, b"x")),
-        "/echo" | "/protocol" | "/drain" => {}
+        "/peer-close" => {
+            let mut close = 1000u16.to_be_bytes().to_vec();
+            close.extend_from_slice(b"peer");
+            out.extend(frame(true, 8, &close));
+        }
+        "/echo" | "/protocol" | "/drain" | "/never" | "/no-read" => {}
         _ => out.extend(frame(true, 1, b"held")),
     }
     let _ = s.write_all(&out);
     if path == "/drop" {
+        let _ = s.shutdown(Shutdown::Both);
+        return;
+    }
+    if path == "/no-read" {
+        std::thread::sleep(Duration::from_millis(300));
         let _ = s.shutdown(Shutdown::Both);
         return;
     }
@@ -153,6 +171,16 @@ fn serve(mut s: TcpStream, saw: Sender<String>) {
         if opcode == 0x8 {
             if matches!(path.as_str(), "/echo" | "/protocol" | "/drain") {
                 let _ = s.write_all(&frame(true, 8, &payload));
+            }
+            if path == "/peer-close" {
+                s.set_read_timeout(Some(Duration::from_millis(100)))
+                    .unwrap();
+                while let Some((_, later_opcode, later_payload)) = client_frame(&mut s) {
+                    let _ = saw.send(format!(
+                        "{path} after-close {later_opcode} {}",
+                        later_payload.len()
+                    ));
+                }
             }
             break;
         }
@@ -283,6 +311,67 @@ pub(crate) fn conversation(transport: &dyn SocketTransport) {
     drop(s);
     assert_eq!(wait(&seen), "/protocol gone");
 
+    // The close and a following send race at both transport boundaries. The
+    // data is accounted per WHATWG, but a close already handed to the
+    // platform wins and the peer never receives the later message.
+    let mut s = open_on(transport, port, "/echo", &none).unwrap();
+    s.sender().unwrap().close(None, "").unwrap();
+    let before = s.buffered_amount();
+    s.send_text("after-close").unwrap();
+    assert_eq!(s.buffered_amount(), before + "after-close".len());
+    assert!(matches!(
+        s.next().unwrap(),
+        Incoming::Closed {
+            code: 1000 | 1005,
+            reason
+        } if reason.is_empty()
+    ));
+    assert!(matches!(
+        wait(&seen).as_str(),
+        "/echo opcode 8" | "/echo close 1000 "
+    ));
+    assert_eq!(wait(&seen), "/echo gone");
+
+    // Race sends with a peer-initiated close. Frames accepted before the peer
+    // close may precede our close reply, but nothing may follow that reply.
+    let mut s = open_on(transport, port, "/peer-close", &none).unwrap();
+    let sender = s.sender().unwrap();
+    let racer = Arc::clone(&sender);
+    let sending = std::thread::spawn(move || {
+        for _ in 0..4 {
+            racer.send_text("racing").unwrap();
+            std::thread::yield_now();
+        }
+    });
+    assert_eq!(
+        s.next().unwrap(),
+        Incoming::Closed {
+            code: 1000,
+            reason: "peer".into()
+        }
+    );
+    sending.join().unwrap();
+    let before = sender.buffered_amount();
+    sender.send_text("after-peer-close").unwrap();
+    assert_eq!(sender.buffered_amount(), before + "after-peer-close".len());
+    loop {
+        let report = wait(&seen);
+        if report == "/peer-close close 1000 peer" {
+            break;
+        }
+        assert!(report.starts_with("/peer-close message 1 "), "{report}");
+    }
+    loop {
+        let report = wait(&seen);
+        if report == "/peer-close gone" {
+            break;
+        }
+        assert_eq!(
+            report, "/peer-close after-close 1 6",
+            "only sends admitted before the peer-close callback may still be in flight"
+        );
+    }
+
     let mut s = open_on(transport, port, "/drain", &none).unwrap();
     let payload = vec![7; 8 << 20];
     s.send_binary(&payload).unwrap();
@@ -305,6 +394,70 @@ pub(crate) fn conversation(transport: &dyn SocketTransport) {
         s.next().unwrap(),
         Incoming::Closed { code: 1000, .. }
     ));
+
+    // A non-reading peer cannot make the native send queue grow without
+    // bound. Repeated data eventually fails the connection at the per-socket
+    // byte/message ceiling; further sends only affect bufferedAmount.
+    let mut s = open_on(transport, port, "/no-read", &none).unwrap();
+    let chunk = vec![9; 1 << 20];
+    for _ in 0..32 {
+        s.send_binary(&chunk).unwrap();
+    }
+    assert!(matches!(s.next(), Ok(Incoming::Closed { .. }) | Err(_)));
+}
+
+#[test]
+fn legacy_binary_next_returns_the_first_frames_declared_length_without_payload() {
+    let (port, _seen) = peer();
+    let transport = TcpSocketTransport::new();
+    let none = AbortSignal::default();
+
+    let mut large = open_on(&transport, port, "/legacy-large", &none).unwrap();
+    assert_eq!(large.next().unwrap(), Incoming::Binary(64 << 20));
+    drop(large);
+
+    let mut fragmented = open_on(&transport, port, "/legacy-fragment", &none).unwrap();
+    assert_eq!(fragmented.next().unwrap(), Incoming::Binary(3));
+}
+
+#[test]
+fn an_ipv6_literal_is_bracketed_in_the_host_header() {
+    let listener = std::net::TcpListener::bind("[::1]:0").expect("IPv6 loopback");
+    let port = listener.local_addr().unwrap().port();
+    let (reported, host) = channel();
+    let peer = std::thread::spawn(move || {
+        let mut stream = listener.accept().unwrap().0;
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            stream.read_exact(&mut byte).unwrap();
+            head.push(byte[0]);
+        }
+        let head = String::from_utf8(head).unwrap();
+        reported
+            .send(
+                head.lines()
+                    .find(|line| line.starts_with("Host: "))
+                    .unwrap()
+                    .to_string(),
+            )
+            .unwrap();
+        let key = head
+            .lines()
+            .find_map(|line| line.strip_prefix("Sec-WebSocket-Key: "))
+            .unwrap()
+            .trim();
+        let accept = crate::stdlib::websocket::accept_key(key);
+        write!(stream, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n").unwrap();
+        stream.write_all(&frame(true, 8, &[])).unwrap();
+    });
+    let url = url::Url::parse(&format!("ws://[::1]:{port}/")).unwrap();
+    let mut socket = TcpSocketTransport::new()
+        .connect(&url, 1024, &AbortSignal::default())
+        .unwrap();
+    assert!(matches!(socket.next(), Ok(Incoming::Closed { .. })));
+    assert_eq!(host.recv().unwrap(), format!("Host: [::1]:{port}"));
+    peer.join().unwrap();
 }
 
 #[test]

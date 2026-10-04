@@ -6,13 +6,16 @@
 //! L3's executor-independent `Receiver`/`Subscription` pair.
 //!
 //! @ref LLP 0059.000#312-websocket--delegating-capability-bearing-author-required — one WebSocket contract on both doors
-//! @ref LLP 0057.000#l4--websocket — Apple keeps its platform task; portable framing stays in Rust
+//! @ref LLP 0057.000#l4--websocket--completed-2026-10-04 — Apple keeps its platform task; portable framing stays in Rust
 
 use crate::boundary::HostError;
 use crate::grant::{GrantSet, Operation, Origin};
 use crate::stdlib::abort::{AbortController, AbortSignal};
 use crate::stdlib::events::Subscription;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc, Arc, Mutex,
+};
 
 const CONNECTING: u8 = 0;
 const OPEN: u8 = 1;
@@ -263,6 +266,7 @@ struct ConnectionState {
     sender: Mutex<Option<Arc<dyn MessageSender>>>,
     discarded: std::sync::atomic::AtomicUsize,
     abort: AbortController,
+    local_close_without_code: AtomicBool,
     protocol: Mutex<String>,
     close: Mutex<(u16, String, bool)>,
 }
@@ -275,6 +279,7 @@ impl Connection {
                 sender: Mutex::new(None),
                 discarded: std::sync::atomic::AtomicUsize::new(0),
                 abort: AbortController::new(),
+                local_close_without_code: AtomicBool::new(false),
                 protocol: Mutex::new(String::new()),
                 close: Mutex::new((1006, String::new(), false)),
             }),
@@ -348,17 +353,23 @@ impl Connection {
                 "a WebSocket close reason requires a close code".into(),
             ));
         }
+        if code.is_none() {
+            self.inner
+                .local_close_without_code
+                .store(true, Ordering::Release);
+        }
         loop {
             let phase = self.ready_state();
             if phase >= CLOSING {
                 return Ok(());
             }
+            let next = if phase == CONNECTING { CLOSED } else { CLOSING };
             if self
                 .inner
                 .phase
                 .compare_exchange(
                     phase,
-                    CLOSING,
+                    next,
                     std::sync::atomic::Ordering::AcqRel,
                     std::sync::atomic::Ordering::Acquire,
                 )
@@ -414,15 +425,54 @@ pub(crate) fn watch_with(
     max_message: usize,
     publish: Arc<dyn Fn(Event) -> bool + Send + Sync>,
 ) -> (Connection, Subscription) {
+    watch_with_liveness(
+        transport,
+        grants,
+        url,
+        protocols,
+        max_message,
+        publish,
+        Arc::new(AtomicBool::new(true)),
+    )
+}
+
+fn watch_with_liveness(
+    transport: Arc<dyn SocketTransport>,
+    grants: Arc<GrantSet>,
+    url: String,
+    protocols: Vec<String>,
+    max_message: usize,
+    publish: Arc<dyn Fn(Event) -> bool + Send + Sync>,
+    live: Arc<AtomicBool>,
+) -> (Connection, Subscription) {
     let connection = Connection::new();
     let cancel = connection.clone();
-    let subscription = Subscription::new(move || cancel.cancel());
+    // Clearing liveness is the unsubscribe linearization point and happens
+    // before abort wakes a blocked connect/read. The gate then waits out a
+    // publication already in progress, so none can complete after
+    // `unsubscribe` returns. A bounded publisher observes `live` while it
+    // waits for space, avoiding a full-queue teardown deadlock.
+    let publication_gate = Arc::new(Mutex::new(()));
+    let cancel_live = Arc::clone(&live);
+    let cancel_gate = Arc::clone(&publication_gate);
+    let subscription = Subscription::new(move || {
+        cancel_live.store(false, Ordering::Release);
+        cancel.cancel();
+        let _publication = cancel_gate.lock().expect("WebSocket publication poisoned");
+    });
+    let publish_live = Arc::clone(&live);
+    let worker_live = Arc::clone(&live);
+    let publish_gate = Arc::clone(&publication_gate);
+    let publish = Arc::new(move |event| {
+        let _publication = publish_gate.lock().expect("WebSocket publication poisoned");
+        publish_live.load(Ordering::Acquire) && publish(event)
+    });
     let parsed = match validate_protocols(&protocols).and_then(|()| parse_and_admit(&grants, &url))
     {
         Ok(parsed) => parsed,
         Err(error) => {
-            publish(Event::Error(error.to_string()));
             connection.finish(1006, String::new(), false);
+            publish(Event::Error(error.to_string()));
             publish(Event::Close {
                 code: 1006,
                 reason: String::new(),
@@ -442,8 +492,11 @@ pub(crate) fn watch_with(
         ) {
             Ok(source) => source,
             Err(error) => {
-                publish(Event::Error(error.to_string()));
+                if !worker_live.load(Ordering::Acquire) {
+                    return;
+                }
                 worker_connection.finish(1006, String::new(), false);
+                publish(Event::Error(error.to_string()));
                 publish(Event::Close {
                     code: 1006,
                     reason: String::new(),
@@ -469,6 +522,9 @@ pub(crate) fn watch_with(
         {
             drop(source);
             worker_connection.finish(1006, String::new(), false);
+            publish(Event::Error(
+                "the WebSocket connection was closed while connecting".into(),
+            ));
             publish(Event::Close {
                 code: 1006,
                 reason: String::new(),
@@ -483,20 +539,35 @@ pub(crate) fn watch_with(
         loop {
             match source.next_event() {
                 Ok(Event::Message(message)) => {
+                    if worker_connection.ready_state() != OPEN {
+                        continue;
+                    }
                     if !publish(Event::Message(message)) {
                         worker_connection.cancel();
                         return;
                     }
                 }
                 Ok(Event::Close {
-                    code,
+                    mut code,
                     reason,
                     was_clean,
                 }) => {
+                    // NSURLSession has no empty close-payload spelling and
+                    // sends 1000 for close(). Normalize its echo to the 1005
+                    // exposed by the portable empty-payload handshake.
+                    if code == 1000
+                        && reason.is_empty()
+                        && worker_connection
+                            .inner
+                            .local_close_without_code
+                            .load(Ordering::Acquire)
+                    {
+                        code = 1005;
+                    }
+                    worker_connection.finish(code, reason.clone(), was_clean);
                     if code == 1006 {
                         publish(Event::Error("the socket closed abnormally".into()));
                     }
-                    worker_connection.finish(code, reason.clone(), was_clean);
                     publish(Event::Close {
                         code,
                         reason,
@@ -506,8 +577,11 @@ pub(crate) fn watch_with(
                 }
                 Ok(_) => {}
                 Err(error) => {
-                    publish(Event::Error(error.to_string()));
+                    if !worker_live.load(Ordering::Acquire) {
+                        return;
+                    }
                     worker_connection.finish(1006, String::new(), false);
+                    publish(Event::Error(error.to_string()));
                     publish(Event::Close {
                         code: 1006,
                         reason: String::new(),
@@ -529,10 +603,33 @@ pub fn watch(
     protocols: Vec<String>,
     max_message: usize,
 ) -> (Connection, mpsc::Receiver<Event>, Subscription) {
-    let (sender, receiver) = mpsc::channel();
-    let publish = Arc::new(move |event| sender.send(event).is_ok());
-    let (connection, subscription) =
-        watch_with(transport, grants, url, protocols, max_message, publish);
+    // Two slots hold the terminal error/close pair. A host that stops reading
+    // backpressures the socket worker instead of accumulating messages.
+    let (sender, receiver) = mpsc::sync_channel(2);
+    let live = Arc::new(AtomicBool::new(true));
+    let publish_live = Arc::clone(&live);
+    let publish = Arc::new(move |mut event| loop {
+        if !publish_live.load(Ordering::Acquire) {
+            return false;
+        }
+        match sender.try_send(event) {
+            Ok(()) => return true,
+            Err(mpsc::TrySendError::Full(returned)) => {
+                event = returned;
+                std::thread::yield_now();
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => return false,
+        }
+    });
+    let (connection, subscription) = watch_with_liveness(
+        transport,
+        grants,
+        url,
+        protocols,
+        max_message,
+        publish,
+        live,
+    );
     (connection, receiver, subscription)
 }
 
@@ -745,6 +842,167 @@ mod tests {
         );
         assert_eq!(connection.ready_state(), CLOSED);
         assert_eq!(opens.load(Ordering::SeqCst), 0);
+    }
+
+    struct Connecting {
+        started: Arc<AtomicBool>,
+    }
+
+    impl SocketTransport for Connecting {
+        fn connect(
+            &self,
+            _: &url::Url,
+            _: usize,
+            signal: &AbortSignal,
+        ) -> Result<Box<dyn MessageSource>, HostError> {
+            self.started.store(true, Ordering::Release);
+            while !signal.aborted() {
+                std::thread::yield_now();
+            }
+            Err(signal.check().unwrap_err())
+        }
+    }
+
+    fn local_grant() -> Arc<GrantSet> {
+        Arc::new(GrantSet::parse("net.websocket ws://127.0.0.1:9\n").unwrap())
+    }
+
+    #[test]
+    fn close_while_connecting_never_publishes_open() {
+        let started = Arc::new(AtomicBool::new(false));
+        let (connection, events, _subscription) = watch(
+            Arc::new(Connecting {
+                started: Arc::clone(&started),
+            }),
+            local_grant(),
+            "ws://127.0.0.1:9/".into(),
+            Vec::new(),
+            1024,
+        );
+        while !started.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+        connection.close(None, "").unwrap();
+        assert!(matches!(events.recv().unwrap(), Event::Error(_)));
+        assert!(matches!(events.recv().unwrap(), Event::Close { .. }));
+        assert_eq!(connection.ready_state(), CLOSED);
+        assert!(events.try_recv().is_err(), "no stale open may follow close");
+    }
+
+    #[test]
+    fn unsubscribe_during_connecting_is_silent() {
+        let started = Arc::new(AtomicBool::new(false));
+        let (_connection, events, subscription) = watch(
+            Arc::new(Connecting {
+                started: Arc::clone(&started),
+            }),
+            local_grant(),
+            "ws://127.0.0.1:9/".into(),
+            Vec::new(),
+            1024,
+        );
+        while !started.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+        subscription.unsubscribe();
+        assert!(matches!(
+            events.recv_timeout(std::time::Duration::from_secs(2)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        ));
+    }
+
+    struct BlockedRead {
+        signal: AbortSignal,
+    }
+
+    impl MessageSource for BlockedRead {
+        fn next(&mut self) -> Result<Incoming, HostError> {
+            while !self.signal.aborted() {
+                std::thread::yield_now();
+            }
+            Err(self.signal.check().unwrap_err())
+        }
+    }
+
+    struct OpensThenBlocks;
+
+    impl SocketTransport for OpensThenBlocks {
+        fn connect(
+            &self,
+            _: &url::Url,
+            _: usize,
+            signal: &AbortSignal,
+        ) -> Result<Box<dyn MessageSource>, HostError> {
+            Ok(Box::new(BlockedRead {
+                signal: signal.clone(),
+            }))
+        }
+    }
+
+    #[test]
+    fn unsubscribe_during_a_blocked_open_read_is_silent() {
+        let (_connection, events, subscription) = watch(
+            Arc::new(OpensThenBlocks),
+            local_grant(),
+            "ws://127.0.0.1:9/".into(),
+            Vec::new(),
+            1024,
+        );
+        assert!(matches!(events.recv().unwrap(), Event::Open { .. }));
+        subscription.unsubscribe();
+        assert!(matches!(
+            events.recv_timeout(std::time::Duration::from_secs(2)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        ));
+    }
+
+    struct FastSource {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl MessageSource for FastSource {
+        fn next(&mut self) -> Result<Incoming, HostError> {
+            self.calls.fetch_add(1, Ordering::AcqRel);
+            Ok(Incoming::Text("fast".into()))
+        }
+    }
+
+    struct FastTransport(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl SocketTransport for FastTransport {
+        fn connect(
+            &self,
+            _: &url::Url,
+            _: usize,
+            _: &AbortSignal,
+        ) -> Result<Box<dyn MessageSource>, HostError> {
+            Ok(Box::new(FastSource {
+                calls: Arc::clone(&self.0),
+            }))
+        }
+    }
+
+    #[test]
+    fn a_host_that_stops_receiving_backpressures_the_rust_watch() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (_connection, _events, subscription) = watch(
+            Arc::new(FastTransport(Arc::clone(&calls))),
+            local_grant(),
+            "ws://127.0.0.1:9/".into(),
+            Vec::new(),
+            1024,
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while calls.load(Ordering::Acquire) < 2 && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(
+            calls.load(Ordering::Acquire),
+            2,
+            "open plus one message fill the two-slot queue; the next publish pauses"
+        );
+        subscription.unsubscribe();
     }
 
     #[cfg(not(feature = "websocket"))]

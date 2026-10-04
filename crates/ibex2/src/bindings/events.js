@@ -404,6 +404,14 @@
     return dispatch(target, event, true);
   }
 
+  function hasEventListener(target, type) {
+    var listeners = targetState(target).listeners;
+    for (var i = 0; i < listeners.length; i++) {
+      if (!listeners[i].removed && listeners[i].type === type) return true;
+    }
+    return false;
+  }
+
   function setAbortHooks(hooks) {
     if (!hooks || typeof hooks.subscribe !== "function") {
       throw new TypeError("invalid AbortSignal hooks");
@@ -475,6 +483,7 @@
   return {
     reportException: reportException,
     fireTrustedEvent: fireTrustedEvent,
+    hasEventListener: hasEventListener,
     setAbortHooks: setAbortHooks,
     onUnhandled: function (_, reason, promise) {
       var event = new PromiseRejectionEvent("unhandledrejection", {

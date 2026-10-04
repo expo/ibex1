@@ -12,13 +12,15 @@ use crate::stdlib::websocket::{
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::sync::{
-    atomic::{AtomicU8, AtomicUsize, Ordering},
+    atomic::{AtomicUsize, Ordering},
     mpsc, Arc, Mutex,
 };
 use std::time::Duration;
 
 const MAX_HEAD: usize = 16 << 10;
 const FRAGMENT: usize = 16 << 10;
+const MAX_OUTBOUND_BYTES: usize = 16 << 20;
+const MAX_OUTBOUND_MESSAGES: usize = 256;
 const OPEN: u8 = 1;
 const CLOSING: u8 = 2;
 const CLOSED: u8 = 3;
@@ -172,12 +174,17 @@ impl SocketTransport for TcpSocketTransport {
             .map_err(failed)?;
         let wire = Arc::new(Mutex::new(wire));
         let buffered_amount = Arc::new(AtomicUsize::new(0));
-        let phase = Arc::new(AtomicU8::new(OPEN));
+        let send_state = Arc::new(Mutex::new(SendState {
+            phase: OPEN,
+            queued_bytes: 0,
+            queued_messages: 0,
+        }));
         let (commands, outgoing) = mpsc::channel();
         let sender = Arc::new(TcpSender {
             commands,
             buffered: Arc::clone(&buffered_amount),
-            phase: Arc::clone(&phase),
+            state: Arc::clone(&send_state),
+            shutdown: shutdown.try_clone().map_err(failed)?,
         });
         let writer_wire = Arc::clone(&wire);
         let writer_shutdown = shutdown.try_clone().map_err(failed)?;
@@ -187,7 +194,7 @@ impl SocketTransport for TcpSocketTransport {
                 writer_wire,
                 writer_shutdown,
                 buffered_amount,
-                phase,
+                send_state,
             )
         });
         Ok(Box::new(Socket {
@@ -322,13 +329,33 @@ enum Command {
 struct TcpSender {
     commands: mpsc::Sender<Command>,
     buffered: Arc<AtomicUsize>,
-    phase: Arc<AtomicU8>,
+    state: Arc<Mutex<SendState>>,
+    shutdown: TcpStream,
+}
+
+struct SendState {
+    phase: u8,
+    queued_bytes: usize,
+    queued_messages: usize,
 }
 
 impl TcpSender {
     fn enqueue(&self, opcode: u8, payload: &[u8]) -> Result<(), HostError> {
         saturating_add(&self.buffered, payload.len());
-        if self.phase.load(Ordering::Acquire) != OPEN {
+        let mut state = self.state.lock().expect("WebSocket sender poisoned");
+        if state.phase != OPEN {
+            return Ok(());
+        }
+        if state.queued_bytes.saturating_add(payload.len()) > MAX_OUTBOUND_BYTES
+            || state.queued_messages >= MAX_OUTBOUND_MESSAGES
+        {
+            // WHATWG says a full implementation buffer flags the socket as
+            // full and closes the connection. An abrupt local failure keeps
+            // memory bounded when even a close frame could sit behind a
+            // non-reading peer.
+            state.phase = CLOSED;
+            drop(state);
+            let _ = self.shutdown.shutdown(Shutdown::Both);
             return Ok(());
         }
         self.commands
@@ -337,15 +364,49 @@ impl TcpSender {
                 payload: payload.to_vec(),
                 accounted: payload.len(),
             })
-            .map_err(|_| HostError::Failed("the socket is closed".into()))
+            .map_err(|_| HostError::Failed("the socket is closed".into()))?;
+        state.queued_bytes = state.queued_bytes.saturating_add(payload.len());
+        state.queued_messages += 1;
+        Ok(())
     }
 
     fn control(&self, opcode: u8, payload: Vec<u8>) {
-        let _ = self.commands.send(Command::Control { opcode, payload });
+        let state = self.state.lock().expect("WebSocket sender poisoned");
+        if state.phase == OPEN {
+            let _ = self.commands.send(Command::Control { opcode, payload });
+        }
     }
 
     fn mark_closed(&self) {
-        self.phase.store(CLOSED, Ordering::Release);
+        self.state.lock().expect("WebSocket sender poisoned").phase = CLOSED;
+    }
+
+    fn phase(&self) -> u8 {
+        self.state.lock().expect("WebSocket sender poisoned").phase
+    }
+
+    fn peer_close(&self, payload: Vec<u8>) {
+        let mut state = self.state.lock().expect("WebSocket sender poisoned");
+        if state.phase == OPEN {
+            state.phase = CLOSING;
+            let _ = self.commands.send(Command::Control {
+                opcode: 0x8,
+                payload,
+            });
+        }
+        state.phase = CLOSED;
+    }
+
+    fn fail_too_large(&self) {
+        let mut state = self.state.lock().expect("WebSocket sender poisoned");
+        if state.phase != OPEN {
+            return;
+        }
+        state.phase = CLOSING;
+        let _ = self.commands.send(Command::Control {
+            opcode: 0x8,
+            payload: 1009u16.to_be_bytes().to_vec(),
+        });
     }
 }
 
@@ -359,20 +420,22 @@ impl MessageSender for TcpSender {
     }
 
     fn close(&self, code: Option<u16>, reason: &str) -> Result<(), HostError> {
-        if self
-            .phase
-            .compare_exchange(OPEN, CLOSING, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
+        let mut state = self.state.lock().expect("WebSocket sender poisoned");
+        if state.phase != OPEN {
             return Ok(());
         }
+        state.phase = CLOSING;
         let mut payload = Vec::new();
         if let Some(code) = code {
             payload.extend_from_slice(&code.to_be_bytes());
             payload.extend_from_slice(reason.as_bytes());
         }
-        self.control(0x8, payload);
-        Ok(())
+        self.commands
+            .send(Command::Control {
+                opcode: 0x8,
+                payload,
+            })
+            .map_err(|_| HostError::Failed("the socket is closed".into()))
     }
 
     fn buffered_amount(&self) -> usize {
@@ -391,30 +454,39 @@ fn writer_loop(
     wire: Arc<Mutex<Wire>>,
     shutdown: TcpStream,
     buffered: Arc<AtomicUsize>,
-    phase: Arc<AtomicU8>,
+    state: Arc<Mutex<SendState>>,
 ) {
+    let mut close_written = false;
     while let Ok(command) = commands.recv() {
         let (result, accounted, closing) = match command {
             Command::Data {
                 opcode,
                 payload,
                 accounted,
-            } => (write_message(&wire, opcode, &payload), accounted, false),
+            } if !close_written => (write_message(&wire, opcode, &payload), accounted, false),
+            Command::Data { .. } => {
+                // A data command that lost a race with a written close is
+                // discarded and remains in bufferedAmount permanently.
+                continue;
+            }
             Command::Control { opcode, payload } => {
                 let result = write_one(&wire, true, opcode, &payload);
                 (result, 0, opcode == 0x8)
             }
         };
         if result.is_err() {
-            phase.store(CLOSED, Ordering::Release);
+            state.lock().expect("WebSocket sender poisoned").phase = CLOSED;
             let _ = shutdown.shutdown(Shutdown::Both);
             return;
         }
         if accounted != 0 {
             buffered.fetch_sub(accounted, Ordering::AcqRel);
+            let mut state = state.lock().expect("WebSocket sender poisoned");
+            state.queued_bytes = state.queued_bytes.saturating_sub(accounted);
+            state.queued_messages = state.queued_messages.saturating_sub(1);
         }
         if closing {
-            // Keep reading until the peer answers the closing handshake.
+            close_written = true;
         }
     }
 }
@@ -527,7 +599,7 @@ impl Socket {
     }
 
     fn receive(&mut self, binary_payload: bool) -> Result<Received, HostError> {
-        if self.sender.phase.load(Ordering::Acquire) == CLOSED {
+        if self.sender.phase() == CLOSED {
             return Ok(Received::Closed {
                 code: 1006,
                 reason: String::new(),
@@ -601,10 +673,7 @@ impl Socket {
                         } else {
                             payload.clone()
                         };
-                        if self.sender.phase.load(Ordering::Acquire) == OPEN {
-                            self.sender.control(0x8, echo);
-                        }
-                        self.sender.mark_closed();
+                        self.sender.peer_close(echo);
                         return Ok(Received::Closed {
                             code,
                             reason: reason.to_string(),
@@ -630,8 +699,7 @@ impl Socket {
             }
             let so_far = message.as_ref().map_or(0, |(_, bytes)| bytes.len()) as u64;
             if so_far + len > self.limit as u64 {
-                self.sender.control(0x8, 1009u16.to_be_bytes().to_vec());
-                self.sender.phase.store(CLOSING, Ordering::Release);
+                self.sender.fail_too_large();
                 return Ok(Received::TooLarge);
             }
             let Some(payload) = self.take(len as usize)? else {
@@ -697,7 +765,7 @@ impl MessageSource for Socket {
 
 impl Drop for Socket {
     fn drop(&mut self) {
-        if self.sender.phase.load(Ordering::Acquire) == OPEN && !self.signal.aborted() {
+        if self.sender.phase() == OPEN && !self.signal.aborted() {
             let _ = self.sender.close(Some(1000), "");
         }
         self.sender.mark_closed();

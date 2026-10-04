@@ -410,6 +410,62 @@ fn pure_installs_exactly_its_globals_into_a_bare_runtime() {
     assert_eq!(added, expected);
 }
 
+#[cfg(feature = "websocket")]
+#[test]
+fn borrowed_runtime_keeps_a_global_websocket_bound_to_its_endowment() {
+    struct Counting(std::sync::mpsc::SyncSender<()>);
+    impl ibex2::stdlib::websocket::SocketTransport for Counting {
+        fn connect(
+            &self,
+            _: &url::Url,
+            _: usize,
+            _: &ibex2::stdlib::abort::AbortSignal,
+        ) -> Result<Box<dyn ibex2::stdlib::websocket::MessageSource>, ibex2::boundary::HostError>
+        {
+            self.0.send(()).expect("open observer remains alive");
+            Err(ibex2::boundary::HostError::Failed(
+                "borrowed transport reached".into(),
+            ))
+        }
+    }
+
+    let (opened, opened_rx) = std::sync::mpsc::sync_channel(1);
+    let bindings = ibex2::host::Host::new()
+        .with_socket_transport(Box::new(Counting(opened)))
+        .endow(GrantSet::parse("net.websocket ws://borrowed.example\n").expect("borrowed grant"));
+    let context = Context::from_bindings(&bindings);
+    let consumer = BareConsumer::from_context(Groups::DEFAULT, context);
+    assert_eq!(consumer.eval("typeof globalThis.WebSocket"), "function");
+    consumer.eval(
+        r#"
+        globalThis.borrowedLog = [];
+        var borrowedSocket = new WebSocket("ws://borrowed.example/");
+        borrowedSocket.onerror = function () {
+          borrowedLog.push("error:" + borrowedSocket.readyState);
+        };
+        borrowedSocket.onclose = function (event) {
+          borrowedLog.push("close:" + event.code);
+        };
+        "#,
+    );
+    opened_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("borrowed transport was reached");
+    let deliver_one = || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if consumer.step(true) == 1 {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("WebSocket event was not admitted");
+    };
+    deliver_one();
+    deliver_one();
+    assert_eq!(consumer.eval("borrowedLog.join('|')"), "error:3|close:1006");
+}
+
 #[test]
 fn fetch_group_does_not_install_timers_or_crypto() {
     let baseline = global_names(&BareConsumer::new(Groups::empty()));

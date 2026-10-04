@@ -48,7 +48,7 @@ fn main() {
             .flag("objective-c++")
             .compile("ibex2_darwin_http");
         if std::env::var("CARGO_FEATURE_WEBSOCKET").is_ok() {
-            // @ref LLP 0057.000#l4--websocket — Apple keeps the platform task,
+            // @ref LLP 0057.000#l4--websocket--completed-2026-10-04 — Apple keeps the platform task,
             // including its proxy/VPN behavior, now that send is qualified.
             println!("cargo:rerun-if-changed=src/engine/darwin_websocket.mm");
             cc::Build::new()

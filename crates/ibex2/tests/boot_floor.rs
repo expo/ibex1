@@ -219,14 +219,14 @@ fn event_group_floor_delta() {
     println!("  paired delta:   {:+.1} us", median(paired_deltas));
 }
 
-/// WEBSOCKET is explicit rather than part of DEFAULT, so measure its bytecode
-/// install, hardening, and first-evaluation delta directly.
+/// Measure WEBSOCKET's bytecode, hardening, and first-evaluation delta by
+/// subtracting it from the ordinary default-on profile.
 #[cfg(feature = "websocket")]
 #[test]
 #[ignore]
 fn websocket_group_floor_delta() {
-    let without = ibex2::bindings::Groups::DEFAULT;
-    let with = without | ibex2::bindings::Groups::WEBSOCKET;
+    let with = ibex2::bindings::Groups::DEFAULT;
+    let without = with.without(ibex2::bindings::Groups::WEBSOCKET);
 
     let _ = post_create_floor(without);
     let _ = post_create_floor(with);

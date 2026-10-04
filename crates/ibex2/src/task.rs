@@ -369,7 +369,7 @@ pub struct RuntimeState {
     app_directories: std::sync::OnceLock<crate::stdlib::app_fs::AppDirectories>,
     responses: Mutex<std::collections::HashMap<u64, Arc<StoredResponse>>>,
     controls: Mutex<std::collections::HashMap<u64, crate::stdlib::abort::AbortController>>,
-    subscriptions: Mutex<HashMap<u64, ()>>,
+    subscriptions: Mutex<HashMap<u64, Arc<EventSubscriptionState>>>,
     websockets: Mutex<HashMap<u64, StoredWebSocket>>,
     shutdown: std::sync::atomic::AtomicBool,
     /// References held by workers keep storage alive but do not keep the
@@ -428,6 +428,67 @@ struct StoredWebSocket {
     connection: crate::stdlib::websocket::Connection,
     _subscription: crate::stdlib::events::Subscription,
     activity: Arc<WebSocketActivity>,
+}
+
+const MAX_SUBSCRIPTION_EVENTS: usize = 256;
+const MAX_SUBSCRIPTION_BYTES: usize = 32 << 20;
+
+struct EventSubscriptionState {
+    quota: Mutex<EventSubscriptionQuota>,
+    space: std::sync::Condvar,
+}
+
+struct EventSubscriptionQuota {
+    live: bool,
+    messages: usize,
+    bytes: usize,
+}
+
+impl EventSubscriptionState {
+    fn new() -> Self {
+        Self {
+            quota: Mutex::new(EventSubscriptionQuota {
+                live: true,
+                messages: 0,
+                bytes: 0,
+            }),
+            space: std::sync::Condvar::new(),
+        }
+    }
+
+    fn reserve(&self, bytes: usize) -> bool {
+        if bytes > MAX_SUBSCRIPTION_BYTES {
+            return false;
+        }
+        let mut quota = self.quota.lock().expect("event subscription poisoned");
+        while quota.live
+            && (quota.messages >= MAX_SUBSCRIPTION_EVENTS
+                || quota.bytes.saturating_add(bytes) > MAX_SUBSCRIPTION_BYTES)
+        {
+            quota = self.space.wait(quota).expect("event subscription poisoned");
+        }
+        if !quota.live {
+            return false;
+        }
+        quota.messages += 1;
+        quota.bytes += bytes;
+        true
+    }
+
+    fn release(&self, bytes: usize) {
+        let mut quota = self.quota.lock().expect("event subscription poisoned");
+        quota.messages = quota.messages.saturating_sub(1);
+        quota.bytes = quota.bytes.saturating_sub(bytes);
+        self.space.notify_one();
+    }
+
+    fn close(&self) {
+        let mut quota = self.quota.lock().expect("event subscription poisoned");
+        quota.live = false;
+        quota.messages = 0;
+        quota.bytes = 0;
+        self.space.notify_all();
+    }
 }
 
 struct WebSocketActivity {
@@ -539,10 +600,11 @@ impl RuntimeState {
     /// Start a WebSocket source whose callback identity already belongs to
     /// this runtime. The platform worker publishes compact byte payloads into
     /// the same FIFO as settlements and timers; JSI is touched only by pump.
-    // @ref LLP 0057.000#l4--websocket — WebSocket is the first user of L3's subscription FIFO
+    // @ref LLP 0057.000#l4--websocket--completed-2026-10-04 — WebSocket is the first user of L3's subscription FIFO
     pub(crate) fn open_websocket(
         self: &Arc<Self>,
         subscription: u64,
+        grants: Arc<crate::grant::GrantSet>,
         url: String,
         protocols: Vec<String>,
         max_message: usize,
@@ -576,7 +638,7 @@ impl RuntimeState {
         });
         let (connection, source_subscription) =
             self.websocket()
-                .watch_with(url, protocols, max_message, publish);
+                .watch_with_grants(grants, url, protocols, max_message, publish);
         let handle = self
             .next_handle
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -761,14 +823,21 @@ impl RuntimeState {
         for response in responses.into_values() {
             response.control.abort();
         }
+        // @ref LLP 0058.000.000#9-teardown-and-lifecycle — shutdown removes callback identities and their unreserved event tasks as one locked transition
+        let subscriptions = std::mem::take(
+            &mut *self
+                .subscriptions
+                .lock()
+                .expect("event subscriptions poisoned"),
+        );
+        for subscription in subscriptions.into_values() {
+            subscription.close();
+        }
+        // Closing subscription quotas above wakes any WebSocket publisher
+        // backpressured on the host FIFO before dropping its source
+        // subscription waits for that publication to leave.
         let websockets = std::mem::take(&mut *self.websockets.lock().expect("WebSockets poisoned"));
         drop(websockets);
-        // @ref LLP 0058.000.000#9-teardown-and-lifecycle — shutdown removes callback identities and their unreserved event tasks as one locked transition
-        let mut subscriptions = self
-            .subscriptions
-            .lock()
-            .expect("event subscriptions poisoned");
-        subscriptions.clear();
         self.queue.cancel_all_events();
         self.crypto_keys
             .lock()
@@ -983,7 +1052,7 @@ impl RuntimeState {
         if self.is_shutdown() {
             return None;
         }
-        subscriptions.insert(id, ());
+        subscriptions.insert(id, Arc::new(EventSubscriptionState::new()));
         drop(subscriptions);
         let state: Weak<Self> = Arc::downgrade(self);
         let subscription = crate::stdlib::events::Subscription::new(move || {
@@ -995,10 +1064,14 @@ impl RuntimeState {
     }
 
     fn unsubscribe_event(&self, id: u64) {
-        self.subscriptions
+        let subscription = self
+            .subscriptions
             .lock()
             .expect("event subscriptions poisoned")
             .remove(&id);
+        if let Some(subscription) = subscription {
+            subscription.close();
+        }
         // @ref LLP 0057.000#l3--events-abort-and-the-second-direction — unsubscribe cancels admitted but unreserved delivery
         self.queue.cancel_events(id);
     }
@@ -1011,13 +1084,35 @@ impl RuntimeState {
     /// subscription operation.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn publish_event(&self, subscription: u64, payload: HostValue) -> bool {
+        let bytes = host_value_size(&payload);
+        let state = {
+            let subscriptions = self
+                .subscriptions
+                .lock()
+                .expect("event subscriptions poisoned");
+            if self.is_shutdown() {
+                return false;
+            }
+            let Some(state) = subscriptions.get(&subscription) else {
+                return false;
+            };
+            Arc::clone(state)
+        };
+        if !state.reserve(bytes) {
+            return false;
+        }
         // @ref LLP 0058.000.000#8-tasks-microtasks-timers-and-callbacks — subscription liveness and FIFO insertion are atomic, but wake is outside the registry lock
         let admitted = {
             let subscriptions = self
                 .subscriptions
                 .lock()
                 .expect("event subscriptions poisoned");
-            if self.is_shutdown() || !subscriptions.contains_key(&subscription) {
+            if self.is_shutdown()
+                || !subscriptions
+                    .get(&subscription)
+                    .is_some_and(|current| Arc::ptr_eq(current, &state))
+            {
+                state.release(bytes);
                 return false;
             }
             self.queue.enqueue(HostTask::Event {
@@ -1025,6 +1120,9 @@ impl RuntimeState {
                 payload,
             })
         };
+        if !admitted {
+            state.release(bytes);
+        }
         if admitted {
             self.queue.notify_admission();
         }
@@ -1040,15 +1138,27 @@ impl RuntimeState {
             let HostTask::Event { subscription, .. } = &task else {
                 return Some(task);
             };
-            if self
+            let state = self
                 .subscriptions
                 .lock()
                 .expect("event subscriptions poisoned")
-                .contains_key(subscription)
-            {
+                .get(subscription)
+                .cloned();
+            if let Some(state) = state {
+                if let HostTask::Event { payload, .. } = &task {
+                    state.release(host_value_size(payload));
+                }
                 return Some(task);
             }
         }
+    }
+}
+
+fn host_value_size(value: &HostValue) -> usize {
+    match value {
+        HostValue::Str(value) => value.len(),
+        HostValue::Bytes(value) => value.len(),
+        _ => std::mem::size_of::<HostValue>(),
     }
 }
 
@@ -1356,6 +1466,7 @@ pub extern "C" fn ibex2_websocket_supported() -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn ibex2_websocket_open(
     state: *const RuntimeState,
+    grants: *const crate::grant::GrantSet,
     subscription: u64,
     url: *const u8,
     url_len: usize,
@@ -1374,6 +1485,13 @@ pub unsafe extern "C" fn ibex2_websocket_open(
         );
         return 0;
     };
+    let Some(grants) = crate::boundary_abi::clone_grants(grants) else {
+        websocket_error(
+            out_error,
+            HostError::Failed("the WebSocket authority is detached".into()),
+        );
+        return 0;
+    };
     let url = match websocket_input(url, url_len) {
         Ok(value) => value.to_string(),
         Err(error) => {
@@ -1389,7 +1507,7 @@ pub unsafe extern "C" fn ibex2_websocket_open(
             return 0;
         }
     };
-    match state.open_websocket(subscription, url, protocols, max_message) {
+    match state.open_websocket(subscription, grants, url, protocols, max_message) {
         Ok(handle) => handle,
         Err(error) => {
             websocket_error(out_error, error);
@@ -1885,6 +2003,44 @@ mod tests {
         subscription.unsubscribe();
         assert!(state.queue.take().is_none());
         assert!(!state.publish_event(subscription_id, HostValue::Str("late".into())));
+    }
+
+    #[test]
+    fn a_host_that_stops_pumping_backpressures_the_js_event_fifo() {
+        let state = Arc::new(RuntimeState::new(Box::new(
+            crate::transport::dev_tcp::DevTcpTransport::new(),
+        )));
+        let (subscription_id, subscription) = state.subscribe_event().unwrap();
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let publisher = Arc::clone(&state);
+        let publisher_attempts = Arc::clone(&attempts);
+        let worker = std::thread::spawn(move || {
+            for index in 0..(MAX_SUBSCRIPTION_EVENTS + 10) {
+                publisher_attempts.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                if !publisher
+                    .publish_event(subscription_id, HostValue::Str(format!("event-{index}")))
+                {
+                    return false;
+                }
+            }
+            true
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while attempts.load(std::sync::atomic::Ordering::Acquire) <= MAX_SUBSCRIPTION_EVENTS
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::yield_now();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(state.queue.len(), MAX_SUBSCRIPTION_EVENTS);
+        assert_eq!(
+            attempts.load(std::sync::atomic::Ordering::Acquire),
+            MAX_SUBSCRIPTION_EVENTS + 1,
+            "the next publication waits instead of growing the host FIFO"
+        );
+        subscription.unsubscribe();
+        assert!(!worker.join().unwrap());
+        assert!(state.queue.take().is_none());
     }
 
     #[test]

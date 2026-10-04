@@ -7,7 +7,7 @@
 // delegate refuses redirects: a handshake that redirects fails, as it does in
 // a browser, and the grant was checked for this origin only. Nothing is ever
 // @ref LLP 0057#3-the-boundary — the platform executes; it does not decide
-// @ref LLP 0057.000#l4--websocket — send does not require replacing the platform task
+// @ref LLP 0057.000#l4--websocket--completed-2026-10-04 — send does not require replacing the platform task
 
 #import <Foundation/Foundation.h>
 #import <Security/Security.h>
@@ -17,6 +17,9 @@
 #include <cstring>
 
 namespace {
+constexpr NSUInteger kMaxOutboundBytes = 16u << 20;
+constexpr NSUInteger kMaxOutboundMessages = 256;
+
 char *dup_utf8(NSString *value) {
   const char *raw = value == nil ? nullptr : [value UTF8String];
   if (raw == nullptr) return nullptr;
@@ -36,9 +39,13 @@ char *dup_utf8(NSString *value) {
 @property(nonatomic, assign) BOOL opened;
 @property(nonatomic, assign) BOOL ended;
 @property(nonatomic, assign) BOOL cancelled;
+@property(nonatomic, assign) BOOL closing;
 @property(nonatomic, strong) NSString *failure;
 @property(nonatomic, strong) NSString *protocol;
 @property(nonatomic, assign) NSUInteger pendingBytes;
+@property(nonatomic, assign) NSUInteger pendingMessages;
+@property(nonatomic, assign) NSInteger requestedCloseCode;
+@property(nonatomic, strong) NSData *requestedCloseReason;
 // A test-only pinned anchor supplied by the Rust unit-test transport. The
 // production entry point always leaves this nil and uses normal system trust.
 @property(nonatomic, strong) NSData *testCertificate;
@@ -229,6 +236,8 @@ int ibex2_darwin_ws_next(void *handle, int *out_kind, char **out_data, size_t *o
   }
   NSURLSessionWebSocketMessage *message = socket.message;
   NSError *error = socket.error;
+  NSInteger requestedCloseCode = socket.requestedCloseCode;
+  NSData *requestedCloseReason = socket.requestedCloseReason;
   [socket.condition unlock];
   if (message != nil && message.type == NSURLSessionWebSocketMessageTypeString) {
     *out_kind = 0;
@@ -256,9 +265,12 @@ int ibex2_darwin_ws_next(void *handle, int *out_kind, char **out_data, size_t *o
     return 0;
   }
   NSInteger code = socket.task.closeCode;
+  if (code == NSURLSessionWebSocketCloseCodeInvalid &&
+      requestedCloseCode != 0)
+    code = requestedCloseCode;
   *out_kind = 2;
   *out_code = code == NSURLSessionWebSocketCloseCodeInvalid ? 1006 : (int)code;
-  NSData *reason = socket.task.closeReason;
+  NSData *reason = socket.task.closeReason ?: requestedCloseReason;
   if (reason.length > 0) {
     NSString *text = [[NSString alloc] initWithData:reason encoding:NSUTF8StringEncoding];
     *out_data = dup_utf8(text ?: @"");
@@ -269,11 +281,25 @@ int ibex2_darwin_ws_next(void *handle, int *out_kind, char **out_data, size_t *o
 int send_message(Ibex2Socket *socket, NSURLSessionWebSocketMessage *message,
                  size_t length) {
   [socket.condition lock];
-  socket.pendingBytes += length;
-  BOOL ended = socket.ended || socket.cancelled;
+  socket.pendingBytes = length > NSUIntegerMax - socket.pendingBytes
+      ? NSUIntegerMax : socket.pendingBytes + length;
+  BOOL ended = socket.ended || socket.cancelled || socket.closing;
+  BOOL full = !ended &&
+      (socket.pendingBytes > kMaxOutboundBytes ||
+       socket.pendingMessages >= kMaxOutboundMessages);
+  if (full) {
+    socket.closing = YES;
+    socket.requestedCloseCode = 1009;
+  }
+  if (!ended && !full) socket.pendingMessages += 1;
   [socket.condition unlock];
   // WHATWG keeps bytes handed to a closing/closed socket in bufferedAmount.
   if (ended) return 0;
+  if (full) {
+    [socket.task cancelWithCloseCode:(NSURLSessionWebSocketCloseCode)1009
+                              reason:nil];
+    return 0;
+  }
   __weak Ibex2Socket *weak = socket;
   [socket.task sendMessage:message completionHandler:^(NSError *error) {
     Ibex2Socket *strong = weak;
@@ -283,6 +309,9 @@ int send_message(Ibex2Socket *socket, NSURLSessionWebSocketMessage *message,
       strong.pendingBytes = strong.pendingBytes >= length
                                 ? strong.pendingBytes - length
                                 : 0;
+      strong.pendingMessages = strong.pendingMessages > 0
+                                   ? strong.pendingMessages - 1
+                                   : 0;
     } else {
       strong.error = error;
       strong.ended = YES;
@@ -322,6 +351,13 @@ void ibex2_darwin_ws_close(void *handle, int code,
   NSURLSessionWebSocketCloseCode platformCode =
       code == 0 ? NSURLSessionWebSocketCloseCodeNormalClosure
                 : (NSURLSessionWebSocketCloseCode)code;
+  [socket.condition lock];
+  BOOL already = socket.closing || socket.ended || socket.cancelled;
+  socket.closing = YES;
+  socket.requestedCloseCode = platformCode;
+  socket.requestedCloseReason = data;
+  [socket.condition unlock];
+  if (already) return;
   [socket.task cancelWithCloseCode:platformCode
                             reason:data];
 }
@@ -340,6 +376,7 @@ void ibex2_darwin_ws_cancel(void *handle) {
   [socket.condition lock];
   BOOL already = socket.cancelled;
   socket.cancelled = YES;
+  socket.closing = YES;
   [socket.condition broadcast];
   [socket.condition unlock];
   if (!already) [socket.task cancel];
@@ -351,6 +388,7 @@ void ibex2_darwin_ws_release(void *handle) {
   [socket.condition lock];
   BOOL already = socket.cancelled;
   socket.cancelled = YES;
+  socket.closing = YES;
   [socket.condition broadcast];
   [socket.condition unlock];
   if (!already) [socket.task cancelWithCloseCode:NSURLSessionWebSocketCloseCodeNormalClosure reason:nil];

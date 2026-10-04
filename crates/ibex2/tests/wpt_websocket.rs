@@ -6,7 +6,7 @@
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use ibex2::engine::hermes::{DynamicCode, Hermes};
@@ -174,7 +174,7 @@ fn prelude(port: u16) -> String {
         var SCHEME_DOMAIN_PORT = "ws://127.0.0.1:{port}";
         var __PATH = "echo";
         function IsWebSocket() {{
-          assert_true(!!self.WebSocket, "runtime supports WebSocket");
+          assert_true(typeof WebSocket === "function", "module receives WebSocket");
         }}
         function CreateWebSocketNonAsciiProtocol(value) {{
           IsWebSocket(); return new WebSocket(SCHEME_DOMAIN_PORT + "/" + __PATH, value);
@@ -202,30 +202,44 @@ fn prelude(port: u16) -> String {
     )
 }
 
-fn eval_fixture(runtime: &mut Hermes, root: &Path, name: &str) {
-    let path = root.join(name);
-    let source = std::fs::read_to_string(&path)
-        .unwrap_or_else(|error| panic!("vendored {}: {error}", path.display()));
-    runtime
-        .eval(&source)
-        .unwrap_or_else(|error| panic!("{name} failed to evaluate: {error}"));
-}
-
 fn run_file(port: u16, name: &str) -> Vec<(String, bool, String)> {
-    let grants = ibex2::grant::GrantSet::parse(&format!(
-        "net.websocket ws://127.0.0.1:{port}\nnet.websocket wss://127.0.0.1:{port}\n"
-    ))
-    .unwrap();
-    let context = ibex2::bindings::Context::new(grants);
+    let context = ibex2::bindings::Context::new(ibex2::grant::GrantSet::none());
     let mut runtime = Hermes::new(DynamicCode::Closed).expect("runtime");
     let groups = ibex2::bindings::Groups::PURE
         | ibex2::bindings::Groups::EVENTS
         | ibex2::bindings::Groups::WEBSOCKET;
     runtime.install_runtime(groups, &context).expect("bindings");
     runtime.install_test_harness().expect("test harness");
-    runtime.eval(&prelude(port)).expect("WPT substitutions");
     runtime.eval("__ibex2_reset_results()").expect("reset");
-    eval_fixture(&mut runtime, &wpt_root(), name);
+    let fixture_path = wpt_root().join(name);
+    let fixture = std::fs::read_to_string(&fixture_path)
+        .unwrap_or_else(|error| panic!("vendored {}: {error}", fixture_path.display()));
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ibex2-wpt-websocket-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(
+        directory.join("index.js"),
+        format!("{}\n{fixture}", prelude(port)),
+    )
+    .unwrap();
+    runtime
+        .set_loader(
+            ibex2::loader::Root::Declared(directory.clone()),
+            ibex2::loader::ModuleGrants::parse(&format!(
+                "[./index.js]\nnet.websocket ws://127.0.0.1:{port}\n\
+                 net.websocket wss://127.0.0.1:{port}\n"
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+    runtime
+        .run_entry("./index.js")
+        .unwrap_or_else(|error| panic!("{name} failed to evaluate: {error}"));
+    std::fs::remove_dir_all(directory).unwrap();
 
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {

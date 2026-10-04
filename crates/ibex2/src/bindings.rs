@@ -48,8 +48,9 @@ impl Groups {
     pub const INTL: Self = Self(1 << 10);
     pub const BLOB: Self = Self(1 << 11);
     pub const EVENTS: Self = Self(1 << 12);
-    /// Application WebSockets. Deliberately absent from `DEFAULT`: a runtime
-    /// opts into this capability-bearing global explicitly.
+    /// Application WebSockets. The secure runtime injects a grant-bound
+    /// constructor per module; caller-owned runtimes receive an installer-
+    /// endowed global.
     pub const WEBSOCKET: Self = Self(1 << 13);
 
     const PORTABLE_ALL: Self = Self(
@@ -64,7 +65,8 @@ impl Groups {
             | Self::SECRETS.0
             | Self::KV.0
             | Self::BLOB.0
-            | Self::EVENTS.0,
+            | Self::EVENTS.0
+            | Self::WEBSOCKET.0,
     );
 
     /// The groups Ibex's runtime installs today.
@@ -74,8 +76,8 @@ impl Groups {
     #[cfg(not(target_os = "linux"))]
     pub const ALL: Self = Self::PORTABLE_ALL;
 
-    /// The ordinary runtime profile. BLOB stays within LLP 0057.000 D5's
-    /// 150 KB / 150 µs budget and is therefore installed by default.
+    /// The ordinary runtime profile. BLOB and WEBSOCKET stay within LLP
+    /// 0057.000 D5's 150 KB / 150 µs budget and are installed by default.
     #[cfg(target_os = "linux")]
     pub const DEFAULT: Self = Self(Self::PORTABLE_ALL.0 | Self::INTL.0);
     /// The ordinary runtime profile. See the Linux definition above.
@@ -559,6 +561,8 @@ mod tests {
     fn scripts_follow_the_shipping_install_order() {
         assert!(Groups::DEFAULT.contains(Groups::BLOB));
         assert!(Groups::ALL.contains(Groups::BLOB));
+        assert!(Groups::DEFAULT.contains(Groups::WEBSOCKET));
+        assert!(Groups::ALL.contains(Groups::WEBSOCKET));
         let names: Vec<_> = scripts(Groups::DEFAULT)
             .unwrap()
             .into_iter()
@@ -573,6 +577,7 @@ mod tests {
             "events",
             "abort",
             "blob",
+            "websocket",
         ];
         #[cfg(target_os = "linux")]
         expected.extend(["intl_number_format", "intl_case", "intl_datetime"]);

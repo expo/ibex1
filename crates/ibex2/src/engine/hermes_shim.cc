@@ -81,6 +81,7 @@ struct Ibex2Runtime {
     jsi::Value fs;
     jsi::Value process;
     jsi::Value sqlite;
+    jsi::Value websocket;
   };
   std::unordered_map<const void *, SharedBindings> shared;
   // The one deadline: armed by ibex2_hermes_set_deadline, consulted at every
@@ -486,6 +487,8 @@ int ibex2_hermes_collect_garbage(void *handle) {
   auto *rt = static_cast<Ibex2Runtime *>(handle);
   if (rt == nullptr) return 1;
   try {
+    if (rt->bindings != nullptr)
+      rt->bindings->prepare_garbage_collection();
     rt->runtime->instrumentation().collectGarbage("host requested collection");
     return 0;
   } catch (const std::exception &) {
@@ -803,6 +806,11 @@ std::shared_ptr<jsi::Value> load_module(jsi::Runtime &rt, Ibex2Runtime *owner,
       fetch_binding = jsi::Value(rt, owner->bindings->fetch(grants));
     }
 
+    jsi::Value websocket_binding = jsi::Value::undefined();
+    if ((owner->groups & GROUP_WEBSOCKET) != 0) {
+      websocket_binding = jsi::Value(rt, owner->bindings->websocket(grants));
+    }
+
     jsi::Value fs_value = jsi::Value::undefined();
     jsi::Value sqlite_binding = jsi::Value::undefined();
     if ((owner->groups & GROUP_STORAGE) != 0) {
@@ -843,12 +851,14 @@ std::shared_ptr<jsi::Value> load_module(jsi::Runtime &rt, Ibex2Runtime *owner,
     if (fs_value.isObject()) freeze(rt, fs_value);
     if (process_value.isObject()) freeze(rt, process_value);
     if (fetch_binding.isObject()) freeze(rt, fetch_binding);
+    if (websocket_binding.isObject()) freeze(rt, websocket_binding);
     shared = owner->shared
                  .emplace(grants, Ibex2Runtime::SharedBindings{
                                       std::move(fetch_binding),
                                       std::move(fs_value),
                                       std::move(process_value),
-                                      std::move(sqlite_binding)})
+                                      std::move(sqlite_binding),
+                                      std::move(websocket_binding)})
                  .first;
   } else if (grants != nullptr) {
     // The same interned set: one reference is enough to keep it alive.
@@ -870,7 +880,8 @@ std::shared_ptr<jsi::Value> load_module(jsi::Runtime &rt, Ibex2Runtime *owner,
       jsi::Value(rt, make_require(rt, owner, resolved_name)),
       jsi::Value(rt, shared->second.fetch), jsi::Value(rt, shared->second.fs),
       jsi::Value(rt, shared->second.process), std::move(meta),
-      jsi::Value(rt, shared->second.sqlite));
+      jsi::Value(rt, shared->second.sqlite),
+      jsi::Value(rt, shared->second.websocket));
 
   // `module.exports = ...` replaces the value, so re-read it after running.
   // Whatever it is — object, function, string, number — is what `require`
@@ -1065,6 +1076,7 @@ int ibex2_hermes_install_groups(void *handle, uint16_t groups,
           .call(runtime, global, jsi::String::createFromUtf8(runtime, name));
     };
     if ((groups & GROUP_FETCH) != 0) remove("fetch");
+    if ((groups & GROUP_WEBSOCKET) != 0) remove("WebSocket");
     if ((groups & GROUP_STORAGE) != 0) {
       remove("fs");
       remove("sqlite");

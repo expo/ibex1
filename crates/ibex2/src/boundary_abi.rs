@@ -743,7 +743,7 @@ pub unsafe extern "C" fn ibex2_grants_destroy(grants: *const GrantSet) {
     }
 }
 
-unsafe fn clone_grants(grants: *const GrantSet) -> Option<std::sync::Arc<GrantSet>> {
+pub(crate) unsafe fn clone_grants(grants: *const GrantSet) -> Option<std::sync::Arc<GrantSet>> {
     if grants.is_null() {
         return None;
     }

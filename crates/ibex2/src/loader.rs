@@ -834,6 +834,7 @@ pub const MODULE_PARAMETERS: &[&str] = &[
     "process",
     "__ibex2_meta",
     "sqlite",
+    "WebSocket",
 ];
 
 /// Wrap module source in a function of its injected bindings.
@@ -1005,7 +1006,6 @@ pub const DEFAULT_ADDED_GLOBALS: &[&str] = &[
     "onrejectionhandled",
     "MessageEvent",
     "CloseEvent",
-    "WebSocket",
 ];
 
 const GLOBAL_PARTITION: &[(Option<crate::bindings::Groups>, &[usize])] = &[
@@ -1032,7 +1032,6 @@ const GLOBAL_PARTITION: &[(Option<crate::bindings::Groups>, &[usize])] = &[
             28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43,
         ],
     ),
-    (Some(crate::bindings::Groups::WEBSOCKET), &[44]),
 ];
 
 /// The global names a module may see for one installed group set. Anything

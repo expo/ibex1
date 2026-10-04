@@ -221,8 +221,12 @@ impl WebSocket {
         )
     }
 
-    pub(crate) fn watch_with(
+    /// Build a module-scoped watch over this host's transport and the grant
+    /// carried by that module's lexical `WebSocket` constructor.
+    // @ref LLP 0067#1-five-properties — capability-bearing WebSocket authority is a module parameter, never runtime ambient state
+    pub(crate) fn watch_with_grants(
         &self,
+        grants: Arc<GrantSet>,
         url: String,
         protocols: Vec<String>,
         max_message: usize,
@@ -230,7 +234,7 @@ impl WebSocket {
     ) -> (websocket::Connection, crate::stdlib::events::Subscription) {
         websocket::watch_with(
             Arc::clone(&self.transport),
-            Arc::clone(&self.grants),
+            grants,
             url,
             protocols,
             max_message,

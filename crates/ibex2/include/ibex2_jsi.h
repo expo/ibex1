@@ -127,6 +127,7 @@ public:
   jsi::Function async_binding(const char* name, uint32_t op, const void* grants);
   // Endowed values built from the factories retained by install().
   jsi::Function fetch(const void* grants);
+  jsi::Function websocket(const void* grants);
   jsi::Object storage(const void* grants);
   // sqlite_factory is the completion value of precompiled bindings/sqlite.js.
   // This returns frozen {fs, sqlite}; it never modifies the global object.
@@ -149,8 +150,12 @@ public:
   // error path and do not escape. Returns true if a task was delivered; throws
   // for a timer task, which belongs to an owning runtime's driver.
   bool deliver_one();
+  // Release WebSocket keepalive roots whose listener/queued-data condition
+  // ended before an embedder explicitly requests collection.
+  void prepare_garbage_collection();
 private:
-  void install_websocket();
+  jsi::Object websocket_hooks(const void* grants);
+  void refresh_websocket_keepalives();
   struct State;
   jsi::Runtime* runtime_;
   std::shared_ptr<State> state_;
