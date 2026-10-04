@@ -1,9 +1,10 @@
 //! Storage installed into an independently created runtime, without its loader.
 #![cfg(feature = "hermes")]
+#[cfg(unix)]
+use ibex2::stdlib::app_fs::AppDirectories;
 use ibex2::{
     bindings::{Context, Groups},
     grant::GrantSet,
-    stdlib::app_fs::AppDirectories,
 };
 use std::{
     ffi::{c_char, c_void, CStr},
@@ -184,8 +185,9 @@ impl BareConsumer {
                     "x64"
                 };
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
-                    "../../tools/hermes-vanilla/hermesc-{}-{arch}",
-                    std::env::consts::OS
+                    "../../tools/hermes-vanilla/hermesc-{}-{arch}{}",
+                    std::env::consts::OS,
+                    std::env::consts::EXE_SUFFIX
                 ))
             });
         assert!(std::process::Command::new(compiler)
@@ -253,6 +255,7 @@ impl Consumer {
             std::fs::create_dir_all(directory.join(name)).unwrap();
         }
         let context = Context::new(GrantSet::parse(grants).unwrap());
+        #[cfg(unix)]
         context
             .set_app_directories(
                 AppDirectories::new(
@@ -306,8 +309,9 @@ impl Consumer {
                     "x64"
                 };
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
-                    "../../tools/hermes-vanilla/hermesc-{}-{arch}",
-                    std::env::consts::OS
+                    "../../tools/hermes-vanilla/hermesc-{}-{arch}{}",
+                    std::env::consts::OS,
+                    std::env::consts::EXE_SUFFIX
                 ))
             });
         assert!(std::process::Command::new(compiler)
@@ -431,6 +435,36 @@ fn blob_group_installs_only_its_globals_and_requires_pure() {
         .filter(|name| !baseline.contains(name))
         .collect();
     assert_eq!(added, expected);
+}
+
+#[test]
+fn omitted_crypto_group_exposes_no_crypto_surface_or_subtle_ops() {
+    let consumer = BareConsumer::new(Groups::PURE);
+    assert_eq!(
+        consumer.eval(
+            r#"[
+              typeof crypto,
+              typeof Crypto,
+              typeof CryptoKey,
+              typeof SubtleCrypto,
+              typeof globalThis.__ibex2_random_uuid,
+              typeof globalThis.__ibex2_get_random_values,
+              typeof globalThis.__ibex2_subtle
+            ].join(',')"#,
+        ),
+        "undefined,undefined,undefined,undefined,undefined,undefined,undefined"
+    );
+    assert_eq!(
+        consumer.eval(
+            r#"try {
+              globalThis.__ibex2_subtle.digest("SHA-256", new Uint8Array());
+              "reachable";
+            } catch (error) {
+              error instanceof TypeError ? "unreachable" : error.name;
+            }"#,
+        ),
+        "unreachable"
+    );
 }
 
 #[test]
@@ -809,6 +843,10 @@ fn wrong_binding_version_is_refused_and_spends_a_versioned_adapter() {
 }
 
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows app directory capabilities and SQLite paths are not implemented yet"
+)]
 fn caller_owns_checkpoints_and_storage_is_typed_and_granted() {
     let c = Consumer::new("fs.read app:/data\nfs.write app:/data\nsqlite.open app:/data/db");
     c.eval(r#"globalThis.result = ''; storage.fs.atomicWriteFile('app:/data/a\nb', new Uint8Array([1,2])).then(function(){ result = 'written'; });"#).unwrap();

@@ -21,6 +21,8 @@ extern "C" void* ibex2_sqlite_owner_create(const void*, double, int);
 extern "C" void ibex2_sqlite_owner_destroy(void*);
 extern "C" void* ibex2_response_owner_create(const void*, double);
 extern "C" void ibex2_response_owner_destroy(void*);
+extern "C" void* ibex2_crypto_key_owner_create(const void*, double);
+extern "C" void ibex2_crypto_key_owner_destroy(void*);
 extern "C" int ibex2_response_field(const void*, double, uint32_t,
                                     const Ibex2AbiValue*, Ibex2AbiValue*);
 extern "C" size_t ibex2_grants_env_count(const void*);
@@ -488,6 +490,12 @@ struct ResponseOwner final : jsi::NativeState {
   ~ResponseOwner() override { ibex2_response_owner_destroy(owner); }
 };
 
+struct CryptoKeyOwner final : jsi::NativeState {
+  void* owner;
+  explicit CryptoKeyOwner(void* value) : owner(value) {}
+  ~CryptoKeyOwner() override { ibex2_crypto_key_owner_destroy(owner); }
+};
+
 jsi::Function make_group_binding(jsi::Runtime& rt, const char* name,
                                  uint32_t op,
                                  std::shared_ptr<Lifetime> lifetime) {
@@ -568,6 +576,34 @@ void install_crypto(jsi::Runtime& rt,
   auto global = rt.global();
   set_group_binding(rt, global, "__ibex2_random_uuid", 70, lifetime);
   set_group_binding(rt, global, "__ibex2_get_random_values", 71, lifetime);
+  jsi::Object subtle(rt);
+  set_group_binding(rt, subtle, "digest", 160, lifetime);
+  set_group_binding(rt, subtle, "importKey", 161, lifetime);
+  set_group_binding(rt, subtle, "exportKey", 162, lifetime);
+  set_group_binding(rt, subtle, "generateKey", 163, lifetime);
+  set_group_binding(rt, subtle, "sign", 164, lifetime);
+  set_group_binding(rt, subtle, "verify", 165, lifetime);
+  set_group_binding(rt, subtle, "encrypt", 166, lifetime);
+  set_group_binding(rt, subtle, "decrypt", 167, lifetime);
+  set_group_binding(rt, subtle, "deriveBits", 168, lifetime);
+  set_group_binding(rt, subtle, "deriveKey", 169, lifetime);
+  subtle.setProperty(
+      rt, "own",
+      jsi::Function::createFromHostFunction(
+          rt, jsi::PropNameID::forAscii(rt, "ownCryptoKey"), 2,
+          [lifetime](jsi::Runtime& r, const jsi::Value&,
+                     const jsi::Value* args, size_t count) -> jsi::Value {
+            const void* state = lifetime->require(r);
+            if (count != 2 || !args[0].isNumber() || !args[1].isObject())
+              throw jsi::JSError(r, "CryptoKey owner needs a handle and object");
+            void* owner = ibex2_crypto_key_owner_create(state, args[0].asNumber());
+            if (owner == nullptr)
+              throw jsi::JSError(r, "CryptoKey handle is released or unknown");
+            args[1].getObject(r).setNativeState(
+                r, std::make_shared<CryptoKeyOwner>(owner));
+            return jsi::Value::undefined();
+          }));
+  global.setProperty(rt, "__ibex2_subtle", std::move(subtle));
 }
 
 void install_blob(jsi::Runtime& rt,

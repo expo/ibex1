@@ -259,6 +259,60 @@ application's Rust code is trusted (a crate the author wrote) or endowed
 OQ4) is Exact 2's decision; this surface serves both, since a `Bindings` is
 what a wasm host would hand its module as imports.
 
+### Windows host and engine
+
+Implementation owner: Codex, 2026-10-04. The Windows port is required by
+Skirmish's native Exact 2 host. It preserves the engine-optional split and
+uses the same boundary, grants, task queue, and JavaScript bindings.
+
+The initial engine target is `x86_64-pc-windows-msvc`. The Windows source
+builder gains a vanilla profile that exports the exact vanilla commit from
+`scripts/hermes-version.sh` into a separate source/build/install cache. It
+does not reset the existing patched checkout, apply the patch series, or
+publish a patched-engine receipt. The install is isolated under
+`tools/hermes-vanilla/windows-x64`, with `hermes-headers` and `windows-static`
+directories, plus the matching `hermesc-windows-x64.exe` beside that install.
+The archive is `hermesvm_a.lib`, accompanied by its JSI and Boost.Context
+static dependencies. MSVC compiles the shim as C++17 with exceptions enabled;
+the system ICU import libraries close Hermes's Unicode dependency. The
+Windows profile initially leaves the Linux-only Intl projection disabled.
+
+Cargo selects this layout only for Windows, rejects unsupported targets,
+hashes the archive actually linked as on the other platforms, and compiles
+the runtime bindings with the matching Windows compiler. No engine DLL is
+introduced. Source development and a precompiled application must both run
+in a fresh process on this machine before this profile is called qualified.
+Validation also includes the no-engine Rust library tests, Hermes boundary
+and deadline tests, and DLL dependency inspection of the produced executable.
+
+Native filesystem portability is a separate part of qualification. The
+existing Unix-only `app:/` directory capability implementation must not be
+replaced by a check-then-open path traversal on Windows. Until a Windows
+handle-relative implementation is supplied and tested, that family continues
+to refuse explicitly. No passing engine test establishes filesystem or
+SQLite support. Absolute Windows paths and their capability spelling need
+their own tests before they are admitted by the native filesystem family.
+
+Qualification evidence on 2026-10-04: the pinned vanilla engine builds with
+Visual Studio 2022 and Ninja; `cargo build -p ibex2 --features hermes` links
+and runs. The no-engine library suite passes 173 tests, the engine library
+suite 293, closure 6, embedding 16, hardening 5, and the no-loader run-only
+profile 1. Four Windows symlink fixtures require Developer Mode or the
+symlink privilege and are explicitly ignored; the embedding storage-success
+case is explicitly ignored until the directory-capability backend exists.
+Three engine measurement tests retain their existing ignored status.
+
+Source and precompiled execution both passed from a path containing spaces
+and `café`, importing `módulo.js` and driving a promise and timer. A copy of
+the executable and bytecode cache ran from another directory with deliberately
+invalid entry source and nonexistent compiler/engine overrides. The entry
+file must still exist for CLI path canonicalization, but its source is not
+read on that run. `dumpbin /dependents` found only Windows system and Microsoft
+C++ runtime DLLs, including the Windows ICU libraries, and no Hermes DLL.
+These results qualify this engine slice only; the remaining storage, platform,
+and test-fixture work is tracked in
+[`issues/20261004-ibex2-windows-platform-gaps.md`](../issues/20261004-ibex2-windows-platform-gaps.md).
+
 ## 5. Open questions
 
 **OQ1 — The crate boundary.** *Resolved the same day:* the loader — Oxc's

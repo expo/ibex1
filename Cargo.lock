@@ -1199,6 +1199,7 @@ dependencies = [
  "oxc_semantic",
  "oxc_span",
  "oxc_transformer",
+ "ring",
  "rustls",
  "rustls-native-certs",
  "serde_json",
