@@ -61,7 +61,6 @@ impl Groups {
             | Self::KV.0
             | Self::BLOB.0,
     );
-    const PORTABLE_DEFAULT: Self = Self(Self::PORTABLE_ALL.0 & !Self::BLOB.0);
 
     /// The groups Ibex's runtime installs today.
     #[cfg(target_os = "linux")]
@@ -70,13 +69,13 @@ impl Groups {
     #[cfg(not(target_os = "linux"))]
     pub const ALL: Self = Self::PORTABLE_ALL;
 
-    /// The ordinary runtime profile. BLOB is linked but stays explicit: its
-    /// repeated floor measurements cross LLP 0057.000 D5's 50 µs threshold.
+    /// The ordinary runtime profile. BLOB stays within LLP 0057.000 D5's
+    /// 150 KB / 150 µs budget and is therefore installed by default.
     #[cfg(target_os = "linux")]
-    pub const DEFAULT: Self = Self(Self::PORTABLE_DEFAULT.0 | Self::INTL.0);
+    pub const DEFAULT: Self = Self(Self::PORTABLE_ALL.0 | Self::INTL.0);
     /// The ordinary runtime profile. See the Linux definition above.
     #[cfg(not(target_os = "linux"))]
-    pub const DEFAULT: Self = Self::PORTABLE_DEFAULT;
+    pub const DEFAULT: Self = Self::PORTABLE_ALL;
 
     pub const fn empty() -> Self {
         Self(0)
@@ -537,6 +536,8 @@ mod tests {
 
     #[test]
     fn scripts_follow_the_shipping_install_order() {
+        assert!(Groups::DEFAULT.contains(Groups::BLOB));
+        assert!(Groups::ALL.contains(Groups::BLOB));
         let names: Vec<_> = scripts(Groups::DEFAULT)
             .unwrap()
             .into_iter()
@@ -549,6 +550,7 @@ mod tests {
             "domexception",
             "crypto",
             "abort",
+            "blob",
         ];
         #[cfg(target_os = "linux")]
         expected.extend(["intl_number_format", "intl_case", "intl_datetime"]);

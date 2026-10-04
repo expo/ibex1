@@ -960,7 +960,7 @@ fn js_string_literal(text: &str) -> String {
 /// The explicit snapshot of names every install group can add to the engine.
 /// Capability-bearing names are deliberately absent: they arrive as module
 /// parameters. Keep this as the one inventory; per-group views partition it.
-/// The historical name predates optional default-off groups such as BLOB.
+/// The historical name is retained as the single inventory for every group.
 pub const DEFAULT_ADDED_GLOBALS: &[&str] = &[
     "__ibex2_default",
     "__ibex2_dynamic_import",
@@ -1219,10 +1219,10 @@ mod tests {
             allowed_globals(crate::bindings::Groups::ALL),
             DEFAULT_ADDED_GLOBALS
         );
-        let default = allowed_globals(crate::bindings::Groups::DEFAULT);
-        for name in ["Blob", "File", "FormData", "Request", "Response"] {
-            assert!(!default.contains(&name), "BLOB is measured default-off");
-        }
+        assert_eq!(
+            allowed_globals(crate::bindings::Groups::DEFAULT),
+            DEFAULT_ADDED_GLOBALS
+        );
     }
 
     #[test]
