@@ -11,8 +11,8 @@ extern "C" int ibex2_async_begin(const void*, const void*, uint32_t, const Ibex2
 extern "C" int ibex2_take_task(const void*, int*, unsigned long long*, Ibex2AbiValue*, int*);
 extern "C" const void* ibex2_grants_retain(const void*);
 extern "C" void ibex2_grants_destroy(const void*);
-extern "C" const void* ibex2_bindings_state(const void*);
-extern "C" const void* ibex2_bindings_grants(const void*);
+extern "C" const void* ibex2_bindings_state(const Ibex2Bindings*);
+extern "C" const void* ibex2_bindings_grants(const Ibex2Bindings*);
 extern "C" void* ibex2_sqlite_owner_create(const void*, double, int);
 extern "C" void ibex2_sqlite_owner_destroy(void*);
 extern "C" void* ibex2_response_owner_create(const void*, double);
@@ -618,7 +618,7 @@ void remove_global(jsi::Runtime& rt, const jsi::Object& global,
 
 void validate_groups(Groups groups) { validate_groups_impl(groups); }
 
-void Adapter::install(Groups groups, const void* bindings,
+void Adapter::install(Groups groups, const Ibex2Bindings* bindings,
                       const CompiledScript* scripts, size_t script_count) {
   if (!runtime_) throw std::logic_error("Ibex2 bindings are detached");
   auto& rt = *runtime_;

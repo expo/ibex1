@@ -8,6 +8,10 @@
 #include <string>
 #include <vector>
 
+// Opaque Rust-owned endowment handle. Only Context::bindings_ptr() produces a
+// live value; in particular, a grant pointer is not an install handle.
+struct Ibex2Bindings;
+
 struct Ibex2AbiValue {
   int32_t tag;
   double number;
@@ -108,7 +112,7 @@ public:
   // Missing dependencies, wrong order, and a second install are refused. The
   // call neither drives nor waits on the runtime.
   // @ref LLP 0057.000#50-three-doors-one-implementation — door 2 installs into a caller-owned runtime and returns
-  void install(Groups groups, const void* bindings,
+  void install(Groups groups, const Ibex2Bindings* bindings,
                const CompiledScript* scripts, size_t script_count);
   jsi::Function async_binding(const char* name, uint32_t op, const void* grants);
   // Endowed values built from the factories retained by install().

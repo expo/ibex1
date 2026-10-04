@@ -128,7 +128,7 @@ The one JSI entry point is:
 
 ```cpp
 Adapter adapter(runtime, context.state_ptr());
-adapter.install(groups, context.grants_ptr(), compiled_scripts, script_count);
+adapter.install(groups, context.bindings_ptr(), compiled_scripts, script_count);
 ```
 
 Here `compiled_scripts` is the name/byte-span array produced from that exact
@@ -141,14 +141,24 @@ there (`fetch`, `fs`, `sqlite`, or `process`); Ibex's secure runtime consumes
 those endowed values during trusted bootstrap and removes them from the real
 global before module code, preserving LLP 0067 R1/R2.
 
+`bindings_ptr()` has a distinct opaque C++ handle type; it is not a grant or
+state pointer. For a caller-owned runtime it must be the endowment from the
+same `Context` whose `state_ptr()` constructed the `Adapter`. The ABI validates
+the live handle and its tag before returning either state or grants, and the
+adapter separately requires that state pointer identity. An old call that
+passes `context.grants_ptr()` therefore does not compile, and a forced cast is
+refused rather than reinterpreted.
+
 The pre-existing `Adapter` constructor, `set_binding`, `async_binding`,
 `storage`, `settle`, and `deliver_one` remain source-compatible for Exact2's
 current storage embedder. `storage` still returns frozen `{fs, sqlite}` and
 modifies no globals; `install` is the additive whole-surface door.
-`Hermes::install_runtime(groups, &context)` installs its runtime-only ESM
-prelude and then calls this same `Adapter::install`; the module loader asks the
-adapter's retained factories for per-module endowed values and removes the
-temporary capability globals before project code.
+`Hermes::install_runtime(groups, &context)` uses the actual bootstrap order:
+`prepare_runtime` first reserves runtime-only global slots, then the same
+`Adapter::install` installs the selected standard-library groups, and only then
+does Hermes evaluate `esm.hbc`. The module loader asks the adapter's retained
+factories for per-module endowed values and removes the temporary capability
+globals before project code.
 `loader::allowed_globals(groups)` derives R5's allow-list from that runtime's
 recorded selection; it is no longer a second, fixed inventory that can drift
 from installation.

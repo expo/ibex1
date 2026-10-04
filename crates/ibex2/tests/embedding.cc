@@ -3,6 +3,7 @@
 #include "../include/ibex2_jsi.h"
 #include <cstdlib>
 #include <cstring>
+#include <type_traits>
 
 using namespace facebook;
 namespace {
@@ -27,6 +28,14 @@ char *copy(const std::string &s) {
   return p;
 }
 }
+
+using InstallMethod = void (ibex2::jsi_adapter::Adapter::*)(
+    ibex2::jsi_adapter::Groups, const Ibex2Bindings*,
+    const ibex2::jsi_adapter::CompiledScript*, size_t);
+static_assert(std::is_same_v<decltype(&ibex2::jsi_adapter::Adapter::install),
+                             InstallMethod>);
+static_assert(!std::is_convertible_v<const void*, const Ibex2Bindings*>);
+
 extern "C" {
 int bindings_validate_groups(uint16_t groups, char **error) {
   try {
@@ -37,7 +46,7 @@ int bindings_validate_groups(uint16_t groups, char **error) {
     return 0;
   }
 }
-void *bindings_consumer_create(const void *queue, const void *bindings,
+void *bindings_consumer_create(const void *queue, const Ibex2Bindings *bindings,
                                uint16_t groups,
                                const ibex2::jsi_adapter::CompiledScript *scripts,
                                size_t script_count, char **error) {

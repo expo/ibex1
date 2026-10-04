@@ -40,7 +40,7 @@ extern "C" {
     fn ibex2_hermes_install_groups(
         handle: *mut c_void,
         groups: u16,
-        bindings: *const c_void,
+        bindings: *const crate::bindings::Ibex2Bindings,
         scripts: *const CompiledScript,
         script_count: usize,
         out_error: *mut *mut c_char,

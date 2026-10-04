@@ -38,7 +38,7 @@ extern "C" int ibex2_grants_env_at(const void *grants, size_t index,
 extern "C" void ibex2_string_free(char *value);
 extern "C" void ibex2_queue_destroy(const void *queue);
 extern "C" const void *ibex2_queue_retain(const void *queue);
-extern "C" const void *ibex2_bindings_state(const void *bindings);
+extern "C" const void *ibex2_bindings_state(const Ibex2Bindings *bindings);
 extern "C" void ibex2_grants_destroy(const void *grants);
 extern "C" void ibex2_end_drive(const void *queue);
 
@@ -993,7 +993,7 @@ int ibex2_hermes_prepare_runtime(void *handle, uint16_t groups) {
 /// Runtime-only bootstrap consumes endowed capability globals before any
 /// module runs; their factories remain in Adapter for per-module authority.
 int ibex2_hermes_install_groups(void *handle, uint16_t groups,
-                                const void *endowment,
+                                const Ibex2Bindings *endowment,
                                 const CompiledScript *scripts,
                                 size_t script_count, char **out_error) {
   auto *rt = static_cast<Ibex2Runtime *>(handle);

@@ -26,7 +26,7 @@ extern "C" {
     fn bindings_validate_groups(groups: u16, error: *mut *mut c_char) -> i32;
     fn bindings_consumer_create(
         queue: *const c_void,
-        bindings: *const c_void,
+        bindings: *const ibex2::bindings::Ibex2Bindings,
         groups: u16,
         scripts: *const CompiledScript,
         script_count: usize,
@@ -510,6 +510,36 @@ fn grouped_install_refuses_source_bytes() {
     assert!(
         error.contains("not Hermes bytecode"),
         "unexpected install error: {error}"
+    );
+}
+
+#[test]
+fn grouped_install_refuses_a_grant_pointer_as_the_install_handle() {
+    let context = Context::new(GrantSet::none());
+    let scripts: Vec<_> = ibex2::bindings::scripts(Groups::PURE)
+        .unwrap()
+        .into_iter()
+        .map(|(name, _)| compiled_script(name))
+        .collect();
+    let mut error = std::ptr::null_mut();
+    let handle = unsafe {
+        bindings_consumer_create(
+            context.state_ptr(),
+            context.grants_ptr().cast(),
+            Groups::PURE.bits(),
+            scripts.as_ptr(),
+            scripts.len(),
+            &mut error,
+        )
+    };
+    assert!(
+        handle.is_null(),
+        "a grant pointer installed as an endowment"
+    );
+    let error = take(error);
+    assert!(
+        error.contains("live endowment"),
+        "unexpected error: {error}"
     );
 }
 

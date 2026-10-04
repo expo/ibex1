@@ -7,7 +7,13 @@
 //!
 //! @ref LLP 0068#2-synchronous-and-why — the consumer owns execution
 use crate::{grant::GrantSet, host, task::RuntimeState};
-use std::{ffi::c_void, fmt, ops, sync::Arc, time::Duration};
+use std::{
+    collections::HashSet,
+    ffi::c_void,
+    fmt, ops,
+    sync::{Arc, Mutex, OnceLock},
+    time::Duration,
+};
 
 pub(crate) mod headers_ops;
 
@@ -260,9 +266,63 @@ pub struct Context {
     endowment: Arc<InstallEndowment>,
 }
 
+const BINDINGS_MAGIC: u64 = 0x4942_4558_3242_4e44;
+
+/// Opaque handle type passed to the JSI adapter at installation.
+#[repr(C)]
+pub struct Ibex2Bindings {
+    _private: [u8; 0],
+}
+
+/// The Rust allocation behind an [`Ibex2Bindings`] pointer. The tag is checked
+/// only after the address has been found in the live handle registry, so a
+/// pointer of some other type is refused without first reinterpreting its
+/// storage as this structure.
 struct InstallEndowment {
+    magic: u64,
     state: Arc<RuntimeState>,
     grants: Arc<GrantSet>,
+}
+
+fn live_bindings() -> &'static Mutex<HashSet<usize>> {
+    static LIVE: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
+    LIVE.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn register_bindings(bindings: &Arc<InstallEndowment>) {
+    let address = Arc::as_ptr(bindings) as usize;
+    let inserted = live_bindings()
+        .lock()
+        .expect("bindings registry poisoned")
+        .insert(address);
+    assert!(inserted, "new bindings handle reused a live address");
+}
+
+fn valid_bindings(bindings: *const Ibex2Bindings) -> Option<&'static InstallEndowment> {
+    if bindings.is_null()
+        || !live_bindings()
+            .lock()
+            .expect("bindings registry poisoned")
+            .contains(&(bindings as usize))
+    {
+        return None;
+    }
+    // SAFETY: membership is added only for an allocated InstallEndowment and is
+    // removed by its Drop. The ABI requires the producing Context to remain
+    // live for the call, just as state_ptr() does.
+    let bindings = unsafe { &*bindings.cast::<InstallEndowment>() };
+    (bindings.magic == BINDINGS_MAGIC).then_some(bindings)
+}
+
+impl Drop for InstallEndowment {
+    fn drop(&mut self) {
+        let removed = live_bindings()
+            .lock()
+            .expect("bindings registry poisoned")
+            .remove(&(self as *const Self as usize));
+        debug_assert!(removed, "bindings handle was not registered");
+        self.magic = 0;
+    }
 }
 
 impl Context {
@@ -278,12 +338,13 @@ impl Context {
     /// together for the lifetime of the runtime state.
     // @ref LLP 0057.000#50-three-doors-one-implementation — the install door consumes Host::endow's Bindings
     pub fn from_bindings(bindings: &host::Bindings) -> Self {
-        Self {
-            endowment: Arc::new(InstallEndowment {
-                state: Arc::new(RuntimeState::from_bindings(bindings)),
-                grants: bindings.grants(),
-            }),
-        }
+        let endowment = Arc::new(InstallEndowment {
+            magic: BINDINGS_MAGIC,
+            state: Arc::new(RuntimeState::from_bindings(bindings)),
+            grants: bindings.grants(),
+        });
+        register_bindings(&endowment);
+        Self { endowment }
     }
 
     pub fn set_app_directories(
@@ -328,7 +389,7 @@ impl Context {
     }
 
     /// Opaque install input consumed by the engine-independent adapter.
-    pub fn bindings_ptr(&self) -> *const c_void {
+    pub fn bindings_ptr(&self) -> *const Ibex2Bindings {
         Arc::as_ptr(&self.endowment).cast()
     }
 }
@@ -338,13 +399,10 @@ impl Context {
 /// # Safety
 /// `bindings` must be a live pointer returned by [`Context::bindings_ptr`].
 #[no_mangle]
-pub unsafe extern "C" fn ibex2_bindings_state(bindings: *const c_void) -> *const c_void {
-    bindings
-        .cast::<InstallEndowment>()
-        .as_ref()
-        .map_or(std::ptr::null(), |endowment| {
-            Arc::as_ptr(&endowment.state).cast()
-        })
+pub unsafe extern "C" fn ibex2_bindings_state(bindings: *const Ibex2Bindings) -> *const c_void {
+    valid_bindings(bindings).map_or(std::ptr::null(), |endowment| {
+        Arc::as_ptr(&endowment.state).cast()
+    })
 }
 
 /// Return the grant set carried by an install endowment.
@@ -352,13 +410,10 @@ pub unsafe extern "C" fn ibex2_bindings_state(bindings: *const c_void) -> *const
 /// # Safety
 /// `bindings` must be a live pointer returned by [`Context::bindings_ptr`].
 #[no_mangle]
-pub unsafe extern "C" fn ibex2_bindings_grants(bindings: *const c_void) -> *const c_void {
-    bindings
-        .cast::<InstallEndowment>()
-        .as_ref()
-        .map_or(std::ptr::null(), |endowment| {
-            Arc::as_ptr(&endowment.grants).cast()
-        })
+pub unsafe extern "C" fn ibex2_bindings_grants(bindings: *const Ibex2Bindings) -> *const c_void {
+    valid_bindings(bindings).map_or(std::ptr::null(), |endowment| {
+        Arc::as_ptr(&endowment.grants).cast()
+    })
 }
 
 #[cfg(test)]
