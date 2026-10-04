@@ -12,27 +12,67 @@
     results.push({ name: name, ok: !error, message: error ? String(error && error.message || error) : "" });
   }
 
+  function context() {
+    var cleanups = [];
+    return {
+      add_cleanup: function (fn) { cleanups.push(fn); },
+      cleanup: function (error) {
+        for (var i = cleanups.length - 1; i >= 0; i--) {
+          try { cleanups[i](); } catch (e) { if (!error) error = e; }
+        }
+        return error;
+      }
+    };
+  }
+
   global.test = function (fn, name) {
+    var state = context(), error = null;
     try {
-      fn();
-      record(name, null);
+      fn.call(state, state);
     } catch (e) {
-      record(name, e);
+      error = e;
     }
+    record(name, state.cleanup(error));
   };
 
   global.promise_test = function (fn, name) {
+    var state = context();
     try {
-      var p = fn();
+      var p = fn.call(state, state);
       if (p && typeof p.then === "function") {
-        p.then(function () { record(name, null); },
-               function (e) { record(name, e); });
+        p.then(function () { record(name, state.cleanup(null)); },
+               function (e) { record(name, state.cleanup(e)); });
       } else {
-        record(name, null);
+        record(name, state.cleanup(null));
       }
     } catch (e) {
-      record(name, e);
+      record(name, state.cleanup(e));
     }
+  };
+
+  // The adopted Blob constructor fixture has one MessageChannel async_test.
+  // This small shape records its missing-engine failure without letting the
+  // top-level fixture abort; the Rust runner classifies that named case as an
+  // explicit exclusion.
+  global.async_test = function (name) {
+    var state = context(), complete = false;
+    function finish(error) {
+      if (complete) return;
+      complete = true;
+      record(name, state.cleanup(error));
+    }
+    state.step = function (fn) {
+      if (complete) return;
+      try { fn.call(state); } catch (e) { finish(e); }
+    };
+    state.step_func = function (fn) {
+      return function () {
+        if (complete) return;
+        try { return fn.apply(state, arguments); } catch (e) { finish(e); }
+      };
+    };
+    state.done = function () { finish(null); };
+    return state;
   };
 
   global.done = function () {};
@@ -54,6 +94,15 @@
     if (actual === expected) {
       fail("got disallowed value " + format(actual), description);
     }
+  };
+  global.assert_greater_than_equal = function (actual, expected, description) {
+    if (!(actual >= expected)) fail(format(actual) + " is not >= " + format(expected), description);
+  };
+  global.assert_less_than_equal = function (actual, expected, description) {
+    if (!(actual <= expected)) fail(format(actual) + " is not <= " + format(expected), description);
+  };
+  global.assert_less_than = function (actual, expected, description) {
+    if (!(actual < expected)) fail(format(actual) + " is not < " + format(expected), description);
   };
   global.assert_true = function (value, description) {
     if (value !== true) fail("expected true but got " + format(value), description);
@@ -77,6 +126,15 @@
     } catch (e) {
       if (e instanceof constructor) return;
       fail("threw " + (e && e.name) + " instead of " + (constructor && constructor.name), description);
+    }
+    fail("did not throw", description);
+  };
+  global.assert_throws_exactly = function (expected, fn, description) {
+    try {
+      fn();
+    } catch (e) {
+      if (e === expected) return;
+      fail("threw " + format(e) + " instead of the expected value", description);
     }
     fail("did not throw", description);
   };
@@ -115,6 +173,8 @@
     if (value === null) return "null";
     return String(value);
   }
+
+  global.format_value = format;
 
   global.__ibex2_test_results = function () {
     return JSON.stringify(results);
