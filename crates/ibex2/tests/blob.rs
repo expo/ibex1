@@ -480,9 +480,9 @@ fn response_blob_uses_fetch_mime_type_extraction() {
             "text/plain;charset=gbk",
         ),
         (
-            "same-essence-replaces-and-carries-charset",
+            "same-essence-keeps-the-first-carried-charset",
             "text/plain;charset=gbk, text/plain;charset=UTF-8, text/plain",
-            "text/plain;charset=utf-8",
+            "text/plain;charset=gbk",
         ),
         (
             "quoted-comma",
@@ -542,6 +542,42 @@ fn response_blob_copies_into_private_bytes_with_unhardened_intrinsics() {
         output,
         [r#"[0,22,"private response bytes"]"#],
         "response bytes reached a caller-controlled typed-array getter"
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn response_blob_bytes_leaked_through_a_hooked_then_cannot_mutate_the_blob() {
+    let (origin, server) = capture("text/plain", b"private response bytes");
+    let output = run_fetch_module_with_options(
+        "response-blob-hooked-then",
+        &origin,
+        &format!(
+            r#"
+            const leaked = [];
+            const then = Promise.prototype.then;
+            Promise.prototype.then = function (onFulfilled, onRejected) {{
+              const wrap = typeof onFulfilled === 'function'
+                ? function (value) {{
+                    if (value instanceof ArrayBuffer) leaked.push(value);
+                    return onFulfilled.call(this, value);
+                  }}
+                : onFulfilled;
+              return then.call(this, wrap, onRejected);
+            }};
+            fetch('{origin}/private').then(r => r.blob()).then(async blob => {{
+              for (const buffer of leaked) new Uint8Array(buffer).fill(0x21);
+              console.log(JSON.stringify([leaked.length > 0, await blob.text()]));
+            }});
+            "#
+        ),
+        Groups::DEFAULT | Groups::BLOB,
+        false,
+    );
+    assert_eq!(
+        output,
+        [r#"[true,"private response bytes"]"#],
+        "a buffer delivered through Promise plumbing aliased the Blob's bytes"
     );
     server.join().unwrap();
 }

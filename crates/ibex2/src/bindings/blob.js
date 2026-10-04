@@ -536,6 +536,10 @@
       var span = arrayBufferSpan(value);
       return span ? copy(span.buffer, span.offset, span.length) : null;
     },
-    responseBlob: function (bytes, type) { return trustedBlob(bytes, type); }
+    responseBlob: function (bytes, type) {
+      var span = arrayBufferSpan(bytes);
+      if (!span) throw new TypeError("Response bytes are not an ArrayBuffer");
+      return trustedBlob(copy(span.buffer, span.offset, span.length), type);
+    }
   };
 })(globalThis);

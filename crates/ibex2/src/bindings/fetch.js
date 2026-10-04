@@ -308,18 +308,18 @@
   function extractMimeType(input) {
     if (input === null) return "";
     var values = splitMimeTypes(String(input));
-    var mimeType = null, charset = null;
+    var mimeType = null, charset = null, essence = null;
     for (var i = 0; i < values.length; i++) {
       var parsed = parseMimeType(values[i]);
       if (parsed === null || parsed.essence === "*/*") continue;
-      if (mimeType !== null && mimeType.essence !== parsed.essence) charset = null;
+      mimeType = parsed;
       var parsedCharset = mimeParameter(parsed, "charset");
-      if (parsedCharset !== undefined) {
-        charset = parsedCharset;
-      } else if (charset !== null) {
+      if (parsed.essence !== essence) {
+        charset = parsedCharset === undefined ? null : parsedCharset;
+        essence = parsed.essence;
+      } else if (parsedCharset === undefined && charset !== null) {
         parsed.parameters.push(["charset", charset]);
       }
-      mimeType = parsed;
     }
     return mimeType === null ? "" : serializeMimeType(mimeType);
   }
