@@ -202,19 +202,33 @@
     }
     return result + '"';
   }
-  // Fetch's MIME-type extraction uses the MIME Sniffing parser and serializer;
-  // an invalid Content-Type does not become an arbitrary Blob type string.
-  // @ref LLP 0059.000#35-fetch--delegating-capability-bearing — Response.blob uses Fetch MIME extraction
-  function extractMimeType(input) {
-    if (input === null) return "";
-    input = String(input);
+  function splitMimeTypes(input) {
+    var values = [], start = 0, quoted = false;
+    for (var i = 0; i < input.length; i++) {
+      var character = input[i];
+      if (quoted && character === "\\" && i + 1 < input.length) {
+        i++;
+      } else if (character === '"') {
+        quoted = !quoted;
+      } else if (character === "," && !quoted) {
+        values.push(input.slice(start, i));
+        start = i + 1;
+      }
+    }
+    values.push(input.slice(start));
+    return values;
+  }
+  function parseMimeType(input) {
     var semicolon = input.indexOf(";");
     var essence = trimHttp(semicolon < 0 ? input : input.slice(0, semicolon));
     var slash = essence.indexOf("/");
-    if (slash <= 0 || slash !== essence.lastIndexOf("/")) return "";
+    if (slash <= 0 || slash !== essence.lastIndexOf("/")) return null;
     var type = essence.slice(0, slash), subtype = essence.slice(slash + 1);
-    if (!token(type) || !token(subtype)) return "";
-    var result = type.toLowerCase() + "/" + subtype.toLowerCase();
+    if (!token(type) || !token(subtype)) return null;
+    var parsed = {
+      essence: type.toLowerCase() + "/" + subtype.toLowerCase(),
+      parameters: []
+    };
     var names = Object.create(null), position = semicolon < 0 ? input.length : semicolon;
     while (position < input.length) {
       if (input[position] === ";") position++;
@@ -246,10 +260,46 @@
       }
       if (valid && token(name) && names[name] === undefined) {
         names[name] = true;
-        result += ";" + name + "=" + serializeMimeParameter(value);
+        parsed.parameters.push([name, value]);
       }
     }
+    return parsed;
+  }
+  function mimeParameter(mimeType, name) {
+    for (var i = 0; i < mimeType.parameters.length; i++) {
+      if (mimeType.parameters[i][0] === name) return mimeType.parameters[i][1];
+    }
+    return undefined;
+  }
+  function serializeMimeType(mimeType) {
+    var result = mimeType.essence;
+    for (var i = 0; i < mimeType.parameters.length; i++) {
+      result += ";" + mimeType.parameters[i][0] + "=" +
+        serializeMimeParameter(mimeType.parameters[i][1]);
+    }
     return result;
+  }
+  // Fetch extracts the last valid, non-wildcard MIME type from the combined
+  // Content-Type value. A charset carries through later values only while the
+  // selected essence stays the same.
+  // @ref LLP 0059.000#35-fetch--delegating-capability-bearing — Response.blob uses Fetch MIME extraction
+  function extractMimeType(input) {
+    if (input === null) return "";
+    var values = splitMimeTypes(String(input));
+    var mimeType = null, charset = null;
+    for (var i = 0; i < values.length; i++) {
+      var parsed = parseMimeType(values[i]);
+      if (parsed === null || parsed.essence === "*/*") continue;
+      if (mimeType !== null && mimeType.essence !== parsed.essence) charset = null;
+      var parsedCharset = mimeParameter(parsed, "charset");
+      if (parsedCharset !== undefined) {
+        charset = parsedCharset;
+      } else if (charset !== null) {
+        parsed.parameters.push(["charset", charset]);
+      }
+      mimeType = parsed;
+    }
+    return mimeType === null ? "" : serializeMimeType(mimeType);
   }
   if (blobHelpers) {
     Response.prototype.blob = function () {

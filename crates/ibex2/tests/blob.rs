@@ -457,6 +457,36 @@ fn response_blob_uses_fetch_mime_type_extraction() {
             "TEXT/PLAIN; Charset=UTF-8; title=\"A B\"",
             "text/plain;charset=utf-8;title=\"a b\"",
         ),
+        (
+            "different-essence-clears-charset",
+            "text/plain;charset=gbk, text/html",
+            "text/html",
+        ),
+        (
+            "same-essence-carries-charset",
+            "text/plain;charset=gbk, text/plain",
+            "text/plain;charset=gbk",
+        ),
+        (
+            "same-essence-replaces-and-carries-charset",
+            "text/plain;charset=gbk, text/plain;charset=UTF-8, text/plain",
+            "text/plain;charset=utf-8",
+        ),
+        (
+            "quoted-comma",
+            "text/html, text/plain; title=\"a,b\"",
+            "text/plain;title=\"a,b\"",
+        ),
+        (
+            "skip-invalid-and-wildcard",
+            "text/plain;charset=gbk, not a mime, */*, text/plain",
+            "text/plain;charset=gbk",
+        ),
+        (
+            "invalid-tail-keeps-last-valid",
+            "application/json, not a mime",
+            "application/json",
+        ),
     ] {
         let (origin, server) = capture(header_value, b"response");
         let output = run_fetch_module(
