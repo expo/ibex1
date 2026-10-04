@@ -385,6 +385,66 @@ return Winsock error 10022, and the `/etc/passwd` absolute-specifier fixture nam
 no Windows file. These failures are retained for follow-up rather than broad
 test exclusions or widened native-path authority.
 
+### Windows outbound connection readiness
+
+Implementation owner: Codex, 2026-10-04. The independent parent-agent review
+approved this slice before code; see `reviews/0068-windows-connect-readiness.gpt.md`.
+The Windows qualification exposed a real transport defect: both public HTTP and
+HTTPS through Ibex fail with Winsock 10022, while stock ureq and curl return 200
+from the same machine. A socket-only reproduction shows `connect` returning
+10035 (`WouldBlock`), immediately successful `peer_addr`, then 10022 from
+`TCP_NODELAY` and 10057 (`NotConnected`) from a write. The reported peer address
+does not establish completion of this pending Windows connection.
+
+The existing cancellable connector remains the sole socket owner on the
+caller's executor. After a pending Windows connect, poll Winsock `select` with
+the socket in both writable and exception sets and a zero timeout. Rebuild both
+sets for each poll. Only writable readiness followed by an empty `SO_ERROR`
+allows handoff; exception readiness returns `SO_ERROR`, or a closed-connection
+error if the exception has no reported cause. A failed `select` returns its
+Winsock error. No readiness means the attempt stays pending. This follows
+[Microsoft's nonblocking connect readiness contract](https://learn.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-select).
+Do not consume `SO_ERROR` before observing the readiness sets, and never use
+`peer_addr` as Windows connection proof. The Unix completion path is unchanged.
+
+The existing per-address deadline, remaining-address budget, and at-most-10ms
+caller-thread polling wait remain. Check cancellation before the attempt,
+throughout the wait and before transferring ownership; check deadline expiry
+while pending. Immediate successful `connect` needs no readiness wait. Return
+the socket to blocking mode only after success. Any refusal, timeout, cancel or
+poll error drops the same owned socket. No helper thread, detached attempt,
+second executor, retry spin, TLS-policy change or grant widening is introduced.
+The implementation adds only the networking feature of the existing Windows
+API dependency.
+
+Qualification must cover immediate success, pending-to-ready success, refusal,
+timeout and cancellation while pending, including a pending status with no
+socket error that must not be mistaken for success. Use a deterministic wait
+seam for timeout/cancel cases rather than relying on a public address to drop
+SYNs; local sockets exercise actual Winsock ready and refused states. Preserve
+the current response-body cancellation and connection-lease tests. Separately
+repeat the actual public HTTP/HTTPS request and the previously failing granted
+Hermes fetch fixtures. Include strict transport/engine lint and available
+non-Windows compile checks; name any unavailable runtime qualification.
+
+Windows qualification (2026-10-04): the actual no-engine transport returns
+HTTP 200 and HTTPS 200 from `example.com`, while the copied former completion
+sequence still fails with 10022/10057 in the same diagnostic process. All five
+formerly failing granted Hermes HTTPS fixtures pass. The full Hermes library,
+local transport suite and strict all-targets Hermes Clippy pass, including
+streaming cancellation, lease isolation, actual local Winsock data/refusal and
+the deterministic readiness/cancellation cases above. No grants or TLS policy
+changed. The loader/resolution suites retain four native-drive-grant refusals,
+the `/etc/passwd` fixture assumption and three privilege-limited symlink tests
+documented above. Linux cross-check cannot build the existing ring dependency
+because this Windows machine lacks `x86_64-linux-gnu-gcc`; no Unix execution or
+Apple build is claimed for this slice.
+
+`ref-check` and formatting pass. The caps CLI's existing file-URL entry guard
+does not run on Windows; invoking exported `runCaps` directly reveals the
+existing 137 oversized source files against the 133-file baseline. This slice
+does not change those legacy files or increase the oversized-file count.
+
 ## 5. Open questions
 
 **OQ1 — The crate boundary.** *Resolved the same day:* the loader — Oxc's

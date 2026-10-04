@@ -9,7 +9,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -50,7 +50,11 @@ function repo(files) {
 }
 
 function run(dir) {
-  const r = spawnSync('node', [CAPS], { cwd: dir, encoding: 'utf8' });
+  // Exercise the actual CLI from a path that requires URL escaping, on every
+  // platform. An imported runCaps call would miss a silently false entry guard.
+  const cli = join(dir, 'caps CLI #.mjs');
+  copyFileSync(CAPS, cli);
+  const r = spawnSync(process.execPath, [cli], { cwd: dir, encoding: 'utf8' });
   return { out: r.stdout + r.stderr, code: r.status };
 }
 
@@ -108,7 +112,8 @@ for (const [name, files, expect] of cases) {
   const dir = repo(files);
   const { out, code } = run(dir);
   rmSync(dir, { recursive: true, force: true });
-  const ok = expect ? (code === 1 && out.includes(expect)) : code === 0;
+  const ok = out.includes('caps — budgets declared')
+    && (expect ? (code === 1 && out.includes(expect)) : code === 0 && out.includes('All budgets within cap.'));
   if (!ok) {
     failed += 1;
     console.log(`FAIL  ${name}`);

@@ -26,6 +26,8 @@ pub use rustls_http::RustlsHttpTransport;
 pub mod darwin_websocket;
 #[cfg(all(feature = "websocket", any(not(target_vendor = "apple"), test)))]
 pub mod websocket;
+#[cfg(windows)]
+mod windows_connect;
 
 /// The transport this build uses by default.
 ///
