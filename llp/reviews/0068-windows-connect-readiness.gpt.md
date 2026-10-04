@@ -16,3 +16,7 @@ both fd_sets on every zero-timeout select call. Public-network evidence must
 supplement deterministic local tests, not be the sole qualification.
 
 The implementer accepted these conditions in the implementation and tests.
+
+After qualification, the parent independently read `windows_connect.rs` and
+confirmed readiness handling, single-socket ownership, cancellation before
+handoff and exceptional-fd precedence. No blocking implementation issue was found.

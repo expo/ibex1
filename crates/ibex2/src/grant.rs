@@ -64,6 +64,10 @@ impl PathPrefix {
     /// because admitting either would mean deciding traversal semantics here,
     /// where the answer cannot be checked against the real filesystem.
     pub fn new(path: &str) -> Option<Self> {
+        #[cfg(windows)]
+        if let Ok(native) = crate::stdlib::windows_path::NativePath::parse(path, false) {
+            return Some(Self(native.grant_components()));
+        }
         let (namespace, path) = if let Some(path) = path.strip_prefix("app:/") {
             ("app:", path)
         } else if path.starts_with('/') {
@@ -91,6 +95,27 @@ impl PathPrefix {
         match Self::new(path) {
             Some(target) => target.0.starts_with(&self.0),
             None => false,
+        }
+    }
+}
+
+// @ref LLP 0068#proposed-quoted-filesystem-targets — print one unambiguous target.
+impl std::fmt::Display for PathPrefix {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let namespace = self.0[0].strip_prefix("win:").unwrap_or(&self.0[0]);
+        let separator = if self.0[0].starts_with("win:") {
+            ":/"
+        } else {
+            "/"
+        };
+        let path = format!("{namespace}{separator}{}", self.0[1..].join("/"));
+        if path
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '"' | '\\'))
+        {
+            f.write_str(&serde_json::to_string(&path).map_err(|_| std::fmt::Error)?)
+        } else {
+            f.write_str(&path)
         }
     }
 }
@@ -199,26 +224,33 @@ impl GrantSet {
     /// This set with every filesystem prefix realized — symlinks followed,
     /// case settled — for checking a realized request path against
     /// (`stdlib::fs::realize`). Other families are unchanged.
+    /// Windows preserves lexical namespaces; its executor realizes native
+    /// operands through retained handles and refuses reparse points.
     pub fn realized_fs(&self) -> GrantSet {
-        let realize = |prefix: &PathPrefix| {
-            if prefix.0.first().is_some_and(|p| p == "app:") {
-                return prefix.clone();
+        #[cfg(windows)]
+        return self.clone();
+        #[cfg(not(windows))]
+        {
+            let realize = |prefix: &PathPrefix| {
+                if prefix.0.first().is_some_and(|p| p == "app:") {
+                    return prefix.clone();
+                }
+                let spelt = format!("/{}", prefix.0[1..].join("/"));
+                let real = crate::stdlib::fs::realize(std::path::Path::new(&spelt));
+                PathPrefix::new(&real.to_string_lossy()).unwrap_or_else(|| prefix.clone())
+            };
+            GrantSet {
+                grants: self
+                    .grants
+                    .iter()
+                    .map(|grant| match grant {
+                        Grant::FsRead(prefix) => Grant::FsRead(realize(prefix)),
+                        Grant::FsWrite(prefix) => Grant::FsWrite(realize(prefix)),
+                        Grant::SqliteOpen(prefix) => Grant::SqliteOpen(realize(prefix)),
+                        other => other.clone(),
+                    })
+                    .collect(),
             }
-            let spelt = format!("/{}", prefix.0[1..].join("/"));
-            let real = crate::stdlib::fs::realize(std::path::Path::new(&spelt));
-            PathPrefix::new(&real.to_string_lossy()).unwrap_or_else(|| prefix.clone())
-        };
-        GrantSet {
-            grants: self
-                .grants
-                .iter()
-                .map(|grant| match grant {
-                    Grant::FsRead(prefix) => Grant::FsRead(realize(prefix)),
-                    Grant::FsWrite(prefix) => Grant::FsWrite(realize(prefix)),
-                    Grant::SqliteOpen(prefix) => Grant::SqliteOpen(realize(prefix)),
-                    other => other.clone(),
-                })
-                .collect(),
         }
     }
 
@@ -289,9 +321,28 @@ impl GrantSet {
             }
             let mut parts = line.split_whitespace();
             let capability = parts.next().unwrap_or_default();
-            let target = parts
+            let first = parts
                 .next()
                 .ok_or_else(|| format!("line {}: `{capability}` needs a target", index + 1))?;
+            // Decode the complete remainder once, never as additional manifest
+            // lines. Legacy unquoted tokenization remains unchanged.
+            // @ref LLP 0068#proposed-quoted-filesystem-targets — quoted fs targets only.
+            let quoted = if matches!(capability, "fs.read" | "fs.write") && first.starts_with('"') {
+                let value: String = serde_json::from_str(line[capability.len()..].trim_start())
+                    .map_err(|e| {
+                        format!("line {}: bad quoted filesystem target: {e}", index + 1)
+                    })?;
+                if value.chars().any(char::is_control) {
+                    return Err(format!(
+                        "line {}: quoted filesystem target contains a control character",
+                        index + 1
+                    ));
+                }
+                Some(value)
+            } else {
+                None
+            };
+            let target = quoted.as_deref().unwrap_or(first);
             let grant = match capability {
                 "net.fetch" if target.contains("://*.") => {
                     Grant::FetchSubdomains(subdomains(target).map_err(|e| {
@@ -363,7 +414,7 @@ impl GrantSet {
             // One capability and one target per line. Anything after the
             // target refuses the line: a manifest typo that split a target
             // must stop a deployment, not silently grant its first word.
-            if let Some(extra) = parts.next() {
+            if let Some(extra) = parts.next().filter(|_| quoted.is_none()) {
                 return Err(format!(
                     "line {}: unexpected `{extra}` after the target",
                     index + 1
@@ -374,6 +425,10 @@ impl GrantSet {
         Ok(set)
     }
 }
+
+#[cfg(test)]
+#[path = "grant_quoted_tests.rs"]
+mod quoted_tests;
 
 /// The suffix origin of `scheme://*.suffix[:port]` (LLP 0067 §2): `*` is
 /// the whole leftmost label and appears nowhere else, the suffix is a domain

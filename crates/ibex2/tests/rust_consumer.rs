@@ -10,6 +10,8 @@ use ibex2::boundary::HostError;
 use ibex2::grant::GrantSet;
 use ibex2::host::Host;
 
+const HOME_VARIABLE: &str = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+
 /// The same standard library, the same grant grammar, the same refusals —
 /// through bindings that carry their grant, as a module's parameters do.
 #[test]
@@ -25,8 +27,8 @@ fn a_rust_consumer_gets_the_same_standard_library_under_the_same_grants() {
     let host = Host::new();
     let bindings = host.endow(
         GrantSet::parse(&format!(
-            "net.fetch https://example.com\nfs.read {a}\nfs.write {a}\nenv.read HOME\n",
-            a = allowed.display()
+            "net.fetch https://example.com\nfs.read {a}\nfs.write {a}\nenv.read {HOME_VARIABLE}\n",
+            a = serde_json::to_string(&allowed.to_string_lossy()).unwrap()
         ))
         .unwrap(),
     );
@@ -79,7 +81,7 @@ fn a_rust_consumer_gets_the_same_standard_library_under_the_same_grants() {
     ));
 
     // env: a snapshot of exactly the granted names.
-    assert!(bindings.env.get("HOME").is_some());
+    assert!(bindings.env.get(HOME_VARIABLE).is_some());
     assert_eq!(
         bindings.env.get("PATH"),
         None,
@@ -87,7 +89,7 @@ fn a_rust_consumer_gets_the_same_standard_library_under_the_same_grants() {
     );
     assert_eq!(
         bindings.env.snapshot().keys().collect::<Vec<_>>(),
-        vec!["HOME"]
+        vec![HOME_VARIABLE]
     );
 
     // The pure tier is plain Rust, the same functions the bindings wrap.
@@ -112,9 +114,12 @@ fn an_ungranted_consumer_is_refused_not_absent() {
         bindings.fetch.get("https://example.com/"),
         Err(HostError::Denied { .. })
     ));
+    // An existing, platform-qualified path to our own test executable: refusal
+    // must be authority denial, not invalid Windows syntax or a missing file.
+    let executable = std::env::current_exe().unwrap();
     assert!(matches!(
-        bindings.fs.read_file("/etc/hosts"),
+        bindings.fs.read_file(executable.to_str().unwrap()),
         Err(HostError::Denied { .. })
     ));
-    assert_eq!(bindings.env.get("HOME"), None);
+    assert_eq!(bindings.env.get(HOME_VARIABLE), None);
 }
