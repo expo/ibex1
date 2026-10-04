@@ -812,6 +812,14 @@ void Adapter::install(Groups groups, const Ibex2Bindings* bindings,
           options.setProperty(rt, "onHandled",
                               jsi::Value(rt, state_->rejection_handled));
           enable.getObject(rt).getFunction(rt).callWithThis(rt, internal, options);
+          // The upstream tracker installs its callbacks in Hermes's private
+          // Promise._B/_C slots. They are trusted engine mutations made before
+          // hardening, so advance the integrity baseline to those exact
+          // function identities; the ordinary harden walk freezes them.
+          accept_trusted_intrinsic_property(
+              rt.global().getPropertyAsObject(rt, "Promise"), "_B");
+          accept_trusted_intrinsic_property(
+              rt.global().getPropertyAsObject(rt, "Promise"), "_C");
         }
       }
     }

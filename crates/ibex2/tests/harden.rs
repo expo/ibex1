@@ -83,15 +83,16 @@ fn the_global_object_accepts_new_properties() {
         ),
         "2"
     );
-    // Exact's own bootstrap shape.
+    // Exact's own bootstrap shape. `navigator` is now a runtime global, so an
+    // application keeps it rather than replacing it with its former shim.
     assert_eq!(
         eval(
             &mut rt,
             "(function () { const r = globalThis; r.global = r; r.self = r; r.window = r; \
              r.navigator ??= { product: 'x' }; \
-             return String(r.window === globalThis) + r.navigator.product; })()"
+             return String(r.window === globalThis) + r.navigator.userAgent; })()"
         ),
-        "truex"
+        "trueIbex/0.1.0"
     );
 }
 

@@ -159,7 +159,7 @@ fn abort_after_headers_rejects_pending_and_future_reads_with_the_same_reason() {
     let (_project, mut rt) = runtime("fetch-stream-abort", &source, &origin);
     rt.run_to_quiescence(Duration::from_secs(15));
     let out: Vec<_> = rt.drain_console().into_iter().map(|r| r.message).collect();
-    assert_eq!(out, ["true", "true", "true"]);
+    assert_eq!(out, ["Uncaught uncaught error", "true", "true", "true"]);
     server.join().unwrap();
 }
 
