@@ -194,6 +194,10 @@ pub struct RuntimeState {
     /// the complete value here makes later binding families use those same
     /// components instead of reconstructing platform defaults.
     endowment: host::Bindings,
+    /// An owning engine keeps its own queue and adopts the host-selected
+    /// mechanisms exactly once. OnceLock makes the borrowed reference returned
+    /// by transport() stable for the runtime's lifetime.
+    adopted_endowment: std::sync::OnceLock<host::Bindings>,
 }
 
 struct StoredResponse {
@@ -235,6 +239,7 @@ impl RuntimeState {
             in_flight: std::sync::atomic::AtomicUsize::new(0),
             next_handle: std::sync::atomic::AtomicU64::new(1),
             endowment: bindings.clone(),
+            adopted_endowment: std::sync::OnceLock::new(),
         };
         if let Some(provider) = bindings.sqlite_provider() {
             state
@@ -264,7 +269,37 @@ impl RuntimeState {
     }
 
     pub fn transport(&self) -> &dyn crate::stdlib::fetch::Transport {
-        self.endowment.fetch.transport()
+        self.adopted_endowment
+            .get()
+            .unwrap_or(&self.endowment)
+            .fetch
+            .transport()
+    }
+
+    /// Copy the mechanisms selected by a Host into an owning runtime without
+    /// replacing its queue, handle registries, loader, or integrity snapshot.
+    /// Explicit configuration already installed directly on the runtime wins
+    /// when the endowment omits that optional component.
+    // @ref LLP 0057.000#50-three-doors-one-implementation — owning engines copy the endowed mechanisms without sharing runtime identity
+    pub(crate) fn adopt_bindings(&self, bindings: &host::Bindings) -> Result<(), HostError> {
+        if self.adopted_endowment.get().is_some() {
+            return Err(HostError::InvalidArgument(
+                "Runtime bindings are already endowed".into(),
+            ));
+        }
+        if self.app_directories.get().is_none() {
+            if let Some(directories) = bindings.app_directories() {
+                let _ = self.app_directories.set((*directories).clone());
+            }
+        }
+        if !self.sqlite.has_provider() {
+            if let Some(provider) = bindings.sqlite_provider() {
+                self.sqlite.set_provider(provider)?;
+            }
+        }
+        self.adopted_endowment
+            .set(bindings.clone())
+            .map_err(|_| HostError::InvalidArgument("Runtime bindings are already endowed".into()))
     }
 
     pub fn create_control(&self) -> u64 {

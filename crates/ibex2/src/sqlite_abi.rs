@@ -50,6 +50,9 @@ impl Registry {
             .set(provider)
             .map_err(|_| invalid("SQLite provider is already configured"))
     }
+    pub(crate) fn has_provider(&self) -> bool {
+        self.provider.get().is_some()
+    }
     fn database(&self, id: u64) -> Result<Database, HostError> {
         self.databases
             .lock()

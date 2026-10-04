@@ -267,6 +267,7 @@ pub struct Context {
 }
 
 const BINDINGS_MAGIC: u64 = 0x4942_4558_3242_4e44;
+const ADOPTED_BINDINGS_MAGIC: u64 = 0x4942_4558_3241_4450;
 
 /// Opaque handle type passed to the JSI adapter at installation.
 #[repr(C)]
@@ -282,6 +283,7 @@ struct InstallEndowment {
     magic: u64,
     state: Arc<RuntimeState>,
     grants: Arc<GrantSet>,
+    bindings: host::Bindings,
 }
 
 fn live_bindings() -> &'static Mutex<HashSet<usize>> {
@@ -311,7 +313,7 @@ fn valid_bindings(bindings: *const Ibex2Bindings) -> Option<&'static InstallEndo
     // removed by its Drop. The ABI requires the producing Context to remain
     // live for the call, just as state_ptr() does.
     let bindings = unsafe { &*bindings.cast::<InstallEndowment>() };
-    (bindings.magic == BINDINGS_MAGIC).then_some(bindings)
+    matches!(bindings.magic, BINDINGS_MAGIC | ADOPTED_BINDINGS_MAGIC).then_some(bindings)
 }
 
 impl Drop for InstallEndowment {
@@ -342,6 +344,7 @@ impl Context {
             magic: BINDINGS_MAGIC,
             state: Arc::new(RuntimeState::from_bindings(bindings)),
             grants: bindings.grants(),
+            bindings: bindings.clone(),
         });
         register_bindings(&endowment);
         Self { endowment }
@@ -414,6 +417,48 @@ pub unsafe extern "C" fn ibex2_bindings_grants(bindings: *const Ibex2Bindings) -
     valid_bindings(bindings).map_or(std::ptr::null(), |endowment| {
         Arc::as_ptr(&endowment.grants).cast()
     })
+}
+
+/// Copy a live host endowment into an owning Hermes runtime's existing state
+/// and return a handle whose state identity matches that runtime.
+///
+/// # Safety
+/// `bindings` must be a live pointer returned by [`Context::bindings_ptr`], and
+/// `state` must be a live owner state created by this crate.
+#[no_mangle]
+pub unsafe extern "C" fn ibex2_bindings_adopt(
+    bindings: *const Ibex2Bindings,
+    state: *const RuntimeState,
+) -> *const Ibex2Bindings {
+    let Some(source) = valid_bindings(bindings) else {
+        return std::ptr::null();
+    };
+    let Some(state) = crate::task::clone_queue(state) else {
+        return std::ptr::null();
+    };
+    if state.adopt_bindings(&source.bindings).is_err() {
+        return std::ptr::null();
+    }
+    let adopted = Arc::new(InstallEndowment {
+        magic: ADOPTED_BINDINGS_MAGIC,
+        state,
+        grants: Arc::clone(&source.grants),
+        bindings: source.bindings.clone(),
+    });
+    register_bindings(&adopted);
+    Arc::into_raw(adopted).cast()
+}
+
+/// Release a handle returned by [`ibex2_bindings_adopt`]. Invalid handles are
+/// refused without dereferencing them.
+///
+/// # Safety
+/// A valid adopted handle must be released exactly once.
+#[no_mangle]
+pub unsafe extern "C" fn ibex2_bindings_destroy(bindings: *const Ibex2Bindings) {
+    if valid_bindings(bindings).is_some_and(|bindings| bindings.magic == ADOPTED_BINDINGS_MAGIC) {
+        drop(Arc::from_raw(bindings.cast::<InstallEndowment>()));
+    }
 }
 
 #[cfg(test)]

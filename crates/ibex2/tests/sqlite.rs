@@ -103,6 +103,103 @@ fn sqlite_refuses_tampering_with_an_admitted_intl_intrinsic() {
 }
 
 #[test]
+fn hermes_adoption_does_not_recapture_modified_intrinsics() {
+    let project = Project::new("sqlite-preinstall-integrity");
+    project.file(
+        "index.js",
+        r#"(async function () {
+          try { await sqlite.open('app:/data/test.db'); }
+          catch (error) { console.log(error.message); }
+        })();"#,
+    );
+    let data = project.0.join("data");
+    let cache = project.0.join("cache");
+    let temporary = project.0.join("tmp");
+    for path in [&data, &cache, &temporary] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+
+    let mut runtime = Hermes::new(DynamicCode::Closed).unwrap();
+    runtime
+        .eval("WeakMap.prototype.get = function () { return undefined; }")
+        .unwrap();
+    let context = ibex2::bindings::Context::new(ibex2::grant::GrantSet::none());
+    runtime
+        .install_runtime(ibex2::bindings::Groups::DEFAULT, &context)
+        .unwrap();
+    runtime
+        .set_app_directories(AppDirectories::new(data.clone(), cache, temporary).unwrap())
+        .unwrap();
+    runtime
+        .set_sqlite_provider(Arc::new(ibex2_sqlite::SqliteProvider))
+        .unwrap();
+    runtime
+        .set_loader(
+            Root::Declared(project.0.clone()),
+            ModuleGrants::parse("[*]\nsqlite.open app:/data/test.db\n").unwrap(),
+        )
+        .unwrap();
+    runtime.harden().unwrap();
+    runtime.run_entry("./index.js").unwrap();
+    runtime.run_to_quiescence(Duration::from_secs(10));
+    let output: Vec<_> = runtime
+        .drain_console()
+        .into_iter()
+        .map(|record| record.message)
+        .collect();
+    assert_eq!(output.len(), 1, "{output:?}");
+    assert!(output[0].contains("unchanged, hardened intrinsics"));
+    assert!(!data.join("test.db").exists());
+}
+
+#[test]
+fn runtime_configuration_set_before_install_survives_host_adoption() {
+    let project = Project::new("sqlite-preinstall-config");
+    project.file(
+        "index.js",
+        r#"(async function () {
+          await fs.writeFile('app:/data/preserved', new Uint8Array([7]));
+          const db = await sqlite.open('app:/data/state.db');
+          await db.execute('CREATE TABLE kept(value TEXT)');
+          await db.close();
+          globalThis.configResult = 'ok';
+        })().catch(error => globalThis.configResult = String(error));"#,
+    );
+    let data = project.0.join("data");
+    let cache = project.0.join("cache");
+    let temporary = project.0.join("tmp");
+    for path in [&data, &cache, &temporary] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+
+    let mut runtime = Hermes::new(DynamicCode::Closed).unwrap();
+    runtime
+        .set_app_directories(AppDirectories::new(data.clone(), cache, temporary).unwrap())
+        .unwrap();
+    runtime
+        .set_sqlite_provider(Arc::new(ibex2_sqlite::SqliteProvider))
+        .unwrap();
+    runtime
+        .set_loader(
+            Root::Declared(project.0.clone()),
+            ModuleGrants::parse("[*]\nfs.write app:/data\nsqlite.open app:/data/state.db\n")
+                .unwrap(),
+        )
+        .unwrap();
+    let context = ibex2::bindings::Context::new(ibex2::grant::GrantSet::none());
+    runtime
+        .install_runtime(ibex2::bindings::Groups::DEFAULT, &context)
+        .unwrap();
+    runtime.harden().unwrap();
+    runtime.run_entry("./index.js").unwrap();
+    runtime.run_to_quiescence(Duration::from_secs(10));
+
+    assert_eq!(runtime.eval("configResult").unwrap(), "ok");
+    assert_eq!(std::fs::read(data.join("preserved")).unwrap(), [7]);
+    assert!(data.join("state.db").exists());
+}
+
+#[test]
 fn sqlite_typed_parameters_transactions_ordering_and_explicit_lifetime() {
     let project = Project::new("sqlite-values");
     project.file("index.js", r#"

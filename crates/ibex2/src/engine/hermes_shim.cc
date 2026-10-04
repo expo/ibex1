@@ -37,8 +37,10 @@ extern "C" int ibex2_grants_env_at(const void *grants, size_t index,
                                    char **out_name, char **out_value);
 extern "C" void ibex2_string_free(char *value);
 extern "C" void ibex2_queue_destroy(const void *queue);
-extern "C" const void *ibex2_queue_retain(const void *queue);
 extern "C" const void *ibex2_bindings_state(const Ibex2Bindings *bindings);
+extern "C" const Ibex2Bindings *ibex2_bindings_adopt(
+    const Ibex2Bindings *bindings, const void *state);
+extern "C" void ibex2_bindings_destroy(const Ibex2Bindings *bindings);
 extern "C" void ibex2_grants_destroy(const void *grants);
 extern "C" void ibex2_end_drive(const void *queue);
 
@@ -49,6 +51,9 @@ struct Ibex2Runtime {
   // Hermes's own (hermes-interfaces.h), reached through HermesRuntime.
   std::unique_ptr<facebook::hermes::HermesRuntime> runtime;
   std::unique_ptr<Adapter> bindings;
+  // A state-rebound view of the host endowment. The source Context remains
+  // independent; this handle retains authority for the adapter factories.
+  const Ibex2Bindings *adopted_bindings = nullptr;
   Groups groups = 0;
   // This runtime's own completion queue. Per-runtime so two runtimes in one
   // process cannot take each other's completions (task::Pump C5).
@@ -313,6 +318,7 @@ void ibex2_hermes_destroy(void *handle) {
     // runs no JavaScript, so there is nothing here for a deadline to stop.
     rt->runtime->unwatchTimeLimit();
     rt->bindings->detach();
+    ibex2_bindings_destroy(rt->adopted_bindings);
     ibex2_queue_destroy(rt->queue);
   }
   delete rt;
@@ -1001,21 +1007,13 @@ int ibex2_hermes_install_groups(void *handle, uint16_t groups,
     return 1;
   try {
     auto &runtime = *rt->runtime;
-    const void *state = ibex2_bindings_state(endowment);
-    if (state == nullptr)
-      throw std::invalid_argument("Ibex2 bindings require a live endowment");
-    if (state != rt->queue) {
-      rt->bindings->detach();
-      rt->bindings.reset();
-      const void *retained = ibex2_queue_retain(state);
-      if (retained == nullptr)
-        throw std::invalid_argument("Ibex2 bindings require runtime state");
-      ibex2_queue_destroy(rt->queue);
-      rt->queue = retained;
-      rt->bindings = std::make_unique<Adapter>(
-          runtime, rt->queue, rt->bytecode_version);
+    if (rt->adopted_bindings == nullptr) {
+      rt->adopted_bindings = ibex2_bindings_adopt(endowment, rt->queue);
+      if (rt->adopted_bindings == nullptr)
+        throw std::invalid_argument(
+            "Ibex2 bindings require a live, unadopted endowment");
     }
-    rt->bindings->install(groups, endowment, scripts, script_count);
+    rt->bindings->install(groups, rt->adopted_bindings, scripts, script_count);
     auto global = runtime.global();
     auto remove = [&](const char *name) {
       runtime.global().getPropertyAsObject(runtime, "Reflect")

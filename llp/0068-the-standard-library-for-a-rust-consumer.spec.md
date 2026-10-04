@@ -167,6 +167,14 @@ modifies no globals; `install` is the additive whole-surface door.
 does Hermes evaluate `esm.hbc`. The module loader asks the adapter's retained
 factories for per-module endowed values and removes the temporary capability
 globals before project code.
+Unlike a borrowed runtime, Hermes already has a runtime state and adapter from
+construction. It copies the endowment's transport, stores, environment,
+optional provider, and directories into that existing state; it never replaces
+the queue, shares task IDs with the source `Context`, or reconstructs the
+adapter and its construction-time integrity snapshot. Configuration made on
+Hermes before installation (directories, provider, and loader) therefore
+remains attached to the runtime. Destroying Hermes shuts down only its own
+state, not the source `Context`.
 `loader::allowed_globals(groups)` derives R5's allow-list from that runtime's
 recorded selection; it is no longer a second, fixed inventory that can drift
 from installation.

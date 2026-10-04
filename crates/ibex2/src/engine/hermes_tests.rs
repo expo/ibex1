@@ -756,6 +756,137 @@ fn javascript_fetch_uses_the_hosts_endowed_transport() {
 }
 
 #[test]
+fn two_runtimes_endowed_from_one_context_never_take_each_others_fetches() {
+    use std::collections::BTreeSet;
+    use std::sync::{mpsc, Arc, Condvar, Mutex};
+
+    struct Gate {
+        released: Mutex<BTreeSet<String>>,
+        changed: Condvar,
+    }
+    struct GatedTransport {
+        gate: Arc<Gate>,
+        entered: mpsc::Sender<String>,
+    }
+    impl crate::stdlib::fetch::Transport for GatedTransport {
+        fn open(
+            &self,
+            request: &crate::stdlib::fetch::Request,
+            signal: &crate::stdlib::abort::AbortSignal,
+        ) -> Result<crate::stdlib::fetch::StreamingResponse, crate::boundary::HostError> {
+            let label = request.url.rsplit('/').next().unwrap().to_string();
+            self.entered.send(label.clone()).unwrap();
+            let gate = Arc::clone(&self.gate);
+            let _abort = signal.register(move || gate.changed.notify_all());
+            let mut released = self.gate.released.lock().unwrap();
+            while !released.contains(&label) && !signal.aborted() {
+                released = self.gate.changed.wait(released).unwrap();
+            }
+            signal.check()?;
+            Ok(crate::stdlib::fetch::Response {
+                status: 200,
+                status_text: "OK".into(),
+                headers: crate::stdlib::fetch::Headers::new(),
+                body: label.as_bytes().to_vec(),
+                url: request.url.clone(),
+                redirected: false,
+            }
+            .into_stream(request.body_limit(), signal.clone()))
+        }
+    }
+
+    let gate = Arc::new(Gate {
+        released: Mutex::new(BTreeSet::new()),
+        changed: Condvar::new(),
+    });
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let host = host::Host::with_transport(Box::new(GatedTransport {
+        gate: Arc::clone(&gate),
+        entered: entered_tx,
+    }));
+    let endowed =
+        host.endow(crate::grant::GrantSet::parse("net.fetch https://endowed.example\n").unwrap());
+    let context = crate::bindings::Context::from_bindings(&endowed);
+    let mut first = Hermes::new(DynamicCode::Closed).unwrap();
+    let mut second = Hermes::new(DynamicCode::Closed).unwrap();
+    first
+        .install_runtime(crate::bindings::Groups::DEFAULT, &context)
+        .unwrap();
+    second
+        .install_runtime(crate::bindings::Groups::DEFAULT, &context)
+        .unwrap();
+    let root = std::env::temp_dir().join(format!("ibex2-two-runtime-fetch-{}", std::process::id()));
+    let first_root = root.join("first");
+    let second_root = root.join("second");
+    for (directory, label) in [(&first_root, "first"), (&second_root, "second")] {
+        std::fs::create_dir_all(directory).unwrap();
+        std::fs::write(
+            directory.join("index.js"),
+            format!(
+                "globalThis.result = ''; fetch('https://endowed.example/{label}').then(r => r.text()).then(v => result = v)"
+            ),
+        )
+        .unwrap();
+    }
+    let grants =
+        || crate::loader::ModuleGrants::parse("[*]\nnet.fetch https://endowed.example\n").unwrap();
+    first
+        .set_loader(crate::loader::Root::Declared(first_root), grants())
+        .unwrap();
+    second
+        .set_loader(crate::loader::Root::Declared(second_root), grants())
+        .unwrap();
+    first.run_entry("./index.js").unwrap();
+    second.run_entry("./index.js").unwrap();
+    let entered: BTreeSet<_> = (0..2)
+        .map(|_| {
+            entered_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(entered, BTreeSet::from(["first".into(), "second".into()]));
+
+    let queued = |runtime: &Hermes| {
+        let state = unsafe { ibex2_hermes_state(runtime.handle) };
+        unsafe { crate::task::borrow_state(state) }
+            .expect("runtime state")
+            .queue
+            .len()
+    };
+    let wait_for_task = |runtime: &Hermes| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while queued(runtime) == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "host task did not arrive"
+            );
+            std::thread::yield_now();
+        }
+    };
+    let release = |label: &str| {
+        gate.released.lock().unwrap().insert(label.to_string());
+        gate.changed.notify_all();
+    };
+
+    release("second");
+    wait_for_task(&second);
+    assert_eq!(
+        first.pump().unwrap(),
+        0,
+        "the first runtime took the second runtime's fetch completion"
+    );
+    second.run_to_quiescence(std::time::Duration::from_secs(2));
+    assert_eq!(second.eval("result").unwrap(), "second");
+    assert_eq!(first.eval("result").unwrap(), "");
+
+    release("first");
+    first.run_to_quiescence(std::time::Duration::from_secs(2));
+    assert_eq!(first.eval("result").unwrap(), "first");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn fetch_reaches_a_real_server_and_returns_a_response_handle() {
     let server = TestServer::start("hello from the server");
     let mut rt = fetch_rt(&format!("net.fetch {}", server.origin()));
