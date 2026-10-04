@@ -220,9 +220,13 @@
     Object.defineProperty(Request.prototype, name, { get: function () { return own(requests, this, "Request")[name]; }, enumerable: true });
   });
   Object.defineProperty(Request.prototype, Symbol.toStringTag, { value: "Request" });
-  global.Request = Request;
-  global.Response = Response;
-  [Request, Response, ResponseBody, ResponseBodyReader].forEach(function (type) { Object.freeze(type.prototype); Object.freeze(type); });
+  if (blobHelpers) {
+    global.Request = Request;
+    global.Response = Response;
+    Object.freeze(Request.prototype);
+    Object.freeze(Request);
+  }
+  [Response, ResponseBody, ResponseBodyReader].forEach(function (type) { Object.freeze(type.prototype); Object.freeze(type); });
   return function makeFetch(raw) {
     return function fetch(input, init) {
       var headers, token, unsubscribe = function () {}, released = false;
@@ -234,17 +238,33 @@
       }
       try {
         if (arguments.length === 0) throw new TypeError("fetch expects a URL");
-        var request = new Request(input, init);
-        var state = requests.get(request);
-        // Request construction has already allocated this one-shot snapshot.
-        // Publish it to the common cleanup path before signal validation or
-        // the pre-abort check can throw or reject.
-        headers = state.headers;
-        var signal = state.signal;
-        if (signal != null && abort.own(signal).aborted) throw abort.own(signal).reason;
-        var url = state.url, method = state.method, body = state.body, redirect = state.redirect;
-        // `request` is an internal one-shot snapshot. Passing its own Headers
-        // handle avoids a second clone; every exit below frees this handle.
+        var signal, url, method, body, redirect;
+        if (blobHelpers) {
+          var request = new Request(input, init);
+          var state = requests.get(request);
+          // Request construction has already allocated this one-shot snapshot.
+          // Publish it to the common cleanup path before signal validation or
+          // the pre-abort check can throw or reject.
+          headers = state.headers;
+          signal = state.signal;
+          if (signal != null && abort.own(signal).aborted) throw abort.own(signal).reason;
+          url = state.url; method = state.method; body = state.body; redirect = state.redirect;
+          // `request` is an internal one-shot snapshot. Passing its own Headers
+          // handle avoids a second clone; every exit below frees this handle.
+        } else {
+          // Preserve the pre-BLOB FETCH contract byte for byte: only strings
+          // are converted here, other values cross through the existing ABI,
+          // and Request/Response constructors are not exposed.
+          init = init || {};
+          signal = init.signal;
+          if (signal != null && abort.own(signal).aborted) return Promise.reject(abort.own(signal).reason);
+          url = String(input);
+          method = init.method === undefined ? "" : String(init.method);
+          body = init.body;
+          if (typeof body === "string") body = new TextEncoder().encode(body);
+          redirect = init.redirect === undefined ? "follow" : String(init.redirect);
+          headers = new Headers(init.headers);
+        }
         token = control(0);
         if (signal != null) unsubscribe = abort.subscribe(signal, function () { control(1, token); });
         return raw(url, method, body, redirect, headers._handle, token).then(function (handle) {

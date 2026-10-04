@@ -1000,7 +1000,12 @@ const GLOBAL_PARTITION: &[(Option<crate::bindings::Groups>, &[usize])] = &[
     (Some(crate::bindings::Groups::CRYPTO), &[14, 17]),
     (Some(crate::bindings::Groups::ABORT), &[15, 16]),
     (Some(crate::bindings::Groups::BLOB), &[20, 21, 22]),
-    (Some(crate::bindings::Groups::FETCH), &[23, 24]),
+    (
+        Some(
+            crate::bindings::Groups::BLOB.union(crate::bindings::Groups::FETCH),
+        ),
+        &[23, 24],
+    ),
 ];
 
 /// The global names a module may see for one installed group set. Anything
@@ -1213,7 +1218,7 @@ mod tests {
             DEFAULT_ADDED_GLOBALS
         );
         let default = allowed_globals(crate::bindings::Groups::DEFAULT);
-        for name in ["Blob", "File", "FormData"] {
+        for name in ["Blob", "File", "FormData", "Request", "Response"] {
             assert!(!default.contains(&name), "BLOB is measured default-off");
         }
     }

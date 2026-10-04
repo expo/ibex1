@@ -94,6 +94,11 @@ impl Groups {
         self.0 & other.0 != 0
     }
 
+    /// Combine install groups in a const context.
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
     /// Remove an install group without changing any of the groups that remain.
     /// The resulting set is still checked by [`Self::validate`] at install.
     pub const fn without(self, other: Self) -> Self {

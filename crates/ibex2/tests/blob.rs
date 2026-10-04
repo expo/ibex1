@@ -307,7 +307,7 @@ fn blob_group_is_explicit_and_does_not_arrive_with_fetch() {
     let mut runtime = runtime(Groups::PURE | Groups::ABORT | Groups::FETCH, true);
     assert_eq!(
         runtime
-            .eval("[typeof Blob, typeof File, typeof FormData, typeof Response.prototype.blob, typeof Response.prototype.formData].join(',')")
+            .eval("[typeof Blob, typeof File, typeof FormData, typeof Request, typeof Response].join(',')")
             .unwrap(),
         "undefined,undefined,undefined,undefined,undefined"
     );
@@ -395,48 +395,43 @@ fn fetch_form_data_uses_rust_multipart_and_preserves_authored_content_type() {
 }
 
 #[test]
-fn fetch_without_blob_keeps_the_byte_and_string_body_path() {
-    let (origin, server) = capture("text/plain", b"ordinary response");
-    let output = run_fetch_module_with_groups(
-        "fetch-without-blob",
-        &origin,
-        &format!(
-            "console.log([typeof Blob,typeof File,typeof FormData,typeof Response.prototype.blob,typeof Response.prototype.formData].join(','));\n\
-             fetch('{origin}/plain', {{method:'POST',body:'ordinary request'}}).then(r => r.text()).then(console.log);"
+fn fetch_without_blob_matches_the_pre_lane_surface_and_wire_behavior() {
+    let groups = Groups::PURE | Groups::CONSOLE | Groups::ABORT | Groups::FETCH;
+    let cases: [(&str, &str, &[u8]); 5] = [
+        ("string", "'ordinary request'", b"ordinary request"),
+        ("bytes", "new Uint8Array([1,2,3])", &[1, 2, 3]),
+        (
+            "search-params",
+            "new URLSearchParams([['a b','c+d']])",
+            b"",
         ),
-        Groups::PURE | Groups::CONSOLE | Groups::ABORT | Groups::FETCH,
-    );
-    assert_eq!(
-        output,
-        [
-            "undefined,undefined,undefined,undefined,undefined",
-            "ordinary response"
-        ]
-    );
-    let (head, body) = server.join().unwrap();
-    assert_eq!(body, b"ordinary request");
-    // CFNetwork's existing byte-body path supplies this default. Installing
-    // FETCH without BLOB must not alter it.
-    assert_eq!(
-        header(&head, "content-type"),
-        Some("application/x-www-form-urlencoded")
-    );
+        ("number", "123", b""),
+        ("object", "({a:1})", b""),
+    ];
 
-    let (origin, server) = capture("text/plain", b"search response");
-    let output = run_fetch_module_with_groups(
-        "fetch-without-blob-search-params",
-        &origin,
-        &format!(
-            "const p=new URLSearchParams(); p.append('a b','c+d');\n\
-             fetch('{origin}/search', {{method:'POST',body:p}}).then(r => r.text()).then(console.log);"
-        ),
-        Groups::PURE | Groups::CONSOLE | Groups::ABORT | Groups::FETCH,
-    );
-    assert_eq!(output, ["search response"]);
-    let (head, body) = server.join().unwrap();
-    assert_eq!(body, b"a+b=c%2Bd");
-    assert_eq!(
-        header(&head, "content-type"),
-        Some("application/x-www-form-urlencoded;charset=UTF-8")
-    );
+    for (name, body_expression, expected_body) in cases {
+        let (origin, server) = capture("text/plain", b"ordinary response");
+        let output = run_fetch_module_with_groups(
+            &format!("fetch-without-blob-{name}"),
+            &origin,
+            &format!(
+                "console.log([typeof Blob,typeof File,typeof FormData,typeof Request,typeof Response].join(','));\n\
+                 fetch('{origin}/{name}', {{method:'POST',body:{body_expression}}}).then(r => r.text()).then(console.log);"
+            ),
+            groups,
+        );
+        assert_eq!(
+            output,
+            [
+                "undefined,undefined,undefined,undefined,undefined",
+                "ordinary response"
+            ],
+            "{name}"
+        );
+        let (head, body) = server.join().unwrap();
+        assert_eq!(body, expected_body, "{name}");
+        let expected_type = (!expected_body.is_empty())
+            .then_some("application/x-www-form-urlencoded");
+        assert_eq!(header(&head, "content-type"), expected_type, "{name}");
+    }
 }

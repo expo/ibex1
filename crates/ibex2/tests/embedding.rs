@@ -404,8 +404,6 @@ fn fetch_group_does_not_install_timers_or_crypto() {
         "QuotaExceededError",
         "AbortController",
         "AbortSignal",
-        "Request",
-        "Response",
         "fetch",
     ]
     .into_iter()
