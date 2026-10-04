@@ -190,8 +190,8 @@ fn platform_identity_is_private_and_unsupported_values_throw_data_clone_error() 
           new URL("https://example.com/"), new URLSearchParams("x=1"),
           new AbortController(), AbortSignal.abort(), crypto,
           new Headers().entries(), new URLSearchParams("x=1").entries()];
-        if (typeof Intl.NumberFormat === "function") rejected.push(new Intl.NumberFormat());
-        if (typeof Intl.DateTimeFormat === "function") rejected.push(new Intl.DateTimeFormat());
+        if (typeof Intl !== "undefined" && typeof Intl.NumberFormat === "function") rejected.push(new Intl.NumberFormat());
+        if (typeof Intl !== "undefined" && typeof Intl.DateTimeFormat === "function") rejected.push(new Intl.DateTimeFormat());
         if (typeof WeakRef === "function") rejected.push(new WeakRef({}));
         if (typeof FinalizationRegistry === "function") rejected.push(new FinalizationRegistry(function () {}));
         for (let i = 0; i < rejected.length; i++) {
@@ -201,8 +201,8 @@ fn platform_identity_is_private_and_unsupported_values_throw_data_clone_error() 
         const changed = [new Headers(), new URL("https://example.com/"),
           new URLSearchParams("x=1"), new AbortController(), AbortSignal.abort()];
         changed.push(new Headers().entries(), new URLSearchParams("x=1").entries());
-        if (typeof Intl.NumberFormat === "function") changed.push(new Intl.NumberFormat());
-        if (typeof Intl.DateTimeFormat === "function") changed.push(new Intl.DateTimeFormat());
+        if (typeof Intl !== "undefined" && typeof Intl.NumberFormat === "function") changed.push(new Intl.NumberFormat());
+        if (typeof Intl !== "undefined" && typeof Intl.DateTimeFormat === "function") changed.push(new Intl.DateTimeFormat());
         for (const value of changed) {
           Object.setPrototypeOf(value, null);
           Object.defineProperty(value, Symbol.toStringTag, { value: "Changed" });
@@ -330,6 +330,7 @@ fn transfer_is_empty_or_refused_and_intrinsics_are_captured() {
 
 #[cfg(feature = "loader")]
 #[test]
+#[cfg_attr(windows, ignore = "Windows app directory capabilities and SQLite paths are not implemented yet")]
 fn private_fetch_and_sqlite_objects_stay_branded_after_visible_shape_changes() {
     use ibex2::{
         boundary::HostError,

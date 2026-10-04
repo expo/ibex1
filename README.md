@@ -176,6 +176,26 @@ read-barrier fix in the source-built pin. Android therefore stays on the older,
 unaffected reviewed artifact until a fixed AAR is available; the paired JSI
 PREFAB must continue to include `jsi/hermes-interfaces.h`.
 
+### Ibex 2 on Windows
+
+Ibex 2's x64 MSVC engine uses unpatched, statically linked Hermes. In an x64
+Visual Studio developer PowerShell with CMake, Ninja, Python, Node, and the
+repository's Rust toolchain installed:
+
+```powershell
+.\scripts\build-hermes-windows.ps1 -Vanilla
+node scripts/hermes-input-receipt.mjs tools/hermes-vanilla/windows-x64
+cargo build -p ibex2 --features hermes
+.\target\debug\ibex2.exe run path\to\main.js --root path\to\project
+```
+
+Use `ibex2 build` followed by `ibex2 run --precompiled` for ahead-of-time
+bytecode. The executable needs the Windows system libraries and Microsoft C++
+runtime, but no Hermes DLL. The Rust-only surface still builds without the
+`hermes` feature. Windows `app:/` storage, native filesystem grants, SQLite
+paths, and the Linux Intl projection are not yet qualified; see
+[LLP 0068](./llp/0068-the-standard-library-for-a-rust-consumer.spec.md#windows-host-and-engine).
+
 ## Crypto profiles
 
 - **`openssl-crypto`** — full native crypto on Linux via OpenSSL, including
