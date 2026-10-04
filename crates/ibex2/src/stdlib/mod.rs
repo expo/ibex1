@@ -15,6 +15,7 @@ pub(crate) mod intl;
 pub(crate) mod intl_case;
 #[cfg(all(feature = "hermes", target_os = "linux"))]
 pub(crate) mod intl_datetime;
+pub mod subtle;
 pub mod text;
 pub mod timers;
 pub mod url;
