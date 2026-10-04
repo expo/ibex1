@@ -457,6 +457,7 @@ void Adapter::detach() {
   state_->event_reporter = jsi::Value::undefined();
   state_->trusted_event_dispatch = jsi::Value::undefined();
   state_->event_listener_query = jsi::Value::undefined();
+  state_->event_listener_change_hook = jsi::Value::undefined();
   state_->rejection_unhandled = jsi::Value::undefined();
   state_->rejection_handled = jsi::Value::undefined();
   state_->integrity.reset();

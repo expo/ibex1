@@ -235,6 +235,12 @@ impl SocketTransport for TcpSocketTransport {
         shutdown
             .set_read_timeout(Some(Duration::from_millis(25)))
             .map_err(failed)?;
+        // A writer holds the shared wire while a frame drains. If the peer
+        // stops reading, that write must not block forever: the stall is
+        // bounded, and then the connection fails like any other write error.
+        shutdown
+            .set_write_timeout(Some(WRITE_STALL_TIMEOUT))
+            .map_err(failed)?;
         let wire = Arc::new(SharedWire::new(wire));
         let buffered_amount = Arc::new(AtomicUsize::new(0));
         let send_state = Arc::new(Mutex::new(SendState {
@@ -618,22 +624,24 @@ fn writer_loop(
 }
 
 fn write_message(wire: &SharedWire, opcode: u8, payload: &[u8]) -> std::io::Result<()> {
-    wire.write(|wire| {
-        if payload.is_empty() {
-            wire.write_all(&masked_frame(true, opcode, payload)?)?;
-            return wire.flush();
-        }
-        for (index, chunk) in payload.chunks(FRAGMENT).enumerate() {
-            let fin = (index + 1) * FRAGMENT >= payload.len();
-            wire.write_all(&masked_frame(
-                fin,
-                if index == 0 { opcode } else { 0 },
-                chunk,
-            )?)?;
-        }
-        wire.flush()
-    })
+    if payload.is_empty() {
+        return write_one(wire, true, opcode, payload);
+    }
+    // One fragment per turn on the wire. Only this writer thread sends, so
+    // fragments stay contiguous on the wire; the reader may run in between.
+    for (index, chunk) in payload.chunks(FRAGMENT).enumerate() {
+        let fin = (index + 1) * FRAGMENT >= payload.len();
+        write_one(wire, fin, if index == 0 { opcode } else { 0 }, chunk)?;
+    }
+    Ok(())
 }
+
+/// How long one frame may wait for a peer that is not reading before the
+/// connection fails. Short in unit tests so the stall path is exercised.
+#[cfg(not(test))]
+const WRITE_STALL_TIMEOUT: Duration = Duration::from_secs(15);
+#[cfg(test)]
+const WRITE_STALL_TIMEOUT: Duration = Duration::from_millis(500);
 
 fn write_one(wire: &SharedWire, fin: bool, opcode: u8, payload: &[u8]) -> std::io::Result<()> {
     let frame = masked_frame(fin, opcode, payload)?;

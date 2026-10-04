@@ -537,6 +537,80 @@ fn a_ping_flood_from_a_non_reading_peer_fails_cleanly() {
     );
 }
 
+#[test]
+fn a_stalled_write_to_a_non_reading_peer_fails_within_the_stall_bound() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (release_peer, released) = channel();
+    let peer = std::thread::spawn(move || {
+        let mut stream = listener.accept().unwrap().0;
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            stream.read_exact(&mut byte).unwrap();
+            head.push(byte[0]);
+        }
+        let head = String::from_utf8(head).unwrap();
+        let key = head
+            .lines()
+            .find_map(|line| line.strip_prefix("Sec-WebSocket-Key: "))
+            .unwrap()
+            .trim();
+        let accept = crate::stdlib::websocket::accept_key(key);
+        write!(
+            stream,
+            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+        )
+        .unwrap();
+        // Never read again. Let the client's large write fill the buffers and
+        // stall first, then ask to close: a reader starved by the stalled
+        // writer cannot see it. Then hold the connection open.
+        std::thread::sleep(Duration::from_millis(300));
+        let _ = stream.write_all(&frame(true, 0x8, &1000u16.to_be_bytes()));
+        let _ = released.recv_timeout(Duration::from_secs(10));
+    });
+
+    let mut socket = open_on(
+        &TcpSocketTransport::new(),
+        port,
+        "/stall",
+        &AbortSignal::default(),
+    )
+    .unwrap();
+    // Several MiB cannot fit in the kernel buffers of a peer that never reads,
+    // so the writer stalls inside a frame.
+    socket.send_binary(&vec![5u8; 8 * 1024 * 1024]).unwrap();
+    let (reported, report) = channel();
+    let reader = std::thread::spawn(move || {
+        let started = std::time::Instant::now();
+        let mut last = None;
+        for _ in 0..4 {
+            match socket.next() {
+                Ok(Incoming::Closed { .. }) | Err(_) => {
+                    last = Some(started.elapsed());
+                    break;
+                }
+                Ok(_) => continue,
+            }
+        }
+        let _ = reported.send(last);
+    });
+    // The bound is 500 ms in tests; allow generous scheduling slack.
+    let finished = report.recv_timeout(Duration::from_secs(10));
+    let _ = release_peer.send(());
+    peer.join().unwrap();
+    // A reader still blocked behind a stalled writer would never be joined;
+    // fail instead of hanging the suite.
+    let elapsed = finished
+        .expect("next() must finish while the peer keeps the connection open")
+        .expect("the socket must report a close or a failure");
+    reader.join().unwrap();
+    assert!(
+        elapsed < Duration::from_secs(8),
+        "a stalled write pinned the reader for {elapsed:?}"
+    );
+}
+
 const LOCAL_CERT: &str = "MIIBcDCCARagAwIBAgIJAL/L9Qemvq28MAoGCCqGSM49BAMCMBQxEjAQBgNVBAMMCWxvY2FsaG9zdDAeFw0yNjEwMDQxMzQ2MTBaFw0yNzEwMDQxMzQ2MTBaMBQxEjAQBgNVBAMMCWxvY2FsaG9zdDBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABB+9b/H/REalNbaY5CeIowEsLfdmeVL8M/iQgCo4BrJM+IgYXRIUDI6EdvgZkkyBFTr8dIRFr/5u/AX/0vRU3p2jUTBPMBoGA1UdEQQTMBGCCWxvY2FsaG9zdIcEfwAAATAMBgNVHRMBAf8EAjAAMA4GA1UdDwEB/wQEAwIHgDATBgNVHSUEDDAKBggrBgEFBQcDATAKBggqhkjOPQQDAgNIADBFAiBU7Mu0QDVetJW9tm7u7aoPrVQcEqkO0IUkZ0aMgPA6GwIhAPMuBqpj21v+kfb7/bCjL94nmzgQkNzpdDPei6+PzVpa";
 const LOCAL_KEY: &str = "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgNuGe4B07FBTDauLEJyJRWafyt3Hlvuh33z/wS96uBu2hRANCAAQfvW/x/0RGpTW2mOQniKMBLC33ZnlS/DP4kIAqOAayTPiIGF0SFAyOhHb4GZJMgRU6/HSERa/+bvwF/9L0VN6d";
 
