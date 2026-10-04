@@ -290,6 +290,10 @@ impl<In: WireTransport> Connector<In> for CancellableConnector {
     }
 }
 
+#[cfg(windows)]
+pub(crate) use super::windows_connect::connect_socket;
+
+#[cfg(not(windows))]
 pub(crate) fn connect_socket(
     address: std::net::SocketAddr,
     timeout: Duration,
