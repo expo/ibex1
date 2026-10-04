@@ -181,7 +181,6 @@ fn main() {
         "domexception",
         "crypto",
         "abort",
-        "structured_clone",
         "fetch",
         "sqlite",
         "harden",
@@ -191,6 +190,9 @@ fn main() {
         bindings.push("intl_case");
         bindings.push("intl_datetime");
     }
+    // It installs last even though compilation order is not observable; keep
+    // this inventory in the same conceptual order as bindings::scripts.
+    bindings.push("structured_clone");
     for name in bindings {
         let source = format!("src/bindings/{name}.js");
         println!("cargo:rerun-if-changed={source}");

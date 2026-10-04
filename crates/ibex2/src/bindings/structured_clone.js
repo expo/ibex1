@@ -39,14 +39,24 @@
   var WeakSetCtor = WeakSet;
   var weakSetHas = uncurry(WeakSet.prototype.has);
   var weakRefDeref = typeof WeakRef === "function" ? uncurry(WeakRef.prototype.deref) : null;
-  var registryUnregister = typeof FinalizationRegistry === "function"
+  var registryUnregisterMethod = typeof FinalizationRegistry === "function"
     ? uncurry(FinalizationRegistry.prototype.unregister) : null;
+  var registryToken = {};
+  var registryUnregister = registryUnregisterMethod
+    ? function (value) { registryUnregisterMethod(value, registryToken); }
+    : null;
   var PromisePrototype = Promise.prototype;
 
   var ArrayBufferCtor = ArrayBuffer;
   var arrayBufferLength = uncurry(
     Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get
   );
+  var arrayBufferDetachedDescriptor = Object.getOwnPropertyDescriptor(
+    ArrayBuffer.prototype, "detached"
+  );
+  var arrayBufferDetached = arrayBufferDetachedDescriptor && arrayBufferDetachedDescriptor.get
+    ? uncurry(arrayBufferDetachedDescriptor.get)
+    : null;
   var Uint8ArrayCtor = Uint8Array;
   var typedArraySet = uncurry(Uint8Array.prototype.set);
   var TypedArrayPrototype = objectGetPrototypeOf(Uint8Array.prototype);
@@ -116,57 +126,14 @@
   };
   var StringCtor = String;
   var DOMExceptionCtor = global.DOMException;
-  var unsupportedPrototypes = [];
-  function rejectPrototype(type) {
-    if (typeof type === "function" && type.prototype) unsupportedPrototypes.push(type.prototype);
-  }
-  [Boolean, Number, String, Symbol, Date, RegExp, Map, Set, WeakMapCtor,
-   WeakSetCtor, Promise, ArrayBufferCtor, DataViewCtor, Error, EvalError,
-   RangeError, ReferenceError, SyntaxError, TypeError, URIError]
-    .forEach(rejectPrototype);
-  if (typeof BigInt === "function") rejectPrototype(BigInt);
-  if (typeof WeakRef === "function") rejectPrototype(WeakRef);
-  if (typeof FinalizationRegistry === "function") rejectPrototype(FinalizationRegistry);
-  rejectPrototype(global.SharedArrayBuffer);
-  Object.keys(typedArrayConstructors).forEach(function (name) {
-    rejectPrototype(typedArrayConstructors[name]);
-  });
-
-  // These bindings use private WeakMap/WeakSet state. Their captured getters
-  // and methods are the available internal-slot checks; no application-owned
-  // prototype getter participates.
-  var hostBrandChecks = [];
-  function addGetterBrand(type, key) {
-    if (typeof type !== "function") return;
-    var descriptor = Object.getOwnPropertyDescriptor(type.prototype, key);
-    if (descriptor && descriptor.get) {
-      var get = uncurry(descriptor.get);
-      hostBrandChecks.push(function (value) { get(value); });
-    }
-  }
-  function addMethodBrand(type, key, argument) {
-    if (typeof type !== "function" || typeof type.prototype[key] !== "function") return;
-    var method = uncurry(type.prototype[key]);
-    hostBrandChecks.push(function (value) { method(value, argument); });
-  }
-  addGetterBrand(global.DOMException, "message");
-  addGetterBrand(global.QuotaExceededError, "quota");
-  addMethodBrand(global.Headers, "has", "x-ibex-structured-clone-brand");
-  addGetterBrand(global.URL, "href");
-  addMethodBrand(global.URLSearchParams, "has", "x-ibex-structured-clone-brand");
-  addGetterBrand(global.AbortSignal, "aborted");
-  addGetterBrand(global.AbortController, "signal");
-  [global.DOMException, global.QuotaExceededError, global.Headers, global.URL,
-   global.URLSearchParams, global.AbortSignal, global.AbortController, global.Crypto,
-   global.CryptoKey, global.Request, global.Response, global.Blob, global.File,
-   global.ImageData].forEach(rejectPrototype);
-  var cryptoObject = global.crypto;
-  var platformTags = {
-    AbortController: true, AbortSignal: true, Blob: true, Crypto: true,
-    CryptoKey: true, DOMException: true, File: true, FileList: true,
-    Headers: true, ImageBitmap: true, ImageData: true, Request: true,
-    Response: true, URL: true, URLSearchParams: true
-  };
+  // Headers creates the one bootstrap-only identity registry before any
+  // platform factory runs. Every factory captures its writer. This final PURE
+  // script captures the reader and erases both helpers before application
+  // code. A public tag, prototype, getter, or native handle is never consulted
+  // to decide whether a value is a platform object.
+  var platformBrand = global.__ibex2_platform_brand;
+  delete global.__ibex2_brand;
+  delete global.__ibex2_platform_brand;
 
   function dataCloneError(message) {
     throw new DOMExceptionCtor(message, "DataCloneError");
@@ -176,32 +143,22 @@
     try { check(value); return true; } catch (_) { return false; }
   }
 
-  function isUnsupportedHostObject(value) {
-    if (value === cryptoObject) return true;
-    for (var i = 0; i < hostBrandChecks.length; i++) {
-      if (hasBrand(hostBrandChecks[i], value)) return true;
-    }
-    // Some exposed objects (notably Response) have constructors private to a
-    // binding closure. Their built-in toStringTag is a data property, so walk
-    // descriptors without invoking an application getter.
-    var current = value;
-    while (current !== null) {
-      var descriptor;
-      try { descriptor = objectGetOwnPropertyDescriptor(current, Symbol.toStringTag); }
-      catch (_) { dataCloneError("Proxy objects cannot be cloned"); }
-      if (descriptor) {
-        return objectHasOwn(descriptor, "value") && platformTags[descriptor.value] === true;
-      }
-      try { current = objectGetPrototypeOf(current); }
-      catch (_) { dataCloneError("Proxy objects cannot be cloned"); }
-    }
-    return false;
+  function platformRecord(value) {
+    return typeof platformBrand === "function" ? platformBrand(value) : undefined;
   }
 
   function copyArrayBuffer(source) {
-    var result = new ArrayBufferCtor(arrayBufferLength(source));
-    typedArraySet(new Uint8ArrayCtor(result), new Uint8ArrayCtor(source));
-    return result;
+    if (arrayBufferDetached && arrayBufferDetached(source)) {
+      dataCloneError("Detached ArrayBuffers cannot be cloned");
+    }
+    try {
+      var result = new ArrayBufferCtor(arrayBufferLength(source));
+      typedArraySet(new Uint8ArrayCtor(result), new Uint8ArrayCtor(source));
+      return result;
+    } catch (_) {
+      // Engines without the `detached` getter expose detachment here instead.
+      dataCloneError("Detached ArrayBuffers cannot be cloned");
+    }
   }
 
   function tryBoxed(valueOf, value) {
@@ -234,6 +191,12 @@
   function cloneObject(value, memory) {
     if (mapHas(memory, value)) return mapGet(memory, value);
 
+    // All observable checks below either accept an ordinary live Proxy as the
+    // documented limitation or use an internal slot. A revoked Proxy is
+    // unambiguously detectable: even [[GetPrototypeOf]] throws.
+    try { objectGetPrototypeOf(value); }
+    catch (_) { dataCloneError("Revoked Proxy objects cannot be cloned"); }
+
     // Values whose prototype can look ordinary but whose data lives in engine
     // slots are classified before the ordinary-object path.
     var boxed = tryBoxed(booleanValue, value);
@@ -262,6 +225,17 @@
     }
     if (hasBrand(symbolValue, value)) dataCloneError("Symbol objects cannot be cloned");
 
+    var platform = platformRecord(value);
+    if (platform !== undefined) {
+      if (platform.kind === "DOMException") {
+        var domData = platform.data;
+        var domResult = new DOMExceptionCtor(domData.message, domData.name);
+        mapSet(memory, value, domResult);
+        return domResult;
+      }
+      dataCloneError("This platform object cannot be cloned");
+    }
+
     if (arrayIsArray(value)) {
       // Array.isArray also returns true for a non-revoked Proxy around an
       // array. JavaScript exposes no general Proxy predicate; those proxies
@@ -279,23 +253,41 @@
     }
 
     if (arrayBufferIsView(value)) {
-      if (hasBrand(dataViewLength, value)) {
-        var clonedDataView = new DataViewCtor(
-          cloneObject(dataViewBuffer(value), memory),
-          dataViewOffset(value),
-          dataViewLength(value)
-        );
+      if (hasBrand(dataViewBuffer, value)) {
+        var dataBuffer = dataViewBuffer(value);
+        if (arrayBufferDetached && arrayBufferDetached(dataBuffer)) {
+          dataCloneError("Views on detached ArrayBuffers cannot be cloned");
+        }
+        var clonedDataView;
+        try {
+          clonedDataView = new DataViewCtor(
+            cloneObject(dataBuffer, memory),
+            dataViewOffset(value),
+            dataViewLength(value)
+          );
+        } catch (_) {
+          dataCloneError("Views on detached ArrayBuffers cannot be cloned");
+        }
         mapSet(memory, value, clonedDataView);
         return clonedDataView;
+      }
+      var typedBuffer = typedArrayBuffer(value);
+      if (arrayBufferDetached && arrayBufferDetached(typedBuffer)) {
+        dataCloneError("Views on detached ArrayBuffers cannot be cloned");
       }
       var tag = typedArrayTag(value);
       var Type = typedArrayConstructors[tag];
       if (!Type) dataCloneError("Unsupported typed array");
-      var clonedView = new Type(
-        cloneObject(typedArrayBuffer(value), memory),
-        typedArrayOffset(value),
-        typedArrayLength(value)
-      );
+      var clonedView;
+      try {
+        clonedView = new Type(
+          cloneObject(typedBuffer, memory),
+          typedArrayOffset(value),
+          typedArrayLength(value)
+        );
+      } catch (_) {
+        dataCloneError("Views on detached ArrayBuffers cannot be cloned");
+      }
       mapSet(memory, value, clonedView);
       return clonedView;
     }
@@ -341,22 +333,8 @@
     if (objectIsPrototypeOf(PromisePrototype, value)) {
       dataCloneError("Promise objects cannot be cloned");
     }
-    if (isUnsupportedHostObject(value)) {
-      dataCloneError("This platform object cannot be cloned");
-    }
 
     if (errorIsError(value)) return cloneError(value, memory);
-
-    var prototype;
-    try { prototype = objectGetPrototypeOf(value); }
-    catch (_) { dataCloneError("Proxy objects cannot be cloned"); }
-    for (var p = 0; p < unsupportedPrototypes.length; p++) {
-      if (objectIsPrototypeOf(unsupportedPrototypes[p], value)) {
-        // A genuine supported branded object returned above. Reaching its
-        // prototype here means a forged receiver or a detectable Proxy.
-        dataCloneError("This built-in or platform object cannot be cloned");
-      }
-    }
 
     // Ordinary instances deserialize as plain objects. This intentionally
     // drops a user-defined or null prototype; only enumerable own string keys
@@ -371,6 +349,9 @@
     var keys = objectKeys(source);
     for (var i = 0; i < keys.length; i++) {
       var key = keys[i];
+      // HTML step 26.4 re-checks ownership after every preceding getter: the
+      // key snapshot is not permission to serialize a property since deleted.
+      if (!objectHasOwn(source, key)) continue;
       // Reading invokes an enumerable own getter exactly once. Defining a data
       // property avoids the legacy __proto__ setter and discards descriptors,
       // as StructuredSerialize/Deserialize requires.
@@ -394,7 +375,20 @@
     if (options !== undefined && options !== null) {
       var transfer = options.transfer;
       if (transfer !== undefined) {
+        var transferType = typeof transfer;
+        if (transfer === null ||
+            (transferType !== "object" && transferType !== "function") ||
+            typeof transfer[Symbol.iterator] !== "function") {
+          throw new TypeError("transfer must be a sequence of objects");
+        }
         var transferList = arrayFrom(transfer);
+        for (var i = 0; i < transferList.length; i++) {
+          var itemType = typeof transferList[i];
+          if (transferList[i] === null ||
+              (itemType !== "object" && itemType !== "function")) {
+            throw new TypeError("transfer entries must be objects");
+          }
+        }
         if (transferList.length !== 0) {
           dataCloneError("transfer is not supported");
         }

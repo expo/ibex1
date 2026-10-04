@@ -24,8 +24,10 @@ fn run_wpt() -> Report {
         std::fs::read_to_string(root.join("structured-clone.any.js")).expect("pinned entry");
 
     let mut runtime = Hermes::new(DynamicCode::Closed).expect("runtime");
-    assert!(runtime.install_stdlib());
-    runtime.install_bindings().expect("bindings");
+    let context = ibex2::bindings::Context::new(ibex2::grant::GrantSet::none());
+    runtime
+        .install_runtime(ibex2::bindings::Groups::DEFAULT, &context)
+        .expect("bindings");
     runtime.harden().expect("harden");
     runtime.install_test_harness().expect("test harness");
     runtime

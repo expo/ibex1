@@ -991,7 +991,10 @@ const GLOBAL_PARTITION: &[(Option<crate::bindings::Groups>, &[usize])] = &[
         &[3, 5, 6, 7, 8, 9, 10],
     ),
     (Some(crate::bindings::Groups::CONSOLE), &[4]),
-    (Some(crate::bindings::Groups::PURE), &[11, 12, 13, 18, 19]),
+    (
+        Some(crate::bindings::Groups::PURE),
+        &[11, 12, 13, 18, 19, 20],
+    ),
     (Some(crate::bindings::Groups::CRYPTO), &[14, 17]),
     (Some(crate::bindings::Groups::ABORT), &[15, 16]),
 ];

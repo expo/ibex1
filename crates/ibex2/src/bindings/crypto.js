@@ -4,6 +4,7 @@
   "use strict";
   const fill = globalThis.__ibex2_get_random_values;
   const uuid = globalThis.__ibex2_random_uuid;
+  const brand = globalThis.__ibex2_brand || (value => value);
   delete globalThis.__ibex2_get_random_values;
   delete globalThis.__ibex2_random_uuid;
 
@@ -62,6 +63,7 @@
     {value: "Crypto", configurable: true});
   const crypto = Object.create(Crypto.prototype);
   brands.add(crypto);
+  brand(crypto, "Crypto");
   Object.freeze(crypto);
   globalThis.Crypto = Crypto;
   Object.defineProperty(globalThis, "crypto", {
