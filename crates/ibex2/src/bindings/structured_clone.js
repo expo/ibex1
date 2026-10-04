@@ -127,6 +127,28 @@
     ? uncurry(textDecoderEncodingDescriptor.get)
     : null;
 
+  // Engine Intl objects are platform objects too (not serializable), but only
+  // the Linux replacements write the brand registry; Apple's Hermes provides
+  // Intl natively. ECMA-402 requires each of these methods to throw on a value
+  // without the matching internal slots, so a captured call is a slot check.
+  var intlChecks = [];
+  if (typeof global.Intl === "object" && global.Intl !== null) {
+    var intlNames = ["Collator", "DateTimeFormat", "DisplayNames", "ListFormat",
+      "NumberFormat", "PluralRules", "RelativeTimeFormat", "Segmenter"];
+    for (var n = 0; n < intlNames.length; n++) {
+      var IntlCtor = global.Intl[intlNames[n]];
+      var resolved = typeof IntlCtor === "function" && IntlCtor.prototype
+        ? objectGetOwnPropertyDescriptor(IntlCtor.prototype, "resolvedOptions")
+        : null;
+      if (resolved && typeof resolved.value === "function") intlChecks.push(uncurry(resolved.value));
+    }
+    var IntlLocale = global.Intl.Locale;
+    var maximize = typeof IntlLocale === "function" && IntlLocale.prototype
+      ? objectGetOwnPropertyDescriptor(IntlLocale.prototype, "maximize")
+      : null;
+    if (maximize && typeof maximize.value === "function") intlChecks.push(uncurry(maximize.value));
+  }
+
   var errorIsError = Error.isError;
   var errorConstructors = {
     Error: Error,
@@ -387,6 +409,9 @@
     if (hasBrand(textEncoderEncode, value) ||
         hasBrand(textDecoderEncoding, value)) {
       dataCloneError("Text codec objects cannot be cloned");
+    }
+    for (var c = 0; c < intlChecks.length; c++) {
+      if (hasBrand(intlChecks[c], value)) dataCloneError("Intl objects cannot be cloned");
     }
     if (objectIsPrototypeOf(PromisePrototype, value)) {
       dataCloneError("Promise objects cannot be cloned");
