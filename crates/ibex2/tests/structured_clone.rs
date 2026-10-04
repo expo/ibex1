@@ -202,6 +202,29 @@ fn platform_identity_is_private_and_unsupported_values_throw_data_clone_error() 
         assert(exceptionClone instanceof DOMException, "DOMException clone brand");
         assert(exceptionClone.message === "message" && exceptionClone.name === "AbortError");
 
+        const quotaError = new QuotaExceededError("storage full", {
+          quota: 12, requested: 34
+        });
+        const quotaClone = structuredClone(quotaError);
+        assert(quotaClone !== quotaError, "QuotaExceededError identity kept");
+        assert(quotaClone instanceof QuotaExceededError, "QuotaExceededError clone brand");
+        assert(quotaClone instanceof DOMException, "QuotaExceededError DOMException brand");
+        assert(quotaClone.message === "storage full" &&
+          quotaClone.name === "QuotaExceededError", "QuotaExceededError base fields");
+        assert(quotaClone.quota === 12 && quotaClone.requested === 34,
+          "QuotaExceededError numeric fields");
+        const nullQuotaClone = structuredClone(new QuotaExceededError("unknown"));
+        assert(nullQuotaClone instanceof QuotaExceededError, "null quota clone brand");
+        assert(nullQuotaClone.quota === null && nullQuotaClone.requested === null,
+          "QuotaExceededError null fields");
+        let messageConversions = 0;
+        const coercedQuota = new QuotaExceededError({
+          toString() { messageConversions++; return "converted"; }
+        });
+        const coercedQuotaClone = structuredClone(coercedQuota);
+        assert(coercedQuotaClone.message === "converted", "converted quota message");
+        assert(messageConversions === 1, "quota message was converted again while cloning");
+
         class UserClass { constructor() { this.x = 1; } }
         const userClone = structuredClone(new UserClass());
         assert(userClone.x === 1 && Object.getPrototypeOf(userClone) === Object.prototype);

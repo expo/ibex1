@@ -95,6 +95,13 @@
         throw new RangeError("Invalid quota or requested size");
       }
       quotaSlots.set(this, values);
+      // DOMException registered the base serialization record. Replace it
+      // only after the derived slots exist so structuredClone can preserve
+      // both the derived brand and its nullable fields.
+      brand(this, "QuotaExceededError", {
+        message: state(this).message, name: "QuotaExceededError",
+        quota: values.quota, requested: values.requested
+      });
     }
     get quota() { return quotaState(this).quota; }
     get requested() { return quotaState(this).requested; }

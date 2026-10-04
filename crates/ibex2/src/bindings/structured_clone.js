@@ -126,6 +126,7 @@
   };
   var StringCtor = String;
   var DOMExceptionCtor = global.DOMException;
+  var QuotaExceededErrorCtor = global.QuotaExceededError;
   // Headers creates the one bootstrap-only identity registry before any
   // platform factory runs. Every factory captures its writer. This final PURE
   // script captures the reader and erases both helpers before application
@@ -232,6 +233,15 @@
         var domResult = new DOMExceptionCtor(domData.message, domData.name);
         mapSet(memory, value, domResult);
         return domResult;
+      }
+      if (platform.kind === "QuotaExceededError") {
+        var quotaData = platform.data;
+        var quotaOptions = {};
+        if (quotaData.quota !== null) quotaOptions.quota = quotaData.quota;
+        if (quotaData.requested !== null) quotaOptions.requested = quotaData.requested;
+        var quotaResult = new QuotaExceededErrorCtor(quotaData.message, quotaOptions);
+        mapSet(memory, value, quotaResult);
+        return quotaResult;
       }
       dataCloneError("This platform object cannot be cloned");
     }
