@@ -3,7 +3,7 @@
 //! The JavaScript binding stores these values behind runtime-owned handles;
 //! only an explicit export of an extractable key exposes its material.
 //!
-//! @ref LLP 0059.000#314-cryptosubtle--pure-ungated-author-required — opaque keys and the L2a algorithm set
+//! @ref LLP 0059.000#314-cryptosubtle--pure-ungated-author-required — opaque keys and the L2 algorithm set
 
 #[cfg(feature = "crypto")]
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};

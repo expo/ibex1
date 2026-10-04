@@ -198,14 +198,14 @@ fn excluded(suite: &str, name: &str) -> Option<&'static str> {
             Some("the fixture's mismatch key uses out-of-scope AES-CBC")
         }
         "hkdf" | "pbkdf2" if name.contains("with wrong (ECDH) key") => {
-            Some("the fixture's wrong-key setup requires L2b ECDH")
+            Some("the fixture's wrong-key setup requires out-of-scope ECDH")
         }
         "hkdf" | "pbkdf2"
             if name.contains("Derived key of type name: AES-CBC")
                 || name.contains("Derived key of type name: AES-CTR")
                 || name.contains("Derived key of type name: AES-KW") =>
         {
-            Some("the requested derived-key algorithm is outside L2a")
+            Some("the requested derived-key algorithm is outside L2")
         }
         "hkdf" | "pbkdf2" if name.contains("Derived key of type name: AES-GCM length: 192") => {
             Some("ring does not expose AES-GCM-192")
@@ -215,7 +215,7 @@ fn excluded(suite: &str, name: &str) -> Option<&'static str> {
                 || upper.contains("{NAME: AES-CBC")
                 || upper.contains("{NAME: AES-KW") =>
         {
-            Some("the requested AES algorithm is outside L2a")
+            Some("the requested AES algorithm is outside L2")
         }
         "import-export" if name.contains("192 bits") && upper.contains("AES-GCM") => {
             Some("ring does not expose AES-GCM-192")
