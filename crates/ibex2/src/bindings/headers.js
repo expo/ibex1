@@ -15,13 +15,19 @@
   // shared by every later platform factory. structured_clone.js captures the
   // reader after all selected groups have evaluated, then deletes both names.
   // @ref LLP 0059.000#310-atob--btoa-structuredclone-blob--file--formdata-customevent--pure-ungated — platform values are classified by private identity, never public shape
-  var platformBrands = new WeakMap();
+  var FunctionCall = Function.prototype.call;
+  var FunctionBind = Function.prototype.bind;
+  function uncurry(fn) { return FunctionCall.call(FunctionBind, FunctionCall, fn); }
+  var WeakMapCtor = WeakMap;
+  var weakMapGet = uncurry(WeakMapCtor.prototype.get);
+  var weakMapSet = uncurry(WeakMapCtor.prototype.set);
+  var platformBrands = new WeakMapCtor();
   global.__ibex2_brand = function (value, kind, data) {
-    platformBrands.set(value, { kind: kind, data: data });
+    weakMapSet(platformBrands, value, { kind: kind, data: data });
     return value;
   };
   global.__ibex2_platform_brand = function (value) {
-    return platformBrands.get(value);
+    return weakMapGet(platformBrands, value);
   };
   var brand = global.__ibex2_brand;
 

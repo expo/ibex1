@@ -704,6 +704,47 @@ fn borrowed_unhardened_runtime_cannot_forge_event_trust_through_intrinsics() {
 }
 
 #[test]
+fn borrowed_unhardened_runtime_cannot_recover_or_write_platform_brand_registry() {
+    let consumer = BareConsumer::new(Groups::PURE);
+    assert_eq!(
+        consumer.eval(
+            r#"
+            var originalWeakGet = WeakMap.prototype.get;
+            var originalWeakSet = WeakMap.prototype.set;
+            var capturedRegistry = null;
+            var getCalls = 0;
+            var setCalls = 0;
+            WeakMap.prototype.get = function (key) {
+              getCalls++;
+              capturedRegistry = this;
+              return originalWeakGet.call(this, key);
+            };
+            WeakMap.prototype.set = function (key, value) {
+              setCalls++;
+              capturedRegistry = this;
+              return originalWeakSet.call(this, key, value);
+            };
+
+            var plain = { marker: 1 };
+            structuredClone(plain);
+            new Headers();
+            if (capturedRegistry) {
+              originalWeakSet.call(capturedRegistry, plain, {
+                kind: 'DOMException',
+                data: { name: 'AbortError', message: 'forged' }
+              });
+            }
+            var clone = structuredClone(plain);
+            [getCalls, setCalls, capturedRegistry === null, clone !== plain,
+             Object.getPrototypeOf(clone) === Object.prototype,
+             clone.marker === 1, clone instanceof DOMException].join('|');
+            "#,
+        ),
+        "0|0|true|true|true|true|false"
+    );
+}
+
+#[test]
 fn dropping_the_last_context_owner_cancels_fetch_without_a_late_wake() {
     use ibex2::host::Host;
     use ibex2::stdlib::fetch::{Request, StreamingResponse, Transport};
