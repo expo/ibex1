@@ -5,7 +5,7 @@
 **Systems:** CapSec, Module Loader, Runtime, Host ABI, Build
 **Author:** Charlie Cheever / Claude (Fable 5)
 **Date:** 2026-08-29
-**Revised:** 2026-09-11 (§5: selected Linux Intl publication qualified in Snapback2 0.0.24; broader conformance boundaries remain open); 2026-09-11 (§5: selected Intl option-alias and locale-case callable limits, and TimeClip semantics); 2026-09-11 (§4, §5: Linux native Intl completion over vanilla Hermes, narrow post-install intrinsic admission, and the bounded exotic-constructor limitation); 2026-09-11 (§5: Linux vanilla-Hermes artifact, qualified scope, and Intl limitation); 2026-09-07 (app paths, rename source authority, and SQLite); 2026-08-30 (§2, §8: five families — `secret.keep` (LLP 0069) and `storage.kv` (LLP 0070) were added to the corpus without patching this page, which the LLP 0070 review caught; §8 now states the author-required form of a call site both arrived under) 2026-08-29 (accepted by Charlie Cheever, the same day) 2026-08-29 (§7: the tests the review added; §2 and §3 after the Grok 4.6 / Codex review: package identity is the bound install; fs paths are checked as realized as well as as spelt)
+**Revised:** 2026-10-04 (§2: `net.websocket` is a built family; the `net.fetch` subdomain grant — both upstreamed from exact2's vendored copy); 2026-09-11 (§5: selected Linux Intl publication qualified in Snapback2 0.0.24; broader conformance boundaries remain open); 2026-09-11 (§5: selected Intl option-alias and locale-case callable limits, and TimeClip semantics); 2026-09-11 (§4, §5: Linux native Intl completion over vanilla Hermes, narrow post-install intrinsic admission, and the bounded exotic-constructor limitation); 2026-09-11 (§5: Linux vanilla-Hermes artifact, qualified scope, and Intl limitation); 2026-09-07 (app paths, rename source authority, and SQLite); 2026-08-30 (§2, §8: five families — `secret.keep` (LLP 0069) and `storage.kv` (LLP 0070) were added to the corpus without patching this page, which the LLP 0070 review caught; §8 now states the author-required form of a call site both arrived under) 2026-08-29 (accepted by Charlie Cheever, the same day) 2026-08-29 (§7: the tests the review added; §2 and §3 after the Grok 4.6 / Codex review: package identity is the bound install; fs paths are checked as realized as well as as spelt)
 **Related:** LLP 0057 (§3.1 the boundary split, §4, and OQ2 — the decision this states), LLP 0059.000 (§4 — the capability families), LLP 0062 (the measurements: the escape inventory and the freeze), LLP 0065 (§4 — grants and resolution), LLP 0058.000.000 (the adapter protocol the runtime follows), LLP 0060 and LLP 0058.000 (superseded by this document for the model), LLP 0058.000.001 (tombstoned — the program this replaces with tests)
 
 ## Summary
@@ -55,11 +55,12 @@ because of how it is spelt, and never to a package because of what its own
 naming something that does not exist is refused before any module runs. No
 manifest means no authority.
 
-Six families exist, each a parameterized question:
+Seven families exist, each a parameterized question:
 
 | family | grant | the question |
 |---|---|---|
-| `net.fetch` | origin | may this request go to this origin? |
+| `net.fetch` | origin, or `scheme://*.domain` | may this request go to this origin? |
+| `net.websocket` | origin | may a socket open to this origin? (LLP 0059.000 §3.12) |
 | `fs.read` / `fs.write` | path prefix | may this path be read, or written? |
 | `env.read` | variable name | is this variable in the snapshot? |
 | `secret.keep` | name | may this secret be read, replaced, and forgotten? (LLP 0069) |
@@ -68,10 +69,28 @@ Six families exist, each a parameterized question:
 
 `process.env` is the model in one object: a snapshot of exactly the granted
 variables, so an ungranted one is undefined because it is absent, not because
-a check refused it. LLP 0059.000 §4 still specifies `net.websocket` for a
-later call site (LLP 0059 §7) — and `storage.local`, when its JavaScript call site arrives, binds
+a check refused it. `storage.local`, when its JavaScript call site arrives, binds
 over a `storage.kv` scope rather than becoming a family of its own
 (LLP 0070 §4).
+
+**The subdomain grant.** A `net.fetch` grant may name every host under one
+domain: `net.fetch https://*.host.example` admits `a.host.example` and
+`b.c.host.example` at that scheme and port, and never `host.example` itself.
+`*` must be the whole leftmost label and appear nowhere else; the domain
+needs two labels or more and cannot be an address; `net.websocket` takes no
+pattern. Hosts compare as the URL parser normalized them (lowercase,
+punycode), and a trailing dot does not match. It is its own grant kind, so
+an exact grant never matches as a pattern. Neither kind of origin grant may
+carry a user or password: `https://api.example.com@evil.com` is the origin
+`evil.com`, and a line that reads as one host while admitting another is
+refused. There is no public-suffix check:
+`*.co.uk` parses, and the manifest's author is trusted to name a domain they
+mean. Because one grant now admits sibling hosts, a followed redirect that
+changes origin drops `Authorization`, `Cookie`, and `Proxy-Authorization`
+(LLP 0059.000 §3.5). Charlie, 2026-09-26, for an AT Protocol account that
+lives on one of many hosts: *"a wildcard grant is probably worth it actually,
+and the developer should just use it carefully."* Built first in exact2's
+vendored copy and upstreamed 2026-10-04.
 
 ## 3. The check
 
