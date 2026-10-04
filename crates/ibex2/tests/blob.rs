@@ -425,6 +425,38 @@ fn fetch_request_blob_and_response_blob_use_content_types_and_bytes() {
 }
 
 #[test]
+fn request_rejects_get_and_head_bodies() {
+    let output = run_fetch_module(
+        "request-get-head-body",
+        "https://example.invalid",
+            r#"
+            const sync = [];
+            for (const init of [
+              {body:new Blob(['x'])},
+              {method:'HEAD', body:new Uint8Array([1])},
+              {method:'get', body:''}
+            ]) {
+              try { new Request('https://example.invalid/', init); sync.push(false); }
+              catch (error) { sync.push(error instanceof TypeError); }
+            }
+            const form = new FormData();
+            form.append('a', 'b');
+            Promise.all([
+              fetch('https://example.invalid/', {body:form}).then(() => false, e => e instanceof TypeError),
+              fetch('https://example.invalid/', {method:'HEAD', body:new URLSearchParams('a=b')})
+                .then(() => false, e => e instanceof TypeError)
+            ]).then(asyncErrors => {
+              console.log(JSON.stringify({sync, asyncErrors}));
+            });
+            "#,
+        );
+    assert_eq!(
+        output,
+        [r#"{"sync":[true,true,true],"asyncErrors":[true,true]}"#]
+    );
+}
+
+#[test]
 fn fetch_form_data_uses_rust_multipart_and_preserves_authored_content_type() {
     let (origin, server) = capture("text/plain", b"ok");
     let output = run_fetch_module(

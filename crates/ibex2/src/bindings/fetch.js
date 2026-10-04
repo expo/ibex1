@@ -210,6 +210,9 @@
     var body;
     try {
       body = init.body === undefined && inherited ? inherited.body : convertBody(init.body, headers);
+      if (body !== undefined && (method.toUpperCase() === "GET" || method.toUpperCase() === "HEAD")) {
+        throw new TypeError("Request with GET/HEAD method cannot have a body");
+      }
     } catch (error) {
       freeHeaders(headers._handle);
       throw error;
