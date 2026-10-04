@@ -57,13 +57,19 @@ pub enum HostTask {
 /// because each numbers its own tasks from 1. That is not a theoretical
 /// concern — it showed up the moment two runtimes existed at once.
 pub struct CompletionQueue {
-    ready: Mutex<VecDeque<HostTask>>,
+    ready: Mutex<ReadyState>,
     /// Lets an embedder block until there is something to pump instead of
     /// spinning. A runtime that polls in a loop burns a core to do nothing,
     /// which is the default failure mode of this design.
     signal: Condvar,
     wake: Mutex<WakeState>,
     wake_drained: Condvar,
+}
+
+#[derive(Default)]
+struct ReadyState {
+    tasks: VecDeque<HostTask>,
+    closed: bool,
 }
 
 #[derive(Default)]
@@ -115,7 +121,7 @@ impl Default for CompletionQueue {
 impl std::fmt::Debug for CompletionQueue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CompletionQueue")
-            .field("ready", &self.ready)
+            .field("ready", &self.ready.lock().map(|ready| ready.tasks.len()))
             .finish_non_exhaustive()
     }
 }
@@ -140,6 +146,11 @@ impl CompletionQueue {
     /// claimed by a publisher. Returning is the barrier: no later completion
     /// can call into an executor whose owner has gone away.
     fn close_wake(&self) {
+        {
+            let mut ready = self.ready.lock().expect("completion queue poisoned");
+            ready.closed = true;
+        }
+        self.signal.notify_all();
         let queue = std::ptr::from_ref(self) as usize;
         let claimed_here = CLAIMED_WAKES.with(|claimed| {
             claimed
@@ -169,10 +180,16 @@ impl CompletionQueue {
 
     /// Admit a task to the FIFO. Order of admission is the order of delivery.
     pub fn admit(&self, task: HostTask) {
-        self.ready
-            .lock()
-            .expect("completion queue poisoned")
-            .push_back(task);
+        {
+            let mut ready = self.ready.lock().expect("completion queue poisoned");
+            // Queue closure and insertion share this lock. A result offered
+            // after closure is dropped here, including any owned payload.
+            // @ref LLP 0058.000.000#9-teardown-and-lifecycle — late worker results cannot publish after Closing
+            if ready.closed {
+                return;
+            }
+            ready.tasks.push_back(task);
+        }
         self.signal.notify_all();
         let wake = {
             let mut state = self.wake.lock().expect("completion wake poisoned");
@@ -207,11 +224,16 @@ impl CompletionQueue {
         self.ready
             .lock()
             .expect("completion queue poisoned")
+            .tasks
             .pop_front()
     }
 
     pub fn len(&self) -> usize {
-        self.ready.lock().expect("completion queue poisoned").len()
+        self.ready
+            .lock()
+            .expect("completion queue poisoned")
+            .tasks
+            .len()
     }
 
     /// Block until at least one completion is ready, or the timeout elapses.
@@ -221,14 +243,14 @@ impl CompletionQueue {
     /// work. Returns whether anything is ready.
     pub fn wait(&self, timeout: std::time::Duration) -> bool {
         let ready = self.ready.lock().expect("completion queue poisoned");
-        if !ready.is_empty() {
+        if !ready.tasks.is_empty() {
             return true;
         }
         let (ready, _) = self
             .signal
             .wait_timeout(ready, timeout)
             .expect("completion queue poisoned");
-        !ready.is_empty()
+        !ready.tasks.is_empty()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -1198,5 +1220,38 @@ mod tests {
         first.join().unwrap();
         second.join().unwrap();
         assert!(state.is_shutdown());
+    }
+
+    #[test]
+    fn completion_sampled_before_shutdown_cannot_publish_after_queue_closure() {
+        let state = Arc::new(RuntimeState::new(Box::new(
+            crate::transport::dev_tcp::DevTcpTransport::new(),
+        )));
+        let owner = OwnerLease::new(Arc::clone(&state));
+        let wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed_wakes = Arc::clone(&wakes);
+        state.queue.set_wake(Some(Arc::new(move || {
+            observed_wakes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })));
+        let sampled_then_released = Arc::new(std::sync::Barrier::new(2));
+        let worker_barrier = Arc::clone(&sampled_then_released);
+        let worker_state = Arc::clone(&state);
+        let worker = std::thread::spawn(move || {
+            assert!(!worker_state.is_shutdown());
+            worker_barrier.wait();
+            worker_barrier.wait();
+            worker_state
+                .queue
+                .complete(1, Ok(HostValue::Bytes(vec![1, 2, 3])));
+        });
+
+        sampled_then_released.wait();
+        drop(owner);
+        assert!(state.is_shutdown());
+        sampled_then_released.wait();
+        worker.join().unwrap();
+
+        assert!(state.queue.is_empty(), "late completion entered the FIFO");
+        assert_eq!(wakes.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 }
