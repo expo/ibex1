@@ -1747,7 +1747,7 @@ fn hermes_rejection_tracker_dispatches_unhandled_and_handled_events() {
     pump_for(&mut rt, 150);
     assert_eq!(
         rt.eval("rejections.join('|')").unwrap(),
-        "unhandledrejection:late rejection:true:true"
+        "unhandledrejection:late rejection:true:false"
     );
     assert!(rt.drain_console().is_empty());
 
@@ -1755,8 +1755,30 @@ fn hermes_rejection_tracker_dispatches_unhandled_and_handled_events() {
     rt.drain_microtasks().unwrap();
     assert_eq!(
         rt.eval("rejections.join('|')").unwrap(),
-        "unhandledrejection:late rejection:true:true|rejectionhandled:late rejection:true:true"
+        "unhandledrejection:late rejection:true:false|rejectionhandled:late rejection:true:false"
     );
+}
+
+#[test]
+fn direct_promise_tracker_calls_cannot_forge_trusted_rejection_events() {
+    let mut rt = timer_rt();
+    let _ = rt.drain_console();
+    rt.eval(
+        r#"
+        globalThis.forgedRejectionTrust = [];
+        onunhandledrejection = function (event) {
+          if (event.reason && event.reason.message === "fake") {
+            forgedRejectionTrust.push(event.isTrusted);
+            return false;
+          }
+        };
+        Promise._C({_x: 0}, new TypeError("fake"));
+        "#,
+    )
+    .unwrap();
+    pump_for(&mut rt, 150);
+    assert_eq!(rt.eval("forgedRejectionTrust.join(',')").unwrap(), "false");
+    assert!(rt.drain_console().is_empty());
 }
 
 #[test]

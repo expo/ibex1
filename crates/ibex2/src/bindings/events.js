@@ -428,11 +428,12 @@
       var event = new PromiseRejectionEvent("unhandledrejection", {
         cancelable: true, promise: promise, reason: reason
       });
-      if (dispatch(global, event, true)) nativeReport(errorText(reason));
+      // @ref LLP 0059.000#310-atob--btoa-structuredclone-blob-customevent--pure-ungated — stock Hermes exposes callable Promise tracker slots, so their events cannot authenticate host provenance
+      if (dispatch(global, event, false)) nativeReport(errorText(reason));
     },
     onHandled: function (_, reason, promise) {
       dispatch(global,
-        new PromiseRejectionEvent("rejectionhandled", { promise: promise, reason: reason }), true);
+        new PromiseRejectionEvent("rejectionhandled", { promise: promise, reason: reason }), false);
     }
   };
 })(globalThis);
