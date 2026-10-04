@@ -91,8 +91,7 @@ fn run_file(directory: &str, name: &str, blob_support: bool) -> Vec<Outcome> {
 
 fn engine_unavailable(outcome: &Outcome) -> bool {
     !outcome.float16_available
-        && outcome.name
-            == "Passing a Float16Array as element of the blobParts array should work."
+        && outcome.name == "Passing a Float16Array as element of the blobParts array should work."
         && outcome.message.contains("Float16Array' doesn't exist")
 }
 

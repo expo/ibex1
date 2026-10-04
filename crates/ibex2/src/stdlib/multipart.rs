@@ -163,6 +163,8 @@ impl EncodedMultipart {
 
     /// Encode with a caller-supplied boundary. This is public for deterministic
     /// protocol tests and consumers that have already generated a boundary.
+    /// Boundaries must use RFC 2046 `bchars`, be 1–70 bytes, and not end in a
+    /// space. [`Self::content_type`] always quotes the validated value.
     pub fn with_boundary(
         form: &FormData,
         boundary: impl Into<String>,
@@ -200,7 +202,9 @@ impl EncodedMultipart {
     }
 
     pub fn content_type(&self) -> String {
-        format!("multipart/form-data; boundary={}", self.boundary)
+        // RFC 2046 bchars exclude quote and backslash, so a validated value is
+        // safe to quote without another escaping rule.
+        format!("multipart/form-data; boundary=\"{}\"", self.boundary)
     }
 
     /// The exact number of bytes that [`Self::into_bytes`] returns.
@@ -443,7 +447,7 @@ last\r\n\
         assert_eq!(encoded.len(), expected.len());
         assert_eq!(
             encoded.content_type(),
-            "multipart/form-data; boundary=fixed-boundary"
+            "multipart/form-data; boundary=\"fixed-boundary\""
         );
     }
 
@@ -490,6 +494,34 @@ last\r\n\
         validate_boundary(&second).unwrap();
         assert_ne!(first, second);
         assert_eq!(first.len(), 42);
+    }
+
+    #[test]
+    fn caller_boundaries_are_rfc_2046_bchars_of_length_one_through_seventy() {
+        let form = FormData::new();
+        let all_bchars = "AZaz09'()+_,-./:=? internal space";
+        let encoded = EncodedMultipart::with_boundary(&form, all_bchars).unwrap();
+        assert_eq!(
+            encoded.content_type(),
+            format!("multipart/form-data; boundary=\"{all_bchars}\"")
+        );
+        assert!(EncodedMultipart::with_boundary(&form, "x".repeat(70)).is_ok());
+
+        for invalid in [
+            String::new(),
+            "x".repeat(71),
+            "trailing ".into(),
+            "quote\"".into(),
+            "back\\slash".into(),
+            "star*".into(),
+            "line\r\nbreak".into(),
+            "snow-雪".into(),
+        ] {
+            assert_eq!(
+                EncodedMultipart::with_boundary(&form, invalid),
+                Err(MultipartError::InvalidBoundary)
+            );
+        }
     }
 
     #[test]

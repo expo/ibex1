@@ -36,6 +36,7 @@ fn rust_form_data_reaches_fetch_as_the_exact_multipart_body() {
         let boundary = content_type
             .strip_prefix("multipart/form-data; boundary=")
             .unwrap()
+            .trim_matches('"')
             .to_string();
         let mut body = vec![0; length];
         stream.read_exact(&mut body).unwrap();

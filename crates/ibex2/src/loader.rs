@@ -1001,9 +1001,7 @@ const GLOBAL_PARTITION: &[(Option<crate::bindings::Groups>, &[usize])] = &[
     (Some(crate::bindings::Groups::ABORT), &[15, 16]),
     (Some(crate::bindings::Groups::BLOB), &[20, 21, 22]),
     (
-        Some(
-            crate::bindings::Groups::BLOB.union(crate::bindings::Groups::FETCH),
-        ),
+        Some(crate::bindings::Groups::BLOB.union(crate::bindings::Groups::FETCH)),
         &[23, 24],
     ),
 ];

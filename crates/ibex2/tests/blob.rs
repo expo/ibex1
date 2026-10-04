@@ -480,7 +480,7 @@ fn request_rejects_get_and_head_bodies() {
     let output = run_fetch_module(
         "request-get-head-body",
         "https://example.invalid",
-            r#"
+        r#"
             const sync = [];
             for (const init of [
               {body:new Blob(['x'])},
@@ -500,7 +500,7 @@ fn request_rejects_get_and_head_bodies() {
               console.log(JSON.stringify({sync, asyncErrors}));
             });
             "#,
-        );
+    );
     assert_eq!(
         output,
         [r#"{"sync":[true,true,true],"asyncErrors":[true,true]}"#]
@@ -575,11 +575,7 @@ fn fetch_without_blob_matches_the_pre_lane_surface_and_wire_behavior() {
     let cases: [(&str, &str, &[u8]); 5] = [
         ("string", "'ordinary request'", b"ordinary request"),
         ("bytes", "new Uint8Array([1,2,3])", &[1, 2, 3]),
-        (
-            "search-params",
-            "new URLSearchParams([['a b','c+d']])",
-            b"",
-        ),
+        ("search-params", "new URLSearchParams([['a b','c+d']])", b""),
         ("number", "123", b""),
         ("object", "({a:1})", b""),
     ];
@@ -605,8 +601,8 @@ fn fetch_without_blob_matches_the_pre_lane_surface_and_wire_behavior() {
         );
         let (head, body) = server.join().unwrap();
         assert_eq!(body, expected_body, "{name}");
-        let expected_type = (!expected_body.is_empty())
-            .then_some("application/x-www-form-urlencoded");
+        let expected_type =
+            (!expected_body.is_empty()).then_some("application/x-www-form-urlencoded");
         assert_eq!(header(&head, "content-type"), expected_type, "{name}");
     }
 }
