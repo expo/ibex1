@@ -138,6 +138,7 @@
     URIError: URIError
   };
   var StringCtor = String;
+  var TypeErrorPrototype = TypeError.prototype;
   var DOMExceptionCtor = global.DOMException;
   var QuotaExceededErrorCtor = global.QuotaExceededError;
   // Headers creates the one bootstrap-only identity registry before any
@@ -161,17 +162,27 @@
     return typeof platformBrand === "function" ? platformBrand(value) : undefined;
   }
 
+  function mapFallbackDetachedError(error, message) {
+    if (objectIsPrototypeOf(TypeErrorPrototype, error)) dataCloneError(message);
+    throw error;
+  }
+
   function copyArrayBuffer(source) {
-    if (arrayBufferDetached && arrayBufferDetached(source)) {
-      dataCloneError("Detached ArrayBuffers cannot be cloned");
-    }
-    try {
+    if (arrayBufferDetached) {
+      if (arrayBufferDetached(source)) {
+        dataCloneError("Detached ArrayBuffers cannot be cloned");
+      }
       var result = new ArrayBufferCtor(arrayBufferLength(source));
       typedArraySet(new Uint8ArrayCtor(result), new Uint8ArrayCtor(source));
       return result;
-    } catch (_) {
+    }
+    try {
+      var fallbackResult = new ArrayBufferCtor(arrayBufferLength(source));
+      typedArraySet(new Uint8ArrayCtor(fallbackResult), new Uint8ArrayCtor(source));
+      return fallbackResult;
+    } catch (error) {
       // Engines without the `detached` getter expose detachment here instead.
-      dataCloneError("Detached ArrayBuffers cannot be cloned");
+      mapFallbackDetachedError(error, "Detached ArrayBuffers cannot be cloned");
     }
   }
 
@@ -278,38 +289,58 @@
     if (arrayBufferIsView(value)) {
       if (hasBrand(dataViewBuffer, value)) {
         var dataBuffer = dataViewBuffer(value);
-        if (arrayBufferDetached && arrayBufferDetached(dataBuffer)) {
-          dataCloneError("Views on detached ArrayBuffers cannot be cloned");
-        }
         var clonedDataView;
-        try {
+        if (arrayBufferDetached) {
+          if (arrayBufferDetached(dataBuffer)) {
+            dataCloneError("Views on detached ArrayBuffers cannot be cloned");
+          }
           clonedDataView = new DataViewCtor(
             cloneObject(dataBuffer, memory),
             dataViewOffset(value),
             dataViewLength(value)
           );
-        } catch (_) {
-          dataCloneError("Views on detached ArrayBuffers cannot be cloned");
+        } else {
+          try {
+            clonedDataView = new DataViewCtor(
+              cloneObject(dataBuffer, memory),
+              dataViewOffset(value),
+              dataViewLength(value)
+            );
+          } catch (error) {
+            mapFallbackDetachedError(
+              error, "Views on detached ArrayBuffers cannot be cloned"
+            );
+          }
         }
         mapSet(memory, value, clonedDataView);
         return clonedDataView;
       }
       var typedBuffer = typedArrayBuffer(value);
-      if (arrayBufferDetached && arrayBufferDetached(typedBuffer)) {
-        dataCloneError("Views on detached ArrayBuffers cannot be cloned");
-      }
       var tag = typedArrayTag(value);
       var Type = typedArrayConstructors[tag];
       if (!Type) dataCloneError("Unsupported typed array");
       var clonedView;
-      try {
+      if (arrayBufferDetached) {
+        if (arrayBufferDetached(typedBuffer)) {
+          dataCloneError("Views on detached ArrayBuffers cannot be cloned");
+        }
         clonedView = new Type(
           cloneObject(typedBuffer, memory),
           typedArrayOffset(value),
           typedArrayLength(value)
         );
-      } catch (_) {
-        dataCloneError("Views on detached ArrayBuffers cannot be cloned");
+      } else {
+        try {
+          clonedView = new Type(
+            cloneObject(typedBuffer, memory),
+            typedArrayOffset(value),
+            typedArrayLength(value)
+          );
+        } catch (error) {
+          mapFallbackDetachedError(
+            error, "Views on detached ArrayBuffers cannot be cloned"
+          );
+        }
       }
       mapSet(memory, value, clonedView);
       return clonedView;
