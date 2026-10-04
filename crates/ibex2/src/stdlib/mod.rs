@@ -9,7 +9,6 @@ pub mod console;
 pub mod crypto;
 pub mod fetch;
 pub mod fs;
-pub mod headers_ops;
 #[cfg(all(feature = "hermes", target_os = "linux"))]
 pub(crate) mod intl;
 #[cfg(all(feature = "hermes", target_os = "linux"))]

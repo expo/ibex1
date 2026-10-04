@@ -9,6 +9,8 @@
 use crate::{grant::GrantSet, task::RuntimeState};
 use std::{ffi::c_void, fmt, ops, sync::Arc, time::Duration};
 
+pub(crate) mod headers_ops;
+
 pub const JSI_SOURCE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/engine/ibex2_jsi.cc");
 pub const JSI_HEADER: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/include/ibex2_jsi.h");
 pub const HARDEN_SOURCE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/bindings/harden.js");

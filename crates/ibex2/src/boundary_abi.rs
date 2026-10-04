@@ -255,7 +255,7 @@ fn dispatch(
     args: &[HostArg],
     state: Option<&crate::task::RuntimeState>,
 ) -> Result<HostValue, HostError> {
-    if let Some(result) = crate::stdlib::headers_ops::dispatch(op as u32, args, state) {
+    if let Some(result) = crate::bindings::headers_ops::dispatch(op as u32, args, state) {
         return result;
     }
     if let Some(level) = op.console_level() {
