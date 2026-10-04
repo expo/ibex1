@@ -5,6 +5,7 @@
 //! rather than a limit: something had to move.
 
 use super::*;
+use crate::host;
 
 #[test]
 fn host_evaluation_works() {
@@ -721,10 +722,9 @@ fn javascript_fetch_uses_the_hosts_endowed_transport() {
 
     let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let grants = crate::grant::GrantSet::parse("net.fetch https://endowed.example\n").unwrap();
-    let bindings = crate::host::Host::with_transport(Box::new(RecordingTransport(
-        std::sync::Arc::clone(&calls),
-    )))
-    .endow(grants);
+    let bindings =
+        host::Host::with_transport(Box::new(RecordingTransport(std::sync::Arc::clone(&calls))))
+            .endow(grants);
     let context = crate::bindings::Context::from_bindings(&bindings);
     let mut rt = Hermes::new(DynamicCode::Closed).unwrap();
     rt.install_runtime(crate::bindings::Groups::DEFAULT, &context)

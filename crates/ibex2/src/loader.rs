@@ -1008,7 +1008,7 @@ pub fn allowed_globals(groups: crate::bindings::Groups) -> Vec<&'static str> {
                 .find(|(_, members)| members.contains(&index))
                 .and_then(|(group, _)| {
                     group
-                        .map_or(true, |group| groups.contains(group))
+                        .is_none_or(|group| groups.contains(group))
                         .then_some(*name)
                 })
         })

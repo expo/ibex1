@@ -23,7 +23,10 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
 
-use crate::boundary::{HostError, HostValue};
+use crate::{
+    boundary::{HostError, HostValue},
+    host,
+};
 
 /// A completed unit of off-thread work, waiting to be delivered to the engine.
 #[derive(Debug)]
@@ -190,7 +193,7 @@ pub struct RuntimeState {
     /// The exact transport and stores selected by the host endowment. Keeping
     /// the complete value here makes later binding families use those same
     /// components instead of reconstructing platform defaults.
-    endowment: crate::host::Bindings,
+    endowment: host::Bindings,
 }
 
 struct StoredResponse {
@@ -201,12 +204,11 @@ struct StoredResponse {
 
 impl RuntimeState {
     pub fn new(transport: Box<dyn crate::stdlib::fetch::Transport>) -> Self {
-        let bindings =
-            crate::host::Host::with_transport(transport).endow(crate::grant::GrantSet::none());
+        let bindings = host::Host::with_transport(transport).endow(crate::grant::GrantSet::none());
         Self::from_bindings(&bindings)
     }
 
-    pub(crate) fn from_bindings(bindings: &crate::host::Bindings) -> Self {
+    pub(crate) fn from_bindings(bindings: &host::Bindings) -> Self {
         let app_directories = std::sync::OnceLock::new();
         if let Some(directories) = bindings.app_directories() {
             app_directories

@@ -6,7 +6,7 @@
 //! links no engine and owns no application loop.
 //!
 //! @ref LLP 0068#2-synchronous-and-why — the consumer owns execution
-use crate::{grant::GrantSet, task::RuntimeState};
+use crate::{grant::GrantSet, host, task::RuntimeState};
 use std::{ffi::c_void, fmt, ops, sync::Arc, time::Duration};
 
 pub(crate) mod headers_ops;
@@ -269,7 +269,7 @@ impl Context {
     /// Convenience for the platform-default host. Consumers that select a
     /// transport or store use [`Context::from_bindings`] instead.
     pub fn new(grants: GrantSet) -> Self {
-        let bindings = crate::host::Host::new().endow(grants);
+        let bindings = host::Host::new().endow(grants);
         Self::from_bindings(&bindings)
     }
 
@@ -277,7 +277,7 @@ impl Context {
     /// The transport, stores, mounts, provider, and grants are retained
     /// together for the lifetime of the runtime state.
     // @ref LLP 0057.000#50-three-doors-one-implementation — the install door consumes Host::endow's Bindings
-    pub fn from_bindings(bindings: &crate::host::Bindings) -> Self {
+    pub fn from_bindings(bindings: &host::Bindings) -> Self {
         Self {
             endowment: Arc::new(InstallEndowment {
                 state: Arc::new(RuntimeState::from_bindings(bindings)),
