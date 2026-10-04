@@ -435,7 +435,7 @@ fn encode_multipart(args: &[HostArg<'_>]) -> Result<HostValue, HostError> {
         )
     };
     let boundary = args.first().and_then(HostArg::as_str).ok_or_else(invalid)?;
-    if (args.len() - 1) % 5 != 0 {
+    if !(args.len() - 1).is_multiple_of(5) {
         return Err(invalid());
     }
     let mut form = FormData::new();
