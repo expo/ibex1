@@ -371,6 +371,8 @@ pub struct RuntimeState {
     controls: Mutex<std::collections::HashMap<u64, crate::stdlib::abort::AbortController>>,
     subscriptions: Mutex<HashMap<u64, ()>>,
     shutdown: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    shutdown_transition_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     /// References held by workers keep storage alive but do not keep the
     /// runtime open. Only Contexts and owning engine handles increment this.
     owners: std::sync::atomic::AtomicUsize,
@@ -445,6 +447,8 @@ impl RuntimeState {
             controls: Mutex::new(std::collections::HashMap::new()),
             subscriptions: Mutex::new(HashMap::new()),
             shutdown: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            shutdown_transition_hook: Mutex::new(None),
             owners: std::sync::atomic::AtomicUsize::new(0),
             headers: Mutex::new(std::collections::HashMap::new()),
             timers: Mutex::new(crate::stdlib::timers::Timers::new()),
@@ -620,12 +624,29 @@ impl RuntimeState {
     }
 
     pub fn shutdown(&self) {
+        let mut subscriptions = self
+            .subscriptions
+            .lock()
+            .expect("event subscriptions poisoned");
         if self
             .shutdown
             .swap(true, std::sync::atomic::Ordering::AcqRel)
         {
             return;
         }
+        #[cfg(test)]
+        if let Some(hook) = self
+            .shutdown_transition_hook
+            .lock()
+            .expect("shutdown transition hook poisoned")
+            .take()
+        {
+            hook();
+        }
+        // @ref LLP 0058.000.000#9-teardown-and-lifecycle — Closing and event reservation serialize on the subscription registry
+        subscriptions.clear();
+        self.queue.cancel_all_events();
+        drop(subscriptions);
         self.queue.close_wake();
         self.sqlite.shutdown();
         let controls = std::mem::take(&mut *self.controls.lock().unwrap());
@@ -636,17 +657,18 @@ impl RuntimeState {
         for response in responses.into_values() {
             response.control.abort();
         }
-        // @ref LLP 0058.000.000#9-teardown-and-lifecycle — shutdown removes callback identities and their unreserved event tasks as one locked transition
-        let mut subscriptions = self
-            .subscriptions
-            .lock()
-            .expect("event subscriptions poisoned");
-        subscriptions.clear();
-        self.queue.cancel_all_events();
     }
 
     pub(crate) fn is_shutdown(&self) -> bool {
         self.shutdown.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    fn set_shutdown_transition_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        *self
+            .shutdown_transition_hook
+            .lock()
+            .expect("shutdown transition hook poisoned") = Some(hook);
     }
 
     fn acquire_owner(&self) {
@@ -863,21 +885,26 @@ impl RuntimeState {
         admitted
     }
 
-    /// Reserve the next live task. An unsubscribe may remove the registry
-    /// identity after an event was inserted but before its queue cancellation
-    /// acquires the FIFO lock; that stale event is discarded here.
+    /// Reserve the next live task. Reservation and the transition to shutdown
+    /// share the subscription lock: a task either commits while the runtime is
+    /// running, or observes Closing and stays out. An unsubscribe may remove
+    /// an event identity before its queue cancellation acquires the FIFO lock;
+    /// that stale event is discarded here.
     pub(crate) fn take_task(&self) -> Option<HostTask> {
         loop {
+            let subscriptions = self
+                .subscriptions
+                .lock()
+                .expect("event subscriptions poisoned");
+            if self.is_shutdown() {
+                return None;
+            }
             let task = self.queue.take()?;
             let HostTask::Event { subscription, .. } = &task else {
                 return Some(task);
             };
-            if self
-                .subscriptions
-                .lock()
-                .expect("event subscriptions poisoned")
-                .contains_key(subscription)
-            {
+            // @ref LLP 0058.000.000#8-tasks-microtasks-timers-and-callbacks — reservation revalidates Running and subscription liveness at one serialized commit point
+            if subscriptions.contains_key(subscription) {
                 return Some(task);
             }
         }
@@ -1390,6 +1417,54 @@ mod tests {
         assert!(state.queue.take().is_none());
         assert!(!state.publish_event(subscription_id, HostValue::Undefined));
         assert!(state.subscribe_event().is_none());
+        drop(subscription);
+    }
+
+    #[test]
+    fn shutdown_transition_serializes_with_event_reservation() {
+        let state = Arc::new(RuntimeState::new(Box::new(
+            crate::transport::dev_tcp::DevTcpTransport::new(),
+        )));
+        let (subscription_id, subscription) = state.subscribe_event().unwrap();
+        assert!(state.publish_event(subscription_id, HostValue::Str("queued".into())));
+
+        let (at_transition, transition_entered) = std::sync::mpsc::channel();
+        let (release_transition, may_finish_transition) = std::sync::mpsc::channel();
+        let may_finish_transition = Arc::new(Mutex::new(may_finish_transition));
+        state.set_shutdown_transition_hook(Arc::new(move || {
+            at_transition.send(()).unwrap();
+            may_finish_transition.lock().unwrap().recv().unwrap();
+        }));
+
+        let shutdown_state = Arc::clone(&state);
+        let shutdown = std::thread::spawn(move || shutdown_state.shutdown());
+        transition_entered
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("shutdown did not reach its transition hook");
+
+        let reservation_state = Arc::clone(&state);
+        let (reservation_started, started) = std::sync::mpsc::channel();
+        let (reservation_finished, finished) = std::sync::mpsc::channel();
+        let reservation = std::thread::spawn(move || {
+            reservation_started.send(()).unwrap();
+            reservation_finished
+                .send(reservation_state.take_task())
+                .unwrap();
+        });
+        started.recv().unwrap();
+        assert!(
+            matches!(
+                finished.recv_timeout(std::time::Duration::from_millis(200)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ),
+            "an event was reserved while the shutdown transition held its lock"
+        );
+
+        release_transition.send(()).unwrap();
+        shutdown.join().unwrap();
+        assert!(finished.recv().unwrap().is_none());
+        reservation.join().unwrap();
+        assert!(state.queue.is_empty());
         drop(subscription);
     }
 
