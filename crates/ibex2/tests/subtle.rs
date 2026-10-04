@@ -261,7 +261,14 @@ fn garbage_collection_releases_rust_key_handles() {
     );
     assert_eq!(runtime.crypto_key_count(), 1);
     runtime.eval("globalThis.__held_key = null").unwrap();
-    assert!(runtime.collect_garbage());
+    // Hermes may defer a native-state finalizer by one collection when the
+    // just-settled async chain is still in its conservative root set.
+    for _ in 0..3 {
+        assert!(runtime.collect_garbage());
+        if runtime.crypto_key_count() == 0 {
+            break;
+        }
+    }
     assert_eq!(runtime.crypto_key_count(), 0);
 }
 
