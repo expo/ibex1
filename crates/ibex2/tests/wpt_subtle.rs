@@ -153,8 +153,10 @@ const SUITES: &[Suite] = &[
 fn run_suite(suite: &Suite) -> Vec<serde_json::Value> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../third_party/wpt");
     let mut runtime = Hermes::new(DynamicCode::Closed).unwrap();
-    assert!(runtime.install_stdlib());
-    runtime.install_bindings().unwrap();
+    let context = ibex2::bindings::Context::new(ibex2::grant::GrantSet::none());
+    runtime
+        .install_runtime(ibex2::bindings::Groups::DEFAULT, &context)
+        .unwrap();
     runtime.harden().unwrap();
     runtime.install_test_harness().unwrap();
     runtime

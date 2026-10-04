@@ -2,8 +2,8 @@
 //!
 //! Dispatch enums and platform adapters name these constants instead of
 //! repeating numbers. The catalog at the bottom is also the unbounded source
-//! for the uniqueness test; the Hermes C++ entry-path literals are parsed and
-//! compared with `HERMES_SYNC_BINDINGS`.
+//! for the uniqueness test; the grouped JSI adapter's C++ entry-path literals
+//! are parsed and compared with `JSI_SYNC_BINDINGS`.
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -334,7 +334,7 @@ pub(crate) const ALL: &[Assignment] = &[
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) struct HermesBinding {
+pub(crate) struct JsiBinding {
     pub(crate) target: &'static str,
     pub(crate) name: &'static str,
     pub(crate) op: u32,
@@ -343,7 +343,7 @@ pub(crate) struct HermesBinding {
 #[cfg(test)]
 macro_rules! binding {
     ($target:literal, $name:literal, $op:path) => {
-        HermesBinding {
+        JsiBinding {
             target: $target,
             name: $name,
             op: $op,
@@ -352,7 +352,7 @@ macro_rules! binding {
 }
 
 #[cfg(test)]
-pub(crate) const HERMES_SYNC_BINDINGS: &[HermesBinding] = &[
+pub(crate) const JSI_SYNC_BINDINGS: &[JsiBinding] = &[
     binding!("global", "__ibex2_random_uuid", inline::CRYPTO_RANDOM_UUID),
     binding!(
         "global",

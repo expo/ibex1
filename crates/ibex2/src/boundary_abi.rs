@@ -1494,30 +1494,34 @@ mod fetch_header_tests {
         // to miss. Parsing is intentionally strict: replacing a numeric literal
         // or changing a binding requires changing the declarative registry too.
         let mut cpp = Vec::new();
-        for line in include_str!("engine/hermes_shim.cc").lines() {
+        for line in include_str!("engine/ibex2_jsi.cc").lines() {
             let line = line.trim();
             let Some(call) = line
-                .strip_prefix("set_binding(")
+                .strip_prefix("set_group_binding(")
                 .and_then(|line| line.strip_suffix(");"))
             else {
                 continue;
             };
             let fields: Vec<_> = call.split(',').map(str::trim).collect();
-            assert_eq!(fields.len(), 5, "unparseable set_binding call: {line}");
-            cpp.push(host_opcodes::HermesBinding {
+            assert_eq!(
+                fields.len(),
+                5,
+                "unparseable set_group_binding call: {line}"
+            );
+            cpp.push(host_opcodes::JsiBinding {
                 target: fields[1],
                 name: fields[2].trim_matches('"'),
                 op: fields[3]
                     .parse()
-                    .unwrap_or_else(|_| panic!("non-numeric set_binding opcode: {line}")),
+                    .unwrap_or_else(|_| panic!("non-numeric set_group_binding opcode: {line}")),
             });
         }
         cpp.sort();
-        let mut registry = host_opcodes::HERMES_SYNC_BINDINGS.to_vec();
+        let mut registry = host_opcodes::JSI_SYNC_BINDINGS.to_vec();
         registry.sort();
         assert_eq!(
             cpp, registry,
-            "Hermes bindings differ from the opcode registry"
+            "grouped JSI bindings differ from the opcode registry"
         );
     }
 

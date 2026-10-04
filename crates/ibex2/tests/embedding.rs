@@ -410,6 +410,36 @@ fn fetch_group_does_not_install_timers_or_crypto() {
 }
 
 #[test]
+fn omitted_crypto_group_exposes_no_crypto_surface_or_subtle_ops() {
+    let consumer = BareConsumer::new(Groups::PURE);
+    assert_eq!(
+        consumer.eval(
+            r#"[
+              typeof crypto,
+              typeof Crypto,
+              typeof CryptoKey,
+              typeof SubtleCrypto,
+              typeof globalThis.__ibex2_random_uuid,
+              typeof globalThis.__ibex2_get_random_values,
+              typeof globalThis.__ibex2_subtle
+            ].join(',')"#,
+        ),
+        "undefined,undefined,undefined,undefined,undefined,undefined,undefined"
+    );
+    assert_eq!(
+        consumer.eval(
+            r#"try {
+              globalThis.__ibex2_subtle.digest("SHA-256", new Uint8Array());
+              "reachable";
+            } catch (error) {
+              error instanceof TypeError ? "unreachable" : error.name;
+            }"#,
+        ),
+        "unreachable"
+    );
+}
+
+#[test]
 fn borrowed_runtime_refuses_fetch_without_its_dependencies() {
     let context = Context::new(GrantSet::none());
     let mut error = std::ptr::null_mut();
