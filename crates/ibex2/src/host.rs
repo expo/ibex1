@@ -159,6 +159,18 @@ impl Bindings {
     pub(crate) fn sqlite_provider(&self) -> Option<Arc<dyn crate::stdlib::sqlite::Provider>> {
         self.sqlite.provider.clone()
     }
+
+    pub(crate) fn with_runtime_configuration(
+        &self,
+        directories: Option<Arc<crate::stdlib::app_fs::AppDirectories>>,
+        provider: Option<Arc<dyn crate::stdlib::sqlite::Provider>>,
+    ) -> Self {
+        let mut snapshot = self.clone();
+        snapshot.fs.directories = directories.clone();
+        snapshot.sqlite.directories = directories;
+        snapshot.sqlite.provider = provider;
+        snapshot
+    }
 }
 
 /// A listening WebSocket, carrying its grant (`net.websocket <origin>`,

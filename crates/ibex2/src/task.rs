@@ -375,6 +375,16 @@ impl RuntimeState {
             .transport()
     }
 
+    /// Snapshot the source endowment together with configuration applied
+    /// directly to this state after the Context was constructed.
+    // @ref LLP 0068#3-no-engine-in-the-process — owning Hermes adopts the configured Context without sharing its runtime identity
+    pub(crate) fn bindings_snapshot(&self, bindings: &host::Bindings) -> host::Bindings {
+        bindings.with_runtime_configuration(
+            self.app_directories.get().cloned().map(Arc::new),
+            self.sqlite.provider(),
+        )
+    }
+
     /// Copy the mechanisms selected by a Host into an owning runtime without
     /// replacing its queue, handle registries, loader, or integrity snapshot.
     /// Explicit configuration already installed directly on the runtime wins

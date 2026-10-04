@@ -53,6 +53,9 @@ impl Registry {
     pub(crate) fn has_provider(&self) -> bool {
         self.provider.get().is_some()
     }
+    pub(crate) fn provider(&self) -> Option<Arc<dyn Provider>> {
+        self.provider.get().cloned()
+    }
     fn database(&self, id: u64) -> Result<Database, HostError> {
         self.databases
             .lock()

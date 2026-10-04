@@ -442,14 +442,15 @@ pub unsafe extern "C" fn ibex2_bindings_adopt(
     let Some(state) = crate::task::clone_queue(state) else {
         return std::ptr::null();
     };
-    if state.adopt_bindings(&source.bindings).is_err() {
+    let snapshot = source.state.bindings_snapshot(&source.bindings);
+    if state.adopt_bindings(&snapshot).is_err() {
         return std::ptr::null();
     }
     let adopted = Arc::new(InstallEndowment {
         magic: ADOPTED_BINDINGS_MAGIC,
         state,
         grants: Arc::clone(&source.grants),
-        bindings: source.bindings.clone(),
+        bindings: snapshot,
     });
     register_bindings(&adopted);
     Arc::into_raw(adopted).cast()
