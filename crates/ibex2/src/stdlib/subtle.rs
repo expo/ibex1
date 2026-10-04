@@ -22,6 +22,10 @@ pub const MAX_PBKDF2_ITERATIONS: u32 = 1_000_000;
 /// one hash-block of salt input per derived block. The salt ceiling keeps the
 /// first PRF call from hiding unbounded work outside the iteration count.
 pub const MAX_PBKDF2_SALT_BYTES: usize = 125_000;
+/// HKDF hashes `info` once for every output block. Count that expansion work,
+/// plus the salt and input-key work of extract, in hash compression blocks so
+/// large caller inputs cannot multiply into an unbounded synchronous call.
+pub const MAX_HKDF_COMPRESSION_BLOCKS: usize = 65_536;
 
 /// Bound caller-selected secret/output sizes so a pure synchronous host call
 /// cannot turn an integer parameter into an effectively unbounded allocation.
@@ -1316,6 +1320,51 @@ fn validate_pbkdf2_work(
 }
 
 #[cfg(feature = "crypto")]
+fn compression_blocks(input_bytes: usize, block_bytes: usize, label: &str) -> Result<usize> {
+    input_bytes
+        .checked_add(block_bytes - 1)
+        .map(|bytes| (bytes / block_bytes).max(1))
+        .ok_or_else(|| Error::operation(format!("{label} length overflow")))
+}
+
+#[cfg(feature = "crypto")]
+fn validate_hkdf_work(
+    hash: HashAlgorithm,
+    salt_len: usize,
+    key_len: usize,
+    info_len: usize,
+    length_bits: usize,
+) -> Result<()> {
+    let block_bytes = hash.compression_block_bytes();
+    let extract = compression_blocks(salt_len, block_bytes, "HKDF salt")?
+        .checked_add(compression_blocks(
+            key_len,
+            block_bytes,
+            "HKDF key material",
+        )?)
+        .ok_or_else(|| Error::operation("HKDF extract work overflow"))?;
+    let expand_input = info_len
+        .checked_add(1)
+        .and_then(|bytes| bytes.checked_add(hash.output_bytes()))
+        .ok_or_else(|| Error::operation("HKDF info length overflow"))?;
+    let expand_per_output = compression_blocks(expand_input, block_bytes, "HKDF info")?;
+    let output_blocks = (length_bits / 8).div_ceil(hash.output_bytes());
+    let expand = output_blocks
+        .checked_mul(expand_per_output)
+        .ok_or_else(|| Error::operation("HKDF expand work overflow"))?;
+    let work = extract
+        .checked_add(expand)
+        .ok_or_else(|| Error::operation("HKDF combined work overflow"))?;
+    if work > MAX_HKDF_COMPRESSION_BLOCKS {
+        return Err(Error::operation(format!(
+            "HKDF combined work {work} exceeds the per-call limit of {MAX_HKDF_COMPRESSION_BLOCKS} compression blocks for {}",
+            hash.name()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "crypto")]
 fn derive_material(
     algorithm: DeriveAlgorithm<'_>,
     base_key: &CryptoKey,
@@ -1335,7 +1384,7 @@ fn derive_material(
     // Validate the algorithm, key type, and all algorithm-specific work
     // limits before allocating the caller-selected output buffer.
     match algorithm {
-        DeriveAlgorithm::Hkdf { hash, .. } => {
+        DeriveAlgorithm::Hkdf { hash, salt, info } => {
             let maximum = 255 * hash.output_bits();
             if length_bits > maximum {
                 return Err(Error::operation(format!(
@@ -1343,6 +1392,13 @@ fn derive_material(
                     hash_name = hash.name()
                 )));
             }
+            validate_hkdf_work(
+                hash,
+                salt.len(),
+                base_key.material.len(),
+                info.len(),
+                length_bits,
+            )?;
         }
         DeriveAlgorithm::Pbkdf2 {
             hash,
@@ -1638,6 +1694,77 @@ mod tests {
         )
         .unwrap();
         assert_eq!(output, hex("3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865"));
+    }
+
+    #[test]
+    fn hkdf_combined_work_is_bounded_for_bits_and_keys() {
+        const WORK_BUDGET: usize = MAX_HKDF_COMPRESSION_BLOCKS;
+        let key = import_raw_key(
+            b"key",
+            ImportAlgorithm::Hkdf,
+            false,
+            &[KeyUsage::DeriveBits, KeyUsage::DeriveKey],
+        )
+        .unwrap();
+
+        // Empty salt and the three-byte key each account for one extract
+        // compression block. At 255 output blocks, 257 expand blocks per
+        // output block is the greatest whole-block cost below the budget.
+        let expand_blocks = (WORK_BUDGET - 2) / 255;
+        for hash in [HashAlgorithm::Sha256, HashAlgorithm::Sha512] {
+            let maximum_info =
+                expand_blocks * hash.compression_block_bytes() - 1 - hash.output_bytes();
+            let info = vec![0x5a; maximum_info];
+            derive_bits(
+                DeriveAlgorithm::Hkdf {
+                    hash,
+                    salt: b"",
+                    info: &info,
+                },
+                &key,
+                255 * hash.output_bits(),
+            )
+            .unwrap();
+
+            let info = vec![0x5a; maximum_info + 1];
+            assert_eq!(
+                derive_bits(
+                    DeriveAlgorithm::Hkdf {
+                        hash,
+                        salt: b"",
+                        info: &info,
+                    },
+                    &key,
+                    255 * hash.output_bits(),
+                )
+                .unwrap_err()
+                .name,
+                ErrorName::OperationError
+            );
+        }
+
+        // deriveKey requests only one SHA-256 output block, so crossing the
+        // same work budget takes an info value of about 4 MiB.
+        let info = vec![0x5a; (WORK_BUDGET - 2) * 64 - 32];
+        assert_eq!(
+            derive_key(
+                DeriveAlgorithm::Hkdf {
+                    hash: HashAlgorithm::Sha256,
+                    salt: b"",
+                    info: &info,
+                },
+                &key,
+                DerivedKeyAlgorithm::Hmac {
+                    hash: HashAlgorithm::Sha256,
+                    length_bits: Some(256),
+                },
+                false,
+                &[KeyUsage::Sign],
+            )
+            .unwrap_err()
+            .name,
+            ErrorName::OperationError
+        );
     }
 
     #[test]
