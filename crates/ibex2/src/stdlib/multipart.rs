@@ -31,6 +31,81 @@ pub enum FormDataValue {
     },
 }
 
+#[derive(Clone, Copy, Debug)]
+struct EntryRef<'a> {
+    name: &'a str,
+    value: ValueRef<'a>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ValueRef<'a> {
+    Text(&'a str),
+    File {
+        bytes: &'a [u8],
+        filename: &'a str,
+        content_type: &'a str,
+    },
+}
+
+impl FormDataEntry {
+    fn as_ref(&self) -> EntryRef<'_> {
+        EntryRef {
+            name: &self.name,
+            value: match &self.value {
+                FormDataValue::Text(value) => ValueRef::Text(value),
+                FormDataValue::File {
+                    bytes,
+                    filename,
+                    content_type,
+                } => ValueRef::File {
+                    bytes,
+                    filename,
+                    content_type,
+                },
+            },
+        }
+    }
+}
+
+/// The host ABI's entry list. Strings and file bytes remain borrowed from the
+/// inbound [`crate::boundary::HostArg`] spans until the final payload is
+/// written, so the ABI adds no intermediate file-byte copy.
+// @ref LLP 0059.000#12-what-by-handle-requires — inbound ArrayBuffers remain borrowed for the host call
+#[derive(Debug, Default)]
+pub(crate) struct BorrowedFormData<'a> {
+    entries: Vec<EntryRef<'a>>,
+}
+
+impl<'a> BorrowedFormData<'a> {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn append_text(&mut self, name: &'a str, value: &'a str) {
+        self.entries.push(EntryRef {
+            name,
+            value: ValueRef::Text(value),
+        });
+    }
+
+    pub(crate) fn append_file(
+        &mut self,
+        name: &'a str,
+        bytes: &'a [u8],
+        filename: &'a str,
+        content_type: &'a str,
+    ) {
+        self.entries.push(EntryRef {
+            name,
+            value: ValueRef::File {
+                bytes,
+                filename,
+                content_type,
+            },
+        });
+    }
+}
+
 impl FormData {
     pub fn new() -> Self {
         Self::default()
@@ -94,11 +169,30 @@ impl EncodedMultipart {
     ) -> Result<Self, MultipartError> {
         let boundary = boundary.into();
         validate_boundary(&boundary)?;
-        let length = encoded_len(form, &boundary)?;
+        let length = encoded_len(form.entries().iter().map(FormDataEntry::as_ref), &boundary)?;
         let mut bytes = Vec::with_capacity(length);
-        write_form(&mut bytes, form, &boundary)?;
+        write_form(
+            &mut bytes,
+            form.entries().iter().map(FormDataEntry::as_ref),
+            &boundary,
+        )?;
         debug_assert_eq!(bytes.len(), length);
         Ok(Self { boundary, bytes })
+    }
+
+    pub(crate) fn with_borrowed_boundary(
+        form: &BorrowedFormData<'_>,
+        boundary: &str,
+    ) -> Result<Self, MultipartError> {
+        validate_boundary(boundary)?;
+        let length = encoded_len(form.entries.iter().copied(), boundary)?;
+        let mut bytes = Vec::with_capacity(length);
+        write_form(&mut bytes, form.entries.iter().copied(), boundary)?;
+        debug_assert_eq!(bytes.len(), length);
+        Ok(Self {
+            boundary: boundary.to_owned(),
+            bytes,
+        })
     }
 
     pub fn boundary(&self) -> &str {
@@ -250,21 +344,24 @@ fn checked_add(total: &mut usize, amount: usize) -> Result<(), MultipartError> {
     Ok(())
 }
 
-fn encoded_len(form: &FormData, boundary: &str) -> Result<usize, MultipartError> {
+fn encoded_len<'a>(
+    entries: impl IntoIterator<Item = EntryRef<'a>>,
+    boundary: &str,
+) -> Result<usize, MultipartError> {
     let mut length = 0usize;
-    for entry in form.entries() {
+    for entry in entries {
         checked_add(&mut length, 2 + boundary.len() + 2)?; // --boundary CRLF
         checked_add(
             &mut length,
             b"Content-Disposition: form-data; name=\"".len(),
         )?;
-        checked_add(&mut length, escaped_parameter(&entry.name).len())?;
-        match &entry.value {
-            FormDataValue::Text(value) => {
+        checked_add(&mut length, escaped_parameter(entry.name).len())?;
+        match entry.value {
+            ValueRef::Text(value) => {
                 checked_add(&mut length, b"\"\r\n\r\n".len())?;
                 checked_add(&mut length, normalized_newlines(value).len())?;
             }
-            FormDataValue::File {
+            ValueRef::File {
                 bytes,
                 filename,
                 content_type,
@@ -284,18 +381,22 @@ fn encoded_len(form: &FormData, boundary: &str) -> Result<usize, MultipartError>
     Ok(length)
 }
 
-fn write_form(output: &mut Vec<u8>, form: &FormData, boundary: &str) -> Result<(), MultipartError> {
-    for entry in form.entries() {
+fn write_form<'a>(
+    output: &mut Vec<u8>,
+    entries: impl IntoIterator<Item = EntryRef<'a>>,
+    boundary: &str,
+) -> Result<(), MultipartError> {
+    for entry in entries {
         output.extend_from_slice(b"--");
         output.extend_from_slice(boundary.as_bytes());
         output.extend_from_slice(b"\r\nContent-Disposition: form-data; name=\"");
-        output.extend_from_slice(&escaped_parameter(&entry.name));
-        match &entry.value {
-            FormDataValue::Text(value) => {
+        output.extend_from_slice(&escaped_parameter(entry.name));
+        match entry.value {
+            ValueRef::Text(value) => {
                 output.extend_from_slice(b"\"\r\n\r\n");
                 output.extend_from_slice(&normalized_newlines(value));
             }
-            FormDataValue::File {
+            ValueRef::File {
                 bytes,
                 filename,
                 content_type,
@@ -389,5 +490,30 @@ last\r\n\
         validate_boundary(&second).unwrap();
         assert_ne!(first, second);
         assert_eq!(first.len(), 42);
+    }
+
+    #[test]
+    fn borrowed_form_data_writes_directly_from_the_inbound_file_slice() {
+        let file_bytes = [0, 1, 0xff];
+        let mut borrowed = BorrowedFormData::new();
+        borrowed.append_text("alpha", "one\ntwo");
+        borrowed.append_file("upload", &file_bytes, "a.txt", "text/plain");
+        let borrowed_file = match borrowed.entries[1].value {
+            ValueRef::File { bytes, .. } => bytes,
+            ValueRef::Text(_) => panic!("file entry became text"),
+        };
+        assert_eq!(
+            borrowed_file.as_ptr(),
+            file_bytes.as_ptr(),
+            "the borrowed form must retain the inbound span, not a copied Vec"
+        );
+
+        let mut owned = FormData::new();
+        owned.append_text("alpha", "one\ntwo");
+        owned.append_file("upload", file_bytes.to_vec(), "a.txt", "text/plain");
+        assert_eq!(
+            EncodedMultipart::with_borrowed_boundary(&borrowed, "fixed-boundary").unwrap(),
+            EncodedMultipart::with_boundary(&owned, "fixed-boundary").unwrap()
+        );
     }
 }

@@ -427,7 +427,7 @@ fn dispatch(
 }
 
 fn encode_multipart(args: &[HostArg<'_>]) -> Result<HostValue, HostError> {
-    use crate::stdlib::multipart::{EncodedMultipart, FormData};
+    use crate::stdlib::multipart::{BorrowedFormData, EncodedMultipart};
 
     let invalid = || {
         HostError::InvalidArgument(
@@ -438,7 +438,7 @@ fn encode_multipart(args: &[HostArg<'_>]) -> Result<HostValue, HostError> {
     if !(args.len() - 1).is_multiple_of(5) {
         return Err(invalid());
     }
-    let mut form = FormData::new();
+    let mut form = BorrowedFormData::new();
     for part in args[1..].chunks_exact(5) {
         let name = part[0].as_str().ok_or_else(invalid)?;
         match &part[1] {
@@ -448,7 +448,7 @@ fn encode_multipart(args: &[HostArg<'_>]) -> Result<HostValue, HostError> {
             HostArg::Number(1.0) => {
                 form.append_file(
                     name,
-                    part[2].as_bytes().ok_or_else(invalid)?.to_vec(),
+                    part[2].as_bytes().ok_or_else(invalid)?,
                     part[3].as_str().ok_or_else(invalid)?,
                     part[4].as_str().ok_or_else(invalid)?,
                 );
@@ -456,7 +456,7 @@ fn encode_multipart(args: &[HostArg<'_>]) -> Result<HostValue, HostError> {
             _ => return Err(invalid()),
         }
     }
-    EncodedMultipart::with_boundary(&form, boundary)
+    EncodedMultipart::with_borrowed_boundary(&form, boundary)
         .map(|encoded| HostValue::Bytes(encoded.into_bytes()))
         .map_err(|error| HostError::Failed(format!("TypeError: {error}")))
 }
