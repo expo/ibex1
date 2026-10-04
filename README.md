@@ -1,3 +1,10 @@
+> **Archived (2026-10-04).** This repository is Ibex 1 and is no longer developed.
+> Ibex 2 moved to **[expo/ibex](https://github.com/expo/ibex)**, with the history of
+> its own paths (`crates/ibex2*`, its LLPs, fixtures, and scripts) carried over by
+> `git filter-repo`. This repository was renamed from `expo/ibex` to `expo/ibex1`;
+> submodules and git dependencies that pin commits here should use
+> `https://github.com/expo/ibex1`.
+
 # <img src="./assets/brand/ibex-mark.svg" alt="" width="27" height="36"> Ibex
 
 **Ibex** is the JavaScript/TypeScript **runtime** used by [Exact](https://github.com/ccheever/exact)
