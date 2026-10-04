@@ -192,6 +192,29 @@ fn blob_slice_type_endings_and_brand_edges() {
 }
 
 #[test]
+fn blob_slice_uses_clamped_long_long_ties_to_even() {
+    let mut runtime = runtime(Groups::PURE | Groups::BLOB, true);
+    runtime
+        .eval(
+            r#"
+            globalThis.__result = 'pending';
+            const blob = new Blob(['abcd']);
+            const starts = [1.5, 2.5, 0.5, 3.5, -0.5, -1.5, -2.5,
+                            Infinity, -Infinity, NaN];
+            Promise.all(starts.map(start => blob.slice(start).text())).then(values => {
+              __result = JSON.stringify(values);
+            });
+            "#,
+        )
+        .unwrap();
+    runtime.run_to_quiescence(Duration::from_secs(5));
+    assert_eq!(
+        runtime.eval("__result").unwrap(),
+        r#"["cd","cd","abcd","","abcd","cd","cd","","abcd","abcd"]"#
+    );
+}
+
+#[test]
 fn file_fields_and_every_form_data_operation_follow_entry_order() {
     let mut runtime = runtime(Groups::PURE | Groups::BLOB, true);
     let value = runtime

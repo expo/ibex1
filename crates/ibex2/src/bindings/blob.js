@@ -120,11 +120,18 @@
     return call(stringToLowerCase, type, []);
   }
 
-  function integer(value) {
+  // Web IDL `[Clamp] long long`: clamp infinities and out-of-range values,
+  // turn NaN into zero, and round finite fractions to nearest with ties even.
+  function clampLongLong(value) {
     var number = NumberCtor(value);
     if (number !== number || number === 0) return 0;
-    if (number === Infinity || number === -Infinity) return number;
-    return number < 0 ? -MathFloor(-number) : MathFloor(number);
+    if (number <= -9223372036854775808) return -9223372036854775808;
+    if (number >= 9223372036854775807) return 9223372036854775807;
+    var lower = MathFloor(number);
+    var fraction = number - lower;
+    if (fraction < 0.5) return lower;
+    if (fraction > 0.5) return lower + 1;
+    return lower % 2 === 0 ? lower : lower + 1;
   }
 
   function longLong(value) {
@@ -248,9 +255,9 @@
 
   Blob.prototype.slice = function (start, end, contentType) {
     var state = requireBrand(blobs, this, "Blob"), size = state.size;
-    var relativeStart = start === undefined ? 0 : integer(start);
+    var relativeStart = start === undefined ? 0 : clampLongLong(start);
     var first = relativeStart < 0 ? MathMax(size + relativeStart, 0) : MathMin(relativeStart, size);
-    var relativeEnd = end === undefined ? size : integer(end);
+    var relativeEnd = end === undefined ? size : clampLongLong(end);
     var last = relativeEnd < 0 ? MathMax(size + relativeEnd, 0) : MathMin(relativeEnd, size);
     var length = MathMax(last - first, 0);
     return trustedBlob(copy(state.bytes, first, length), normalizedType(contentType));
