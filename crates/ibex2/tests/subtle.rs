@@ -477,19 +477,39 @@ fn asymmetric_feature_off_refuses_by_name() {
 #[test]
 fn garbage_collection_releases_rust_key_handles() {
     let mut runtime = runtime();
-    run_async(
-        &mut runtime,
-        r#"
-        globalThis.__held_key = await crypto.subtle.generateKey(
-          {name: "HMAC", hash: "SHA-256"}, false, ["sign"]
-        );
-        "#,
-    );
+    runtime
+        .eval(
+            r#"
+            globalThis.__held_key = null;
+            globalThis.__key_ready = "pending";
+            void crypto.subtle.generateKey(
+              {name: "HMAC", hash: "SHA-256"}, false, ["sign"]
+            ).then(
+              key => {
+                globalThis.__held_key = key;
+                globalThis.__key_ready = "ok";
+              },
+              error => {
+                globalThis.__key_ready = error.name + ": " + error.message;
+              }
+            );
+            "#,
+        )
+        .unwrap();
+    runtime.drain_microtasks().unwrap();
+    assert_eq!(runtime.eval("__key_ready").unwrap(), "ok");
     assert_eq!(runtime.crypto_key_count(), 1);
-    runtime.eval("globalThis.__held_key = null").unwrap();
-    // Hermes may defer a native-state finalizer by one collection when the
-    // just-settled async chain is still in its conservative root set.
-    for _ in 0..3 {
+    // Avoid the general async-test wrapper here: its suspended async activation
+    // can retain the last `await` result in a Hermes register even after the
+    // global is cleared. Hermes also scans just-finished Promise-reaction
+    // registers conservatively, so advance through fresh entrances before each
+    // bounded full collection. A real NativeState leak remains nonzero through
+    // every iteration and still fails the exact assertion below.
+    runtime
+        .eval("globalThis.__held_key = null; globalThis.__key_ready = null; void 0")
+        .unwrap();
+    for _ in 0..8 {
+        runtime.eval("void 0").unwrap();
         assert!(runtime.collect_garbage());
         if runtime.crypto_key_count() == 0 {
             break;
