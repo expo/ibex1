@@ -1194,8 +1194,9 @@ fn run_fs(
 /// Take at most ONE admitted host task for the engine to run.
 ///
 /// LLP 0058.000.000 §8: one task per drive cycle, from one FIFO carrying both
-/// timer deliveries and settlements. `kind` is 0 for none, 1 for a settlement,
-/// 2 for a timer; a timer's handle arrives in `task_id`.
+/// timer deliveries, settlements, and events. `kind` is 0 for none, 1 for a
+/// settlement, 2 for a timer, and 3 for an event. Timer handles and event
+/// subscription ids arrive in `task_id`; events carry their payload in `out`.
 ///
 /// # Safety
 /// All out pointers must be valid and writable.
@@ -1236,6 +1237,16 @@ pub unsafe extern "C" fn ibex2_take_task(
                     *out = leak_value(HostValue::Str(err.to_string()));
                 }
             }
+            1
+        }
+        crate::task::HostTask::Event {
+            subscription,
+            payload,
+        } => {
+            *kind = 3;
+            *task_id = subscription;
+            *is_error = 0;
+            *out = leak_value(payload);
             1
         }
     }

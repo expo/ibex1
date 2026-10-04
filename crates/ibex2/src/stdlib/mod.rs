@@ -7,6 +7,7 @@
 pub mod base64;
 pub mod console;
 pub mod crypto;
+pub mod events;
 pub mod fetch;
 pub mod fs;
 #[cfg(all(feature = "hermes", target_os = "linux"))]

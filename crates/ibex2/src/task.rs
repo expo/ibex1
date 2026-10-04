@@ -21,8 +21,8 @@
 //! @ref LLP 0059.000#11-which-ops-are-synchronous — delegating ops are async, without exception
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
-use std::sync::{Arc, Condvar, Mutex};
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 
 use crate::{
     boundary::{HostError, HostValue},
@@ -48,6 +48,18 @@ pub enum HostTask {
     Settlement(Completion),
     /// A timer came due and was admitted.
     Timer { handle: u64 },
+    /// A subscribed host source published one event.
+    Event {
+        subscription: u64,
+        payload: HostValue,
+    },
+}
+
+/// A task together with its position in this runtime's admission order.
+#[derive(Debug)]
+pub struct AdmittedTask {
+    pub sequence: u64,
+    pub task: HostTask,
 }
 
 /// Completions waiting for **one** runtime.
@@ -66,9 +78,10 @@ pub struct CompletionQueue {
     wake_drained: Condvar,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct ReadyState {
-    tasks: VecDeque<HostTask>,
+    next_sequence: u64,
+    tasks: VecDeque<AdmittedTask>,
     closed: bool,
 }
 
@@ -196,7 +209,12 @@ impl CompletionQueue {
             if ready.closed {
                 return;
             }
-            ready.tasks.push_back(task);
+            let sequence = ready.next_sequence;
+            ready.next_sequence = ready
+                .next_sequence
+                .checked_add(1)
+                .expect("host-task admission sequence overflow");
+            ready.tasks.push_back(AdmittedTask { sequence, task });
         }
         self.signal.notify_all();
         let invoke = {
@@ -250,11 +268,36 @@ impl CompletionQueue {
     /// it. The order an application observes is the order things became ready,
     /// not an artifact of which queue the driver happened to look at first.
     pub fn take(&self) -> Option<HostTask> {
+        self.take_sequenced().map(|admitted| admitted.task)
+    }
+
+    /// Take the next task together with its monotonically assigned admission
+    /// sequence. Engines normally need only [`Self::take`]; ordering tests and
+    /// diagnostic consumers use this form to prove all source kinds share the
+    /// same counter.
+    pub fn take_sequenced(&self) -> Option<AdmittedTask> {
         self.ready
             .lock()
             .expect("completion queue poisoned")
             .tasks
             .pop_front()
+    }
+
+    /// Remove events for a subscription which have not been reserved yet.
+    fn cancel_events(&self, subscription: u64) {
+        self.ready
+            .lock()
+            .expect("completion queue poisoned")
+            .tasks
+            .retain(|admitted| {
+                !matches!(
+                    admitted.task,
+                    HostTask::Event {
+                        subscription: current,
+                        ..
+                    } if current == subscription
+                )
+            });
     }
 
     pub fn len(&self) -> usize {
@@ -305,6 +348,7 @@ pub struct RuntimeState {
     app_directories: std::sync::OnceLock<crate::stdlib::app_fs::AppDirectories>,
     responses: Mutex<std::collections::HashMap<u64, Arc<StoredResponse>>>,
     controls: Mutex<std::collections::HashMap<u64, crate::stdlib::abort::AbortController>>,
+    subscriptions: Mutex<HashMap<u64, ()>>,
     shutdown: std::sync::atomic::AtomicBool,
     /// References held by workers keep storage alive but do not keep the
     /// runtime open. Only Contexts and owning engine handles increment this.
@@ -378,6 +422,7 @@ impl RuntimeState {
             app_directories,
             responses: Mutex::new(std::collections::HashMap::new()),
             controls: Mutex::new(std::collections::HashMap::new()),
+            subscriptions: Mutex::new(HashMap::new()),
             shutdown: std::sync::atomic::AtomicBool::new(false),
             owners: std::sync::atomic::AtomicUsize::new(0),
             headers: Mutex::new(std::collections::HashMap::new()),
@@ -570,6 +615,10 @@ impl RuntimeState {
         for response in responses.into_values() {
             response.control.abort();
         }
+        self.subscriptions
+            .lock()
+            .expect("event subscriptions poisoned")
+            .clear();
     }
 
     pub(crate) fn is_shutdown(&self) -> bool {
@@ -725,6 +774,53 @@ impl RuntimeState {
             .lock()
             .expect("response registry poisoned")
             .len()
+    }
+
+    /// Register one callback slot for a caller-owned runtime. The JSI adapter
+    /// owns the returned handle and its JavaScript callback root together.
+    pub(crate) fn subscribe_event(self: &Arc<Self>) -> (u64, crate::stdlib::events::Subscription) {
+        let id = self
+            .next_handle
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.subscriptions
+            .lock()
+            .expect("event subscriptions poisoned")
+            .insert(id, ());
+        let state: Weak<Self> = Arc::downgrade(self);
+        let subscription = crate::stdlib::events::Subscription::new(move || {
+            if let Some(state) = state.upgrade() {
+                state.unsubscribe_event(id);
+            }
+        });
+        (id, subscription)
+    }
+
+    fn unsubscribe_event(&self, id: u64) {
+        self.subscriptions
+            .lock()
+            .expect("event subscriptions poisoned")
+            .remove(&id);
+        // @ref LLP 0057.000#l3--events-abort-and-the-second-direction — unsubscribe cancels admitted but unreserved delivery
+        self.queue.cancel_events(id);
+    }
+
+    /// Publish from a host source without touching JSI. Holding the registry
+    /// lock through admission closes the race with unsubscribe: either this
+    /// task is admitted first and cancellation removes it, or publication sees
+    /// the missing subscription and refuses it.
+    pub(crate) fn publish_event(&self, subscription: u64, payload: HostValue) -> bool {
+        let subscriptions = self
+            .subscriptions
+            .lock()
+            .expect("event subscriptions poisoned");
+        if self.is_shutdown() || !subscriptions.contains_key(&subscription) {
+            return false;
+        }
+        self.queue.admit(HostTask::Event {
+            subscription,
+            payload,
+        });
+        true
     }
 }
 
@@ -1108,6 +1204,55 @@ mod tests {
             .collect();
         assert_eq!(ids, vec![1, 2, 3]);
         assert!(queue.take().is_none());
+    }
+
+    #[test]
+    fn timers_settlements_and_events_share_one_admission_sequence() {
+        let state = Arc::new(RuntimeState::new(Box::new(
+            crate::transport::dev_tcp::DevTcpTransport::new(),
+        )));
+        let (subscription_id, subscription) = state.subscribe_event();
+
+        state.queue.admit(HostTask::Timer { handle: 7 });
+        state
+            .queue
+            .complete(8, Ok(HostValue::Str("settled".into())));
+        assert!(state.publish_event(subscription_id, HostValue::Str("event".into())));
+
+        let admitted: Vec<_> = (0..3)
+            .map(|_| state.queue.take_sequenced().unwrap())
+            .collect();
+        assert_eq!(
+            admitted
+                .iter()
+                .map(|task| task.sequence)
+                .collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
+        assert!(matches!(admitted[0].task, HostTask::Timer { handle: 7 }));
+        assert!(matches!(admitted[1].task, HostTask::Settlement(_)));
+        assert!(matches!(
+            admitted[2].task,
+            HostTask::Event {
+                subscription,
+                payload: HostValue::Str(ref value)
+            } if subscription == subscription_id && value == "event"
+        ));
+        drop(subscription);
+    }
+
+    #[test]
+    fn unsubscribe_cancels_an_event_admitted_but_not_reserved() {
+        let state = Arc::new(RuntimeState::new(Box::new(
+            crate::transport::dev_tcp::DevTcpTransport::new(),
+        )));
+        let (subscription_id, subscription) = state.subscribe_event();
+        assert!(state.publish_event(subscription_id, HostValue::Str("queued".into())));
+        assert_eq!(state.queue.len(), 1);
+
+        subscription.unsubscribe();
+        assert!(state.queue.take().is_none());
+        assert!(!state.publish_event(subscription_id, HostValue::Str("late".into())));
     }
 
     #[test]

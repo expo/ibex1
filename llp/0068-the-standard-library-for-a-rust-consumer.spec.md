@@ -117,6 +117,7 @@ selection on the caller's behalf. The groups are:
 | `SECRETS` | no JSI projection yet; named for the existing Rust binding | `secret.keep` library operations | — | core/platform backend |
 | `KV` | no JSI projection yet; named for the existing Rust binding | `storage.kv` library operations | — | core/platform backend |
 | `INTL` (Linux) | selected `Intl`, locale methods on Number/BigInt/String/Date | ICU-backed formatting/case operations | — | `hermes` on Linux today |
+| `EVENTS` | `Event`, `EventTarget`, event subclasses, global error/rejection hooks, `self`, `navigator.userAgent` | JavaScript listener state; subscribed host deliveries use the shared task FIFO | `PURE` | core |
 
 `bindings::scripts(groups)` returns the ordered `(name, source_path)` inputs
 for the caller to compile with its own engine compiler. It excludes the
@@ -302,5 +303,12 @@ witness and packaged artifact separately passed for the published Snapback2
 behavior remains tracked in open issue
 `20260911-selected-intl-conformance-followups.md`.
 
-**OQ3 — Async.** If every consumer ends up wrapping these in the same future
-type, that type belongs here. Not before.
+**OQ3 — Async.** *Resolved 2026-10-04 by L3:* a watch returns a
+`std::sync::mpsc::Receiver` together with a `Subscription` whose sole operation
+is idempotent `unsubscribe` (drop has the same effect). The caller blocks,
+polls, or adapts that receiver to its own executor. Ibex chooses no future
+type, reactor, clock, or async runtime. JavaScript delivery is a separate
+projection of the same subscription: sources admit `HostTask::Event` into the
+runtime's one sequence-numbered FIFO, and the callback runs only when the
+embedder pumps. Unsubscribe removes an event admitted but not yet reserved;
+an already-running callback may finish.
