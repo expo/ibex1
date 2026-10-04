@@ -7,6 +7,7 @@
   "use strict";
 
   var results = [];
+  var outstandingPromiseTests = 0;
 
   function record(name, error) {
     results.push({ name: name, ok: !error, message: error ? String(error && error.message || error) : "" });
@@ -37,16 +38,23 @@
 
   global.promise_test = function (fn, name) {
     var state = context();
+    var complete = false;
+    outstandingPromiseTests++;
+    function finish(error) {
+      if (complete) return;
+      complete = true;
+      record(name, state.cleanup(error));
+      outstandingPromiseTests--;
+    }
     try {
       var p = fn.call(state, state);
       if (p && typeof p.then === "function") {
-        p.then(function () { record(name, state.cleanup(null)); },
-               function (e) { record(name, state.cleanup(e)); });
+        p.then(function () { finish(null); }, function (e) { finish(e); });
       } else {
-        record(name, state.cleanup(null));
+        finish(null);
       }
     } catch (e) {
-      record(name, state.cleanup(e));
+      finish(e);
     }
   };
 
@@ -179,7 +187,11 @@
   global.__ibex2_test_results = function () {
     return JSON.stringify(results);
   };
+  global.__ibex2_test_outstanding = function () {
+    return outstandingPromiseTests;
+  };
   global.__ibex2_reset_results = function () {
     results = [];
+    outstandingPromiseTests = 0;
   };
 })(globalThis);

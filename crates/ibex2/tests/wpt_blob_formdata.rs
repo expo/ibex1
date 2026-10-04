@@ -9,6 +9,7 @@
 use ibex2::bindings::{Context, Groups};
 use ibex2::engine::hermes::{DynamicCode, Hermes};
 use ibex2::grant::GrantSet;
+use std::time::Duration;
 
 const BLOB_FILES: &[&str] = &[
     "Blob-array-buffer.any.js",
@@ -37,6 +38,7 @@ struct Outcome {
     name: String,
     ok: bool,
     message: String,
+    float16_available: bool,
 }
 
 fn root() -> std::path::PathBuf {
@@ -62,6 +64,18 @@ fn run_file(directory: &str, name: &str, blob_support: bool) -> Vec<Outcome> {
     runtime
         .eval(&source)
         .unwrap_or_else(|error| panic!("{directory}/{name} failed to evaluate: {error}"));
+    runtime.run_to_quiescence(Duration::from_secs(5));
+    let outstanding = runtime
+        .eval("String(__ibex2_test_outstanding())")
+        .expect("outstanding promise tests");
+    assert_eq!(
+        outstanding, "0",
+        "{directory}/{name} still had promise_test work after quiescence"
+    );
+    let float16_available = runtime
+        .eval("typeof Float16Array === 'function'")
+        .expect("Float16Array availability")
+        == "true";
     let raw = runtime.eval("__ibex2_test_results()").expect("results");
     serde_json::from_str::<Vec<serde_json::Value>>(&raw)
         .expect("results JSON")
@@ -70,8 +84,16 @@ fn run_file(directory: &str, name: &str, blob_support: bool) -> Vec<Outcome> {
             name: result["name"].as_str().unwrap_or("").to_string(),
             ok: result["ok"].as_bool().unwrap_or(false),
             message: result["message"].as_str().unwrap_or("").to_string(),
+            float16_available,
         })
         .collect()
+}
+
+fn engine_unavailable(outcome: &Outcome) -> bool {
+    !outcome.float16_available
+        && outcome.name
+            == "Passing a Float16Array as element of the blobParts array should work."
+        && outcome.message.contains("Float16Array' doesn't exist")
 }
 
 fn named_exclusion(outcome: &Outcome) -> bool {
@@ -106,6 +128,10 @@ fn wpt_blob_form_data_report() {
     let passed = results.iter().filter(|(_, outcome)| outcome.ok).count();
     let unavailable = results
         .iter()
+        .filter(|(_, outcome)| !outcome.ok && engine_unavailable(outcome))
+        .count();
+    let excluded = results
+        .iter()
         .filter(|(_, outcome)| !outcome.ok && named_exclusion(outcome))
         .count();
     for (file, outcome) in &results {
@@ -114,9 +140,9 @@ fn wpt_blob_form_data_report() {
         }
     }
     println!(
-        "{passed}/{} passed; {unavailable} unavailable; {} failed",
+        "{passed}/{} passed; {excluded} named exclusions; {unavailable} unavailable; {} failed",
         results.len(),
-        results.len() - passed - unavailable
+        results.len() - passed - excluded - unavailable
     );
 }
 
@@ -125,24 +151,27 @@ fn wpt_blob_form_data_gate() {
     let results = all_results();
     let mut failures = Vec::new();
     let mut unavailable = 0;
+    let mut excluded = 0;
     for (file, outcome) in &results {
         if outcome.ok {
             continue;
         }
         if named_exclusion(outcome) {
+            excluded += 1;
+        } else if engine_unavailable(outcome) {
             unavailable += 1;
         } else {
             failures.push(format!("{file}: {}: {}", outcome.name, outcome.message));
         }
     }
     println!(
-        "{} passed; {unavailable} named exclusions; {} failed",
-        results.len() - unavailable - failures.len(),
+        "{} passed; {excluded} named exclusions; {unavailable} unavailable (Hermes Float16Array); {} failed",
+        results.len() - excluded - unavailable - failures.len(),
         failures.len()
     );
     assert_eq!(
         results.len(),
-        151,
+        289,
         "the pinned Blob/FormData WPT set changed; re-baseline deliberately"
     );
     assert!(
