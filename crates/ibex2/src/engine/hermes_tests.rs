@@ -75,6 +75,45 @@ fn with_stdlib() -> Hermes {
 }
 
 #[test]
+fn all_groups_preserve_the_shipping_global_insertion_order() {
+    let mut rt = Hermes::new(DynamicCode::Closed).expect("runtime");
+    let baseline: std::collections::BTreeSet<_> = rt.global_names_in_order().into_iter().collect();
+    let context = crate::bindings::Context::new(crate::grant::GrantSet::none());
+    rt.install_runtime(crate::bindings::Groups::ALL, &context)
+        .unwrap();
+    let added: Vec<_> = rt
+        .global_names_in_order()
+        .into_iter()
+        .filter(|name| !baseline.contains(name))
+        .collect();
+    assert_eq!(
+        added,
+        [
+            "console",
+            "__ibex2_default",
+            "__ibex2_export_all",
+            "__ibex2_dynamic_import",
+            "Headers",
+            "setTimeout",
+            "setInterval",
+            "clearTimeout",
+            "clearInterval",
+            "__ibex2_fire_timer",
+            "queueMicrotask",
+            "performance",
+            "URL",
+            "URLSearchParams",
+            "QuotaExceededError",
+            "DOMException",
+            "Crypto",
+            "crypto",
+            "AbortSignal",
+            "AbortController",
+        ]
+    );
+}
+
+#[test]
 fn console_from_javascript_reaches_the_rust_queue() {
     let mut rt = with_stdlib();
     rt.eval("console.log('hello', 42, true); console.error('bad')")

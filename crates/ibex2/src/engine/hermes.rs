@@ -45,6 +45,7 @@ extern "C" {
         script_count: usize,
         out_error: *mut *mut c_char,
     ) -> c_int;
+    fn ibex2_hermes_prepare_runtime(handle: *mut c_void, groups: u16) -> c_int;
     fn ibex2_hermes_pump(handle: *mut c_void, out_ran: *mut c_int) -> c_int;
     fn ibex2_hermes_collect_garbage(handle: *mut c_void) -> c_int;
     fn ibex2_hermes_drain_microtasks(handle: *mut c_void, out: *mut *mut c_char) -> c_int;
@@ -352,16 +353,33 @@ impl Hermes {
         Ok(())
     }
 
-    /// Runtime bootstrap: install the loader's ESM helpers, then call the
-    /// engine-independent bindings door. The helpers are runtime machinery,
-    /// not a bindings group, and remain absent from caller-owned runtimes.
+    /// Runtime bootstrap through the engine-independent bindings door. The
+    /// loader's ESM helpers are runtime machinery, not a bindings group, and
+    /// remain absent from caller-owned runtimes. Their slots are reserved
+    /// before installation to preserve the shipping global insertion order.
     pub fn install_runtime(
         &mut self,
         groups: crate::bindings::Groups,
         context: &crate::bindings::Context,
     ) -> Result<(), JsError> {
+        if self.installed_groups.is_some() {
+            return Err(JsError::Thrown(
+                "the Ibex2 binding groups are already installed".into(),
+            ));
+        }
+        groups
+            .validate()
+            .map_err(|error| JsError::Thrown(error.to_string()))?;
+        // SAFETY: the runtime is live and this creates only placeholder data
+        // properties; the compiled helpers replace them below.
+        if unsafe { ibex2_hermes_prepare_runtime(self.handle, groups.bits()) } != 0 {
+            return Err(JsError::Thrown(
+                "could not prepare the Ibex2 runtime globals".into(),
+            ));
+        }
+        self.install(groups, context)?;
         self.eval_bytes(include_bytes!(concat!(env!("OUT_DIR"), "/esm.hbc")))?;
-        self.install(groups, context)
+        Ok(())
     }
 
     pub fn installed_groups(&self) -> Option<crate::bindings::Groups> {
@@ -601,10 +619,17 @@ impl Hermes {
     /// LLP 0062 R5: R1 is a property of a list, and a list nothing checks
     /// drifts. This is what makes the check mechanical.
     pub fn global_names(&mut self) -> Vec<String> {
+        let mut names = self.global_names_in_order();
+        names.sort();
+        names
+    }
+
+    /// The global names in JavaScript's specified property insertion order.
+    pub fn global_names_in_order(&mut self) -> Vec<String> {
         let raw = self
-            .eval("Object.getOwnPropertyNames(globalThis).sort().join(',')")
+            .eval("Object.getOwnPropertyNames(globalThis).join('\\n')")
             .unwrap_or_default();
-        raw.split(',').map(str::to_string).collect()
+        raw.split('\n').map(str::to_string).collect()
     }
 
     /// Install the `__ibex2_async_echo` op. Tests only: a delegating op with

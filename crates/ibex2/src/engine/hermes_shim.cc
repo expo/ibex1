@@ -973,6 +973,22 @@ int ibex2_hermes_clear_deadline(void *handle) {
 
 extern "C" {
 
+/// Reserve the runtime-only global slots in their historical insertion order.
+/// Binding installation replaces `console`; esm.hbc replaces the helpers.
+int ibex2_hermes_prepare_runtime(void *handle, uint16_t groups) {
+  auto *rt = static_cast<Ibex2Runtime *>(handle);
+  if (rt == nullptr || rt->runtime == nullptr)
+    return IBEX2_STATUS_INVALID;
+  auto &runtime = *rt->runtime;
+  auto global = runtime.global();
+  if ((groups & GROUP_CONSOLE) != 0)
+    global.setProperty(runtime, "console", jsi::Object(runtime));
+  for (const char *name : {"__ibex2_default", "__ibex2_export_all",
+                           "__ibex2_dynamic_import"})
+    global.setProperty(runtime, name, jsi::Value::undefined());
+  return IBEX2_STATUS_OK;
+}
+
 /// Install the selected bindings through the engine-independent JSI adapter.
 /// Runtime-only bootstrap consumes endowed capability globals before any
 /// module runs; their factories remain in Adapter for per-module authority.
