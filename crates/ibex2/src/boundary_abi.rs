@@ -14,6 +14,7 @@ use std::ffi::{c_char, c_int, c_uchar};
 
 use crate::boundary::{HostArg, HostError, HostValue};
 use crate::grant::GrantSet;
+use crate::host_opcodes;
 use crate::stdlib::{base64, console, crypto, text, url};
 
 pub const TAG_UNDEFINED: i32 = 0;
@@ -148,16 +149,16 @@ pub enum Op {
     CryptoGetRandomValues = 71,
     FetchControl = 72,
     SqliteResult = 80,
-    SubtleDigest = 90,
-    SubtleImportKey = 91,
-    SubtleExportKey = 92,
-    SubtleGenerateKey = 93,
-    SubtleSign = 94,
-    SubtleVerify = 95,
-    SubtleEncrypt = 96,
-    SubtleDecrypt = 97,
-    SubtleDeriveBits = 98,
-    SubtleDeriveKey = 99,
+    SubtleDigest = host_opcodes::subtle::DIGEST,
+    SubtleImportKey = host_opcodes::subtle::IMPORT_KEY,
+    SubtleExportKey = host_opcodes::subtle::EXPORT_KEY,
+    SubtleGenerateKey = host_opcodes::subtle::GENERATE_KEY,
+    SubtleSign = host_opcodes::subtle::SIGN,
+    SubtleVerify = host_opcodes::subtle::VERIFY,
+    SubtleEncrypt = host_opcodes::subtle::ENCRYPT,
+    SubtleDecrypt = host_opcodes::subtle::DECRYPT,
+    SubtleDeriveBits = host_opcodes::subtle::DERIVE_BITS,
+    SubtleDeriveKey = host_opcodes::subtle::DERIVE_KEY,
 }
 
 impl Op {
@@ -204,16 +205,16 @@ impl Op {
             71 => Op::CryptoGetRandomValues,
             72 => Op::FetchControl,
             80 => Op::SqliteResult,
-            90 => Op::SubtleDigest,
-            91 => Op::SubtleImportKey,
-            92 => Op::SubtleExportKey,
-            93 => Op::SubtleGenerateKey,
-            94 => Op::SubtleSign,
-            95 => Op::SubtleVerify,
-            96 => Op::SubtleEncrypt,
-            97 => Op::SubtleDecrypt,
-            98 => Op::SubtleDeriveBits,
-            99 => Op::SubtleDeriveKey,
+            host_opcodes::subtle::DIGEST => Op::SubtleDigest,
+            host_opcodes::subtle::IMPORT_KEY => Op::SubtleImportKey,
+            host_opcodes::subtle::EXPORT_KEY => Op::SubtleExportKey,
+            host_opcodes::subtle::GENERATE_KEY => Op::SubtleGenerateKey,
+            host_opcodes::subtle::SIGN => Op::SubtleSign,
+            host_opcodes::subtle::VERIFY => Op::SubtleVerify,
+            host_opcodes::subtle::ENCRYPT => Op::SubtleEncrypt,
+            host_opcodes::subtle::DECRYPT => Op::SubtleDecrypt,
+            host_opcodes::subtle::DERIVE_BITS => Op::SubtleDeriveBits,
+            host_opcodes::subtle::DERIVE_KEY => Op::SubtleDeriveKey,
             _ => return None,
         })
     }
@@ -882,15 +883,15 @@ enum AsyncOp {
     FsCopyFile = 118,
     FsRealpath = 119,
     FsAtomicWriteFile = 120,
-    SqliteOpen = 150,
-    SqlitePrepare = 151,
-    SqliteExecute = 152,
-    SqliteQuery = 153,
-    SqliteStatementExecute = 154,
-    SqliteStatementQuery = 155,
-    SqliteTransaction = 156,
-    SqliteClose = 157,
-    SqliteStatementClose = 158,
+    SqliteOpen = host_opcodes::sqlite_async::OPEN,
+    SqlitePrepare = host_opcodes::sqlite_async::PREPARE,
+    SqliteExecute = host_opcodes::sqlite_async::EXECUTE,
+    SqliteQuery = host_opcodes::sqlite_async::QUERY,
+    SqliteStatementExecute = host_opcodes::sqlite_async::STATEMENT_EXECUTE,
+    SqliteStatementQuery = host_opcodes::sqlite_async::STATEMENT_QUERY,
+    SqliteTransaction = host_opcodes::sqlite_async::TRANSACTION,
+    SqliteClose = host_opcodes::sqlite_async::CLOSE,
+    SqliteStatementClose = host_opcodes::sqlite_async::STATEMENT_CLOSE,
 }
 
 impl AsyncOp {
@@ -910,15 +911,15 @@ impl AsyncOp {
             118 => Some(AsyncOp::FsCopyFile),
             119 => Some(AsyncOp::FsRealpath),
             120 => Some(AsyncOp::FsAtomicWriteFile),
-            150 => Some(AsyncOp::SqliteOpen),
-            151 => Some(AsyncOp::SqlitePrepare),
-            152 => Some(AsyncOp::SqliteExecute),
-            153 => Some(AsyncOp::SqliteQuery),
-            154 => Some(AsyncOp::SqliteStatementExecute),
-            155 => Some(AsyncOp::SqliteStatementQuery),
-            156 => Some(AsyncOp::SqliteTransaction),
-            157 => Some(AsyncOp::SqliteClose),
-            158 => Some(AsyncOp::SqliteStatementClose),
+            host_opcodes::sqlite_async::OPEN => Some(AsyncOp::SqliteOpen),
+            host_opcodes::sqlite_async::PREPARE => Some(AsyncOp::SqlitePrepare),
+            host_opcodes::sqlite_async::EXECUTE => Some(AsyncOp::SqliteExecute),
+            host_opcodes::sqlite_async::QUERY => Some(AsyncOp::SqliteQuery),
+            host_opcodes::sqlite_async::STATEMENT_EXECUTE => Some(AsyncOp::SqliteStatementExecute),
+            host_opcodes::sqlite_async::STATEMENT_QUERY => Some(AsyncOp::SqliteStatementQuery),
+            host_opcodes::sqlite_async::TRANSACTION => Some(AsyncOp::SqliteTransaction),
+            host_opcodes::sqlite_async::CLOSE => Some(AsyncOp::SqliteClose),
+            host_opcodes::sqlite_async::STATEMENT_CLOSE => Some(AsyncOp::SqliteStatementClose),
 
             _ => None,
         }
@@ -939,7 +940,9 @@ fn run_async(
     state: &crate::task::RuntimeState,
     grants: &GrantSet,
 ) -> Result<HostValue, HostError> {
-    if (150..=158).contains(&(op as u32)) {
+    if (host_opcodes::sqlite_async::OPEN..=host_opcodes::sqlite_async::STATEMENT_CLOSE)
+        .contains(&(op as u32))
+    {
         return crate::sqlite_abi::run(op as u32, args, state, grants);
     }
     if let Some(fs_op) = fs_op_for(op) {
@@ -1430,6 +1433,7 @@ mod fetch_header_tests {
     use super::*;
     use crate::stdlib::fetch::{Headers, Request, Transport};
     use crate::task::RuntimeState;
+    use std::collections::BTreeMap;
 
     struct NoRequests;
     impl Transport for NoRequests {
@@ -1440,6 +1444,60 @@ mod fetch_header_tests {
         ) -> Result<crate::stdlib::fetch::StreamingResponse, HostError> {
             panic!("invalid headers reached the transport");
         }
+    }
+
+    #[test]
+    fn every_external_host_opcode_has_one_dispatcher() {
+        let mut claims: BTreeMap<u32, Vec<&str>> = BTreeMap::new();
+        let mut claim = |owner: &'static str, op: u32| {
+            claims.entry(op).or_default().push(owner);
+        };
+
+        // Op and AsyncOp are the two unconditional entry-point dispatchers.
+        // Scan the complete currently assigned space so this list cannot drift
+        // from their from_u32 implementations.
+        for op in 0..=host_opcodes::subtle::DERIVE_KEY {
+            if Op::from_u32(op).is_some() {
+                claim("Op", op);
+            }
+            if AsyncOp::from_u32(op).is_some() {
+                claim("AsyncOp", op);
+            }
+        }
+
+        // These dispatchers compile only on Linux, but their canonical lists
+        // compile everywhere so a macOS unit run still checks their claims.
+        for &op in host_opcodes::intl_number::ALL {
+            claim("Linux Intl.NumberFormat", op);
+        }
+        for &op in host_opcodes::intl_case::ALL {
+            claim("Linux locale case mapping", op);
+        }
+        for &op in host_opcodes::intl_datetime::ALL {
+            claim("Linux Intl.DateTimeFormat", op);
+        }
+
+        assert!(
+            host_opcodes::subtle::ALL
+                .iter()
+                .all(|&op| Op::from_u32(op).is_some()),
+            "the subtle assignment list must be represented by Op"
+        );
+        assert!(
+            host_opcodes::sqlite_async::ALL
+                .iter()
+                .all(|&op| AsyncOp::from_u32(op).is_some()),
+            "the SQLite assignment list must be represented by AsyncOp"
+        );
+
+        let collisions: Vec<_> = claims
+            .into_iter()
+            .filter(|(_, owners)| owners.len() > 1)
+            .collect();
+        assert!(
+            collisions.is_empty(),
+            "host opcode collisions: {collisions:?}"
+        );
     }
 
     #[test]

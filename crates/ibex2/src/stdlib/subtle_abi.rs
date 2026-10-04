@@ -4,22 +4,15 @@
 //! byte buffers. `CryptoKey` material remains in `RuntimeState`'s table.
 
 use crate::boundary::{HostArg, HostError, HostValue};
+use crate::host_opcodes::subtle::{
+    DECRYPT, DERIVE_BITS, DERIVE_KEY, DIGEST, ENCRYPT, EXPORT_KEY, GENERATE_KEY, IMPORT_KEY, SIGN,
+    VERIFY,
+};
 
 use super::subtle::{
     self, AesGcmParams, DeriveAlgorithm, DerivedKeyAlgorithm, ExportedKey, GenerateAlgorithm,
     HashAlgorithm, ImportAlgorithm, JsonWebKey, KeyFormat, KeyUsage, SignatureAlgorithm,
 };
-
-const DIGEST: u32 = 90;
-const IMPORT_KEY: u32 = 91;
-const EXPORT_KEY: u32 = 92;
-const GENERATE_KEY: u32 = 93;
-const SIGN: u32 = 94;
-const VERIFY: u32 = 95;
-const ENCRYPT: u32 = 96;
-const DECRYPT: u32 = 97;
-const DERIVE_BITS: u32 = 98;
-const DERIVE_KEY: u32 = 99;
 
 fn failed(error: subtle::Error) -> HostError {
     HostError::Failed(error.to_string())

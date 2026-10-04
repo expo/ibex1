@@ -572,16 +572,16 @@ void install_crypto(jsi::Runtime& rt,
   set_group_binding(rt, global, "__ibex2_random_uuid", 70, lifetime);
   set_group_binding(rt, global, "__ibex2_get_random_values", 71, lifetime);
   jsi::Object subtle(rt);
-  set_group_binding(rt, subtle, "digest", 90, lifetime);
-  set_group_binding(rt, subtle, "importKey", 91, lifetime);
-  set_group_binding(rt, subtle, "exportKey", 92, lifetime);
-  set_group_binding(rt, subtle, "generateKey", 93, lifetime);
-  set_group_binding(rt, subtle, "sign", 94, lifetime);
-  set_group_binding(rt, subtle, "verify", 95, lifetime);
-  set_group_binding(rt, subtle, "encrypt", 96, lifetime);
-  set_group_binding(rt, subtle, "decrypt", 97, lifetime);
-  set_group_binding(rt, subtle, "deriveBits", 98, lifetime);
-  set_group_binding(rt, subtle, "deriveKey", 99, lifetime);
+  set_group_binding(rt, subtle, "digest", 160, lifetime);
+  set_group_binding(rt, subtle, "importKey", 161, lifetime);
+  set_group_binding(rt, subtle, "exportKey", 162, lifetime);
+  set_group_binding(rt, subtle, "generateKey", 163, lifetime);
+  set_group_binding(rt, subtle, "sign", 164, lifetime);
+  set_group_binding(rt, subtle, "verify", 165, lifetime);
+  set_group_binding(rt, subtle, "encrypt", 166, lifetime);
+  set_group_binding(rt, subtle, "decrypt", 167, lifetime);
+  set_group_binding(rt, subtle, "deriveBits", 168, lifetime);
+  set_group_binding(rt, subtle, "deriveKey", 169, lifetime);
   subtle.setProperty(
       rt, "own",
       jsi::Function::createFromHostFunction(
