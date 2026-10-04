@@ -224,7 +224,14 @@ fn an_unread_response_does_not_hold_up_another_request() {
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000000\r\n\r\n")
                 .unwrap();
             // No producer is installed to collect this body in the background.
-            assert_eq!(socket.read(&mut [0]).unwrap(), 0);
+            // Dropping an unread response may close gracefully or reset the
+            // connection (observed with Windows sockets). Both mean the peer
+            // released it; data and every other error still fail the fixture.
+            match socket.read(&mut [0]) {
+                Ok(0) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+                outcome => panic!("unread response was not closed: {outcome:?}"),
+            }
         });
         let response = transport
             .open(&Request::get(&url), &AbortSignal::default())

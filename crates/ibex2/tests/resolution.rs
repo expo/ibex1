@@ -778,6 +778,10 @@ fn a_package_grant_covers_every_file_of_the_package_and_no_other() {
 /// package whether it is imported by name or by relative path — one file, one
 /// name, one grant set.
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows symlink fixture requires Developer Mode or SeCreateSymbolicLinkPrivilege; run with --ignored when available"
+)]
 fn a_workspace_package_section_binds_to_its_real_directory() {
     let p = Project::new("pkg-grant-workspace");
     p.file(
@@ -794,7 +798,11 @@ fn a_workspace_package_section_binds_to_its_real_directory() {
            () => console.log(how + ': allowed'), e => console.log(how + ': ' + e.message));",
     );
     std::fs::create_dir_all(p.0.join("node_modules/@w")).unwrap();
+    #[cfg(unix)]
     std::os::unix::fs::symlink(p.0.join("packages/ui"), p.0.join("node_modules/@w/ui")).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_dir(p.0.join("packages/ui"), p.0.join("node_modules/@w/ui"))
+        .unwrap();
     let (out, err) = p.run(
         "./index.js",
         "[*]\n[@w/ui]\nnet.fetch https://example.com\n",
@@ -877,6 +885,10 @@ fn a_directory_named_after_a_granted_package_inside_another_package_gets_nothing
 /// for a workspace package too. The first version bound the package to a
 /// directory section and let the author's own directory section win.
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows symlink fixture requires Developer Mode or SeCreateSymbolicLinkPrivilege; run with --ignored when available"
+)]
 fn a_package_section_beats_a_directory_section_for_a_workspace_package() {
     let p = Project::new("pkg-workspace-precedence");
     let secret = p.0.join("secret.txt");
@@ -891,7 +903,11 @@ fn a_package_section_beats_a_directory_section_for_a_workspace_package() {
             ),
         );
     std::fs::create_dir_all(p.0.join("node_modules/@w")).unwrap();
+    #[cfg(unix)]
     std::os::unix::fs::symlink(p.0.join("packages/ui"), p.0.join("node_modules/@w/ui")).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_dir(p.0.join("packages/ui"), p.0.join("node_modules/@w/ui"))
+        .unwrap();
     let manifest = format!(
         "[./packages/ui/]\nfs.read {}\n[@w/ui]\n",
         p.0.to_string_lossy()
