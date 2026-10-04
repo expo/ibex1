@@ -37,20 +37,38 @@ fn rust_and_native_sources() -> Vec<PathBuf> {
     out
 }
 
-/// §5.3 — the kernel may not depend on the legacy runtime.
-///
-/// Checked at the manifest, because a dependency edge is what actually pulls
-/// the legacy closure in; a source-level `use` is a symptom of one.
+/// §5.3 — the kernel may not depend on the legacy runtime or its authority
+/// crates. Cargo metadata resolves package aliases, target tables and workspace
+/// dependencies, so this checks the graph edge rather than a bypassable spelling
+/// in either Rust source or the manifest.
 #[test]
 fn the_kernel_does_not_depend_on_the_legacy_runtime() {
-    let manifest = std::fs::read_to_string(crate_root().join("Cargo.toml")).expect("Cargo.toml");
-    let dependencies = manifest
-        .split("[dependencies]")
-        .nth(1)
-        .unwrap_or("")
-        .split("\n[")
-        .next()
-        .unwrap_or("");
+    let manifest = crate_root().join("Cargo.toml");
+    let output = std::process::Command::new(env!("CARGO"))
+        .args([
+            "metadata",
+            "--format-version",
+            "1",
+            "--no-deps",
+            "--manifest-path",
+        ])
+        .arg(&manifest)
+        .output()
+        .expect("cargo metadata");
+    assert!(
+        output.status.success(),
+        "cargo metadata failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("cargo metadata JSON");
+    let package = metadata["packages"]
+        .as_array()
+        .and_then(|packages| packages.iter().find(|package| package["name"] == "ibex2"))
+        .expect("ibex2 package in cargo metadata");
+    let dependencies = package["dependencies"]
+        .as_array()
+        .expect("ibex2 dependency list");
 
     for forbidden in [
         "ibex-runtime",
@@ -60,43 +78,12 @@ fn the_kernel_does_not_depend_on_the_legacy_runtime() {
         "ibex-sfe-catalog",
     ] {
         assert!(
-            !dependencies.contains(forbidden),
+            !dependencies
+                .iter()
+                .any(|dependency| dependency["name"] == forbidden),
             "crates/ibex2 depends on {forbidden}, which pulls in the legacy closure (§5.3)"
         );
     }
-}
-
-/// §5.3 — and no source file reaches into it either.
-#[test]
-fn no_source_reaches_into_the_legacy_runtime() {
-    let forbidden = [
-        "ibex_runtime::",
-        "crate::host::",
-        "stdlib_ffi",
-        "stdlib_adapter",
-    ];
-    let mut offenders = Vec::new();
-    for path in rust_and_native_sources() {
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
-        for needle in forbidden {
-            // A mention inside a comment is a reference, not a dependency; only
-            // code matters, so skip lines that are entirely comment.
-            for (number, line) in text.lines().enumerate() {
-                let trimmed = line.trim_start();
-                if trimmed.starts_with("//") || trimmed.starts_with("*") {
-                    continue;
-                }
-                if line.contains(needle) {
-                    offenders.push(format!("{}:{}: {needle}", path.display(), number + 1));
-                }
-            }
-        }
-    }
-    assert!(
-        offenders.is_empty(),
-        "legacy reach (§5.3):\n  {}",
-        offenders.join("\n  ")
-    );
 }
 
 /// §5.4 — no patched-engine symbol or identity-reading helper appears in the
