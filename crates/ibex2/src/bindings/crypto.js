@@ -5,6 +5,7 @@
   const fill = globalThis.__ibex2_get_random_values;
   const uuid = globalThis.__ibex2_random_uuid;
   const native = globalThis.__ibex2_subtle;
+  const brand = globalThis.__ibex2_brand || (value => value);
   delete globalThis.__ibex2_get_random_values;
   delete globalThis.__ibex2_random_uuid;
   delete globalThis.__ibex2_subtle;
@@ -228,7 +229,7 @@
     keyAlgorithms.set(key, algorithm);
     keyExtractable.set(key, extractable);
     keyUsages.set(key, freeze(usages.slice()));
-    return key;
+    return brand(key, "CryptoKey");
   }
   function jwkAlg(algorithm) {
     if (algorithm.name === "HMAC") return "HS" + algorithm.hash.name.slice(4);
@@ -496,6 +497,7 @@
     {value: "SubtleCrypto", configurable: true});
   const subtle = create(SubtleCrypto.prototype);
   subtleBrands.add(subtle);
+  brand(subtle, "SubtleCrypto");
   freeze(subtle);
 
   class Crypto {
@@ -527,6 +529,7 @@
     {value: "Crypto", configurable: true});
   const crypto = create(Crypto.prototype);
   cryptoBrands.add(crypto);
+  brand(crypto, "Crypto");
   freeze(crypto);
   globalThis.CryptoKey = CryptoKey;
   globalThis.SubtleCrypto = SubtleCrypto;

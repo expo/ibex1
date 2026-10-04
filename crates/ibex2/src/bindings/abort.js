@@ -1,6 +1,7 @@
 // Abort signals hold JavaScript reasons; fetch carries only cancellation to Rust.
 (function (global) {
   "use strict";
+  var brand = global.__ibex2_brand || function (value) { return value; };
   var signals = new WeakMap(), controllers = new WeakMap();
   var report = global.console && typeof global.console.error === "function"
     ? global.console.error
@@ -13,7 +14,7 @@
   function create() {
     var signal = Object.create(AbortSignal.prototype);
     signals.set(signal, { aborted: false, reason: undefined, listeners: [], hooks: [], dependents: [], sources: null, onabort: null, onabortEntry: null });
-    return signal;
+    return brand(signal, "AbortSignal");
   }
   function notify(callback, receiver, event) {
     try {
@@ -135,6 +136,7 @@
   function AbortController() {
     if (!new.target) throw new TypeError("AbortController requires new");
     controllers.set(this, create());
+    brand(this, "AbortController");
   }
   Object.defineProperty(AbortController.prototype, "signal", { get: function () {
     var signal = controllers.get(this);

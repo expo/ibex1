@@ -446,6 +446,7 @@ std::vector<const char*> expected_scripts_impl(Groups groups) {
 #endif
   if (has(groups, GROUP_FETCH)) result.push_back("fetch");
   if (has(groups, GROUP_STORAGE)) result.push_back("sqlite");
+  if (has(groups, GROUP_PURE)) result.push_back("structured_clone");
   return result;
 }
 

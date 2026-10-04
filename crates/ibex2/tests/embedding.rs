@@ -89,6 +89,10 @@ fn compiled_script(name: &str) -> CompiledScript {
             b"abort\0",
             include_bytes!(concat!(env!("OUT_DIR"), "/abort.hbc")),
         ),
+        "structured_clone" => (
+            b"structured_clone\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/structured_clone.hbc")),
+        ),
         "fetch" => (
             b"fetch\0",
             include_bytes!(concat!(env!("OUT_DIR"), "/fetch.hbc")),
@@ -373,6 +377,7 @@ fn pure_installs_exactly_its_globals_into_a_bare_runtime() {
         "btoa",
         "DOMException",
         "QuotaExceededError",
+        "structuredClone",
     ]
     .into_iter()
     .map(str::to_string)
@@ -401,6 +406,7 @@ fn fetch_group_does_not_install_timers_or_crypto() {
         "AbortController",
         "AbortSignal",
         "fetch",
+        "structuredClone",
     ]
     .into_iter()
     .map(str::to_string)

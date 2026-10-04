@@ -121,6 +121,7 @@ fn all_groups_preserve_the_shipping_global_insertion_order() {
             "crypto",
             "AbortSignal",
             "AbortController",
+            "structuredClone",
         ]
     );
 }

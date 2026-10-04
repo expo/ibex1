@@ -983,6 +983,7 @@ pub const DEFAULT_ADDED_GLOBALS: &[&str] = &[
     "crypto",
     "URL",
     "URLSearchParams",
+    "structuredClone",
 ];
 
 const GLOBAL_PARTITION: &[(Option<crate::bindings::Groups>, &[usize])] = &[
@@ -992,7 +993,10 @@ const GLOBAL_PARTITION: &[(Option<crate::bindings::Groups>, &[usize])] = &[
         &[3, 5, 6, 7, 8, 9, 10],
     ),
     (Some(crate::bindings::Groups::CONSOLE), &[4]),
-    (Some(crate::bindings::Groups::PURE), &[11, 12, 13, 20, 21]),
+    (
+        Some(crate::bindings::Groups::PURE),
+        &[11, 12, 13, 20, 21, 22],
+    ),
     (Some(crate::bindings::Groups::CRYPTO), &[14, 15, 16, 19]),
     (Some(crate::bindings::Groups::ABORT), &[17, 18]),
 ];

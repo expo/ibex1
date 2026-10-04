@@ -335,6 +335,34 @@
       "sha256": "4c3e604dff898bb0e78dbdf1952c1cba81b20fcee628b22343b87407508a54ab",
       "commit": "b89af32bc8f42d678f444eb0703bca015ddcf240",
       "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "html/webappapis/structured-clone/structured-clone.any.js",
+      "local": "third_party/wpt/html/webappapis/structured-clone/structured-clone.any.js",
+      "sha256": "fab6a2c44f860c790873e2e12790d85ad150415aa1b444ef63f6793ef4d42f15",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "html/webappapis/structured-clone/structured-clone-battery-of-tests-harness.js",
+      "local": "third_party/wpt/html/webappapis/structured-clone/structured-clone-battery-of-tests-harness.js",
+      "sha256": "61cf8d71704c1a509a58b51248fbb50f389d9339e68ad0c5520130d59d433ab8",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "html/webappapis/structured-clone/structured-clone-battery-of-tests.js",
+      "local": "third_party/wpt/html/webappapis/structured-clone/structured-clone-battery-of-tests.js",
+      "sha256": "8242d0df5b6a98140e795041c8807a58e32dc8afe971e31be7e7b588fef6d2f8",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
+    },
+    {
+      "upstream": "html/webappapis/structured-clone/structured-clone-battery-of-tests-with-transferables.js",
+      "local": "third_party/wpt/html/webappapis/structured-clone/structured-clone-battery-of-tests-with-transferables.js",
+      "sha256": "1d72f2f1ce39a35ea0bf13c157e8e20bbc0b87c959af844ebc32d77b1eaed671",
+      "commit": "13748c36fdf9dd77cd0b34dd6b244256b365ea60",
+      "fetchedOn": "2026-10-04"
     }
   ]
 }
