@@ -226,6 +226,12 @@ pub fn scripts(groups: Groups) -> Result<Vec<Script>, GroupError> {
         }
         "crypto" => concat!(env!("CARGO_MANIFEST_DIR"), "/src/bindings/crypto.js"),
         "abort" => concat!(env!("CARGO_MANIFEST_DIR"), "/src/bindings/abort.js"),
+        "structured_clone" => {
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/bindings/structured_clone.js"
+            )
+        }
         "fetch" => concat!(env!("CARGO_MANIFEST_DIR"), "/src/bindings/fetch.js"),
         "blob" => concat!(env!("CARGO_MANIFEST_DIR"), "/src/bindings/blob.js"),
         "sqlite" => SQLITE_SOURCE,
@@ -279,6 +285,12 @@ pub fn scripts(groups: Groups) -> Result<Vec<Script>, GroupError> {
     }
     if groups.contains(Groups::STORAGE) {
         push("sqlite");
+    }
+    // The platform factories above capture the private identity-brand writer.
+    // structuredClone consumes its reader and removes both bootstrap helpers,
+    // so it must be the final binding whenever PURE supplies it.
+    if groups.contains(Groups::PURE) {
+        push("structured_clone");
     }
     Ok(result)
 }
@@ -540,7 +552,7 @@ mod tests {
         ];
         #[cfg(target_os = "linux")]
         expected.extend(["intl_number_format", "intl_case", "intl_datetime"]);
-        expected.extend(["fetch", "sqlite"]);
+        expected.extend(["fetch", "sqlite", "structured_clone"]);
         assert_eq!(names, expected);
     }
 }

@@ -8,6 +8,7 @@
 
   var results = [];
   var outstandingPromiseTests = 0;
+  var promiseTestTail = Promise.resolve();
 
   function record(name, error) {
     results.push({ name: name, ok: !error, message: error ? String(error && error.message || error) : "" });
@@ -46,16 +47,16 @@
       record(name, state.cleanup(error));
       outstandingPromiseTests--;
     }
-    try {
-      var p = fn.call(state, state);
-      if (p && typeof p.then === "function") {
-        p.then(function () { finish(null); }, function (e) { finish(e); });
-      } else {
-        finish(null);
-      }
-    } catch (e) {
+    // WPT promise tests run in registration order. Besides matching the real
+    // harness, serialization keeps tests which temporarily delete an interface
+    // from perturbing unrelated cases that use it.
+    promiseTestTail = promiseTestTail.then(function () {
+      return fn.call(state, state);
+    }).then(function () {
+      finish(null);
+    }, function (e) {
       finish(e);
-    }
+    });
   };
 
   // The adopted Blob constructor fixture has one MessageChannel async_test.
@@ -94,7 +95,7 @@
   }
 
   global.assert_equals = function (actual, expected, description) {
-    if (actual !== expected) {
+    if (!Object.is(actual, expected)) {
       fail("expected " + format(expected) + " but got " + format(actual), description);
     }
   };
@@ -153,6 +154,22 @@
     }
     fail("did not throw", description);
   };
+  global.promise_rejects_dom = function (_, name, promise, description) {
+    return Promise.resolve(promise).then(function () {
+      fail("did not reject", description);
+    }, function (error) {
+      if (!(error instanceof DOMException) || error.name !== name) {
+        fail("expected DOMException " + name + " but got " + error, description);
+      }
+    });
+  };
+  global.promise_rejects_exactly = function (_, expected, promise, description) {
+    return Promise.resolve(promise).then(function () {
+      fail("did not reject", description);
+    }, function (error) {
+      if (error !== expected) fail("rejected with a different value", description);
+    });
+  };
   // The overload used by the adopted WebCrypto tests. Preserve upstream's
   // constructor, name, code, quota and requested checks.
   global.assert_throws_quotaexceedederror = function (fn, requested, quota, description) {
@@ -193,5 +210,6 @@
   global.__ibex2_reset_results = function () {
     results = [];
     outstandingPromiseTests = 0;
+    promiseTestTail = Promise.resolve();
   };
 })(globalThis);

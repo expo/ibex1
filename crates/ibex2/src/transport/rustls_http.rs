@@ -108,6 +108,12 @@ impl Default for RustlsHttpTransport {
         Self::new()
     }
 }
+/// Whether a request needs the TLS-capable agent (with the system roots): its
+/// target is HTTPS, or the environment's proxy is reached over TLS.
+fn needs_tls(target_https: bool, proxy: Option<&ureq::Proxy>) -> bool {
+    target_https || proxy.is_some_and(|proxy| proxy.protocol() == ureq::ProxyProtocol::Https)
+}
+
 fn agent_config(tls: bool) -> ureq::config::Config {
     let builder = ureq::Agent::config_builder()
         .max_redirects(0)
@@ -434,8 +440,16 @@ impl Transport for RustlsHttpTransport {
             .map_err(failed)?;
         // Plain HTTP agents stay separate so creating or using one does not
         // initialize the process TLS config. An HTTPS request initializes it
-        // before constructing the first TLS-capable agent.
-        let lease = self.lease(signal, req.uri().scheme_str() == Some("https"));
+        // before constructing the first TLS-capable agent, and so does a plain
+        // request through an HTTPS proxy: ureq speaks TLS to that proxy, whose
+        // certificate may be trusted only by the system store.
+        let lease = self.lease(
+            signal,
+            needs_tls(
+                req.uri().scheme_str() == Some("https"),
+                ureq::Proxy::try_from_env().as_ref(),
+            ),
+        );
         let result = lease.slot.as_ref().unwrap().agent.run(req);
         signal.check()?;
         let response = result.map_err(failed)?;
@@ -502,5 +516,21 @@ mod tests {
             assert_eq!(roots, Roots::CompiledIn);
             assert!(matches!(tls.root_certs(), ureq::tls::RootCerts::WebPki));
         }
+    }
+}
+
+#[cfg(test)]
+mod tls_selection_tests {
+    use super::needs_tls;
+
+    #[test]
+    fn a_plain_request_through_an_https_proxy_uses_the_tls_agent() {
+        let https_proxy = ureq::Proxy::new("https://proxy.corp:443").unwrap();
+        let http_proxy = ureq::Proxy::new("http://proxy.corp:3128").unwrap();
+        assert!(needs_tls(false, Some(&https_proxy)));
+        assert!(!needs_tls(false, Some(&http_proxy)));
+        assert!(!needs_tls(false, None));
+        assert!(needs_tls(true, None));
+        assert!(needs_tls(true, Some(&http_proxy)));
     }
 }

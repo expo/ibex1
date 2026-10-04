@@ -2,6 +2,7 @@
 // escape these closures: neither readers nor signals can forge network authority.
 (function (global) {
   "use strict";
+  var brand = global.__ibex2_brand || function (value) { return value; };
   var field = global.__ibex2_response_field;
   var readBody = global.__ibex2_response_read;
   var control = global.__ibex2_fetch_control;
@@ -53,6 +54,7 @@
     if (state.reader) throw new TypeError("body is locked");
     var reader = Object.create(ResponseBodyReader.prototype), closed = deferred();
     readers.set(reader, { state: state, closed: closed, pending: [] });
+    brand(reader, "ResponseBodyReader");
     state.reader = reader;
     if (state.terminal) { if (state.failed) closed.reject(state.error); else closed.resolve(); }
     return reader;
@@ -135,6 +137,8 @@
       redirected: field(handle, 5), headers: new Headers(JSON.parse(field(handle, 7))) };
     responses.set(result, state);
     streams.set(body, state);
+    brand(result, "Response");
+    brand(body, "ResponseBody");
     var weakBody = retain(handle, body);
     if (method.toUpperCase() === "HEAD" || state.status === 204 || state.status === 205 || state.status === 304) {
       state.body = null;
@@ -300,6 +304,7 @@
       throw error;
     }
     requests.set(this, { url: url, method: method, redirect: redirect, signal: signal, headers: headers, body: body });
+    brand(this, "Request");
   }
   ["url", "method", "redirect", "signal", "headers"].forEach(function (name) {
     Object.defineProperty(Request.prototype, name, { get: function () { return own(requests, this, "Request")[name]; }, enumerable: true });

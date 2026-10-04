@@ -5,6 +5,8 @@
 (function (global) {
   "use strict";
 
+  var brand = global.__ibex2_brand || function (value) { return value; };
+
   // Capture every intrinsic the implementation calls. Application code may
   // replace prototype methods after bootstrap without reaching private bytes
   // or changing the result of an already-installed binding.
@@ -228,11 +230,19 @@
       throw new TypeErrorCtor("Blob endings 'native' is not supported; use 'transparent'");
     }
     if (endings !== "transparent") throw new TypeErrorCtor("invalid Blob endings value");
-    set(blobs, object, {
+    installBlobState(object, {
       bytes: bytes,
       size: call(arrayBufferLength, bytes, []),
       type: normalizedType(options.type)
     });
+  }
+
+  function installBlobState(object, state) {
+    set(blobs, object, state);
+    brand(object, "Blob", {
+      clone: function () { return trustedBlobState(state); }
+    });
+    return object;
   }
 
   function Blob() {
@@ -282,15 +292,31 @@
     value: "Blob",
     configurable: true
   });
+  var BlobPrototype = Blob.prototype;
 
   function trustedBlob(bytes, type) {
-    var blob = ObjectCreate(Blob.prototype);
-    set(blobs, blob, {
+    return trustedBlobState({
       bytes: bytes,
       size: call(arrayBufferLength, bytes, []),
       type: normalizedType(type)
     });
-    return blob;
+  }
+
+  function trustedBlobState(state) {
+    return installBlobState(ObjectCreate(BlobPrototype), state);
+  }
+
+  function installFileState(object, blobState, fileState) {
+    set(blobs, object, blobState);
+    set(files, object, fileState);
+    brand(object, "File", {
+      clone: function () { return trustedFileState(blobState, fileState); }
+    });
+    return object;
+  }
+
+  function trustedFileState(blobState, fileState) {
+    return installFileState(ObjectCreate(FilePrototype), blobState, fileState);
   }
 
   function initializeFile(object, parts, name, options) {
@@ -311,12 +337,12 @@
     var lastModifiedValue = options.lastModified;
     var lastModified = lastModifiedValue === undefined ? DateNow() : longLong(lastModifiedValue);
     var type = normalizedType(options.type);
-    set(blobs, object, {
+    var blobState = {
       bytes: bytes,
       size: call(arrayBufferLength, bytes, []),
       type: type
-    });
-    set(files, object, { name: name, lastModified: lastModified });
+    };
+    installFileState(object, blobState, { name: name, lastModified: lastModified });
   }
 
   function File(parts, name) {
@@ -347,17 +373,15 @@
     value: "File",
     configurable: true
   });
+  var FilePrototype = File.prototype;
 
   function fileFromBlob(blob, name) {
     var state = requireBrand(blobs, blob, "Blob");
     var sourceFile = get(files, blob);
-    var file = ObjectCreate(File.prototype);
-    set(blobs, file, state);
-    set(files, file, {
+    return installFileState(ObjectCreate(File.prototype), state, {
       name: usv(name),
       lastModified: sourceFile ? sourceFile.lastModified : DateNow()
     });
-    return file;
   }
 
   function formEntry(name, value, filename, filenameGiven) {
@@ -379,6 +403,7 @@
       throw new TypeErrorCtor("FormData from an HTML form is not supported without a DOM");
     }
     set(forms, this, []);
+    brand(this, "FormData");
   }
 
   FormData.prototype.append = function (name, value, filename) {
@@ -456,6 +481,7 @@
     requireBrand(forms, form, "FormData");
     var iterator = ObjectCreate(FormDataIteratorPrototype);
     set(formIterators, iterator, { form: form, kind: kind, index: 0 });
+    brand(iterator, "FormDataIterator");
     return iterator;
   }
 

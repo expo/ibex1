@@ -124,6 +124,7 @@ fn all_groups_preserve_the_shipping_global_insertion_order() {
             "FormData",
             "Request",
             "Response",
+            "structuredClone",
         ]
     );
 }
