@@ -235,12 +235,16 @@
       try {
         if (arguments.length === 0) throw new TypeError("fetch expects a URL");
         var request = new Request(input, init);
-        var state = requests.get(request), signal = state.signal;
-        if (signal != null && abort.own(signal).aborted) return Promise.reject(abort.own(signal).reason);
+        var state = requests.get(request);
+        // Request construction has already allocated this one-shot snapshot.
+        // Publish it to the common cleanup path before signal validation or
+        // the pre-abort check can throw or reject.
+        headers = state.headers;
+        var signal = state.signal;
+        if (signal != null && abort.own(signal).aborted) throw abort.own(signal).reason;
         var url = state.url, method = state.method, body = state.body, redirect = state.redirect;
         // `request` is an internal one-shot snapshot. Passing its own Headers
         // handle avoids a second clone; every exit below frees this handle.
-        headers = state.headers;
         token = control(0);
         if (signal != null) unsubscribe = abort.subscribe(signal, function () { control(1, token); });
         return raw(url, method, body, redirect, headers._handle, token).then(function (handle) {
