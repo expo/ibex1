@@ -139,8 +139,9 @@ fn no_capability_is_reachable_from_the_global_object() {
     p.file("index.js", "");
     let mut rt = Hermes::new(DynamicCode::Closed).expect("runtime");
     let baseline: std::collections::BTreeSet<String> = rt.global_names().into_iter().collect();
-    assert!(rt.install_stdlib());
-    rt.install_bindings().expect("bindings");
+    let context = ibex2::bindings::Context::new(ibex2::grant::GrantSet::none());
+    rt.install_runtime(ibex2::bindings::Groups::DEFAULT, &context)
+        .expect("bindings");
     rt.set_loader(Root::Declared(p.0.clone()), ModuleGrants::none())
         .expect("loader");
 
@@ -823,8 +824,9 @@ fn a_manifest_built_for_another_engine_is_refused_under_precompiled() {
     manifest.write(&cache).unwrap();
 
     let mut rt = Hermes::new(DynamicCode::Closed).expect("runtime");
-    assert!(rt.install_stdlib());
-    rt.install_bindings().expect("bindings");
+    let context = ibex2::bindings::Context::new(ibex2::grant::GrantSet::none());
+    rt.install_runtime(ibex2::bindings::Groups::DEFAULT, &context)
+        .expect("bindings");
     let err = rt
         .set_loader_with(
             Root::Declared(p.0.clone()),

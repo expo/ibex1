@@ -7,6 +7,13 @@
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::time::{Duration, Instant};
 
+#[repr(C)]
+struct CompiledScript {
+    name: *const c_char,
+    bytes: *const u8,
+    len: usize,
+}
+
 // RuntimeState crosses as an opaque pointer that only Rust ever dereferences;
 // the C++ side treats it as `const void *`. clippy's improper_ctypes fires on
 // the type name rather than on the usage.
@@ -31,6 +38,14 @@ extern "C" {
     ) -> c_int;
     fn ibex2_hermes_free_string(value: *mut c_char);
     fn ibex2_hermes_install_stdlib(handle: *mut c_void) -> c_int;
+    fn ibex2_hermes_install_groups(
+        handle: *mut c_void,
+        groups: u16,
+        grants: *const c_void,
+        scripts: *const CompiledScript,
+        script_count: usize,
+        out_error: *mut *mut c_char,
+    ) -> c_int;
     fn ibex2_hermes_pump(handle: *mut c_void, out_ran: *mut c_int) -> c_int;
     fn ibex2_hermes_collect_garbage(handle: *mut c_void) -> c_int;
     fn ibex2_hermes_drain_microtasks(handle: *mut c_void, out: *mut *mut c_char) -> c_int;
@@ -50,6 +65,7 @@ extern "C" {
         len: usize,
     ) -> c_int;
     fn ibex2_hermes_accept_intl_intrinsics(handle: *mut c_void) -> c_int;
+    #[cfg(target_os = "linux")]
     fn ibex2_hermes_install_intl_datetime(
         handle: *mut c_void,
         bytes: *const u8,
@@ -109,6 +125,7 @@ pub enum DynamicCode {
 /// A vanilla Hermes runtime.
 pub struct Hermes {
     handle: *mut c_void,
+    installed_groups: Option<crate::bindings::Groups>,
     /// The armed deadline as this side handed it over. The engine holds the
     /// same point on its own clock and is what stops JavaScript; this copy
     /// is what the helpers that block *between* entrances cap their waits
@@ -159,6 +176,64 @@ fn checked(status: c_int, out: *mut c_char, entrance: &str) -> Result<String, Js
     }
 }
 
+fn compiled_binding(name: &str) -> CompiledScript {
+    let (name, bytes): (&'static [u8], &'static [u8]) = match name {
+        "headers" => (
+            b"headers\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/headers.hbc")),
+        ),
+        "timers" => (
+            b"timers\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/timers.hbc")),
+        ),
+        "url" => (
+            b"url\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/url.hbc")),
+        ),
+        "domexception" => (
+            b"domexception\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/domexception.hbc")),
+        ),
+        "crypto" => (
+            b"crypto\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/crypto.hbc")),
+        ),
+        "abort" => (
+            b"abort\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/abort.hbc")),
+        ),
+        "fetch" => (
+            b"fetch\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/fetch.hbc")),
+        ),
+        "sqlite" => (
+            b"sqlite\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/sqlite.hbc")),
+        ),
+        #[cfg(target_os = "linux")]
+        "intl_number_format" => (
+            b"intl_number_format\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/intl_number_format.hbc")),
+        ),
+        #[cfg(target_os = "linux")]
+        "intl_case" => (
+            b"intl_case\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/intl_case.hbc")),
+        ),
+        #[cfg(target_os = "linux")]
+        "intl_datetime" => (
+            b"intl_datetime\0",
+            include_bytes!(concat!(env!("OUT_DIR"), "/intl_datetime.hbc")),
+        ),
+        _ => unreachable!("bindings::scripts returned an unknown binding"),
+    };
+    CompiledScript {
+        name: name.as_ptr().cast(),
+        bytes: bytes.as_ptr(),
+        len: bytes.len(),
+    }
+}
+
 impl Hermes {
     /// Configure stable app mounts before evaluating application modules.
     pub fn set_app_directories(
@@ -192,6 +267,7 @@ impl Hermes {
         }
         Some(Self {
             handle,
+            installed_groups: None,
             deadline: None,
         })
     }
@@ -272,6 +348,68 @@ impl Hermes {
         let whole = u64::try_from(left.as_millis()).unwrap_or(u64::MAX);
         let ceil = whole.saturating_add(u64::from(left.subsec_nanos() % 1_000_000 != 0));
         millis.min(ceil)
+    }
+
+    /// Install named bindings into this runtime through the caller-owned JSI
+    /// adapter. `context` is the library authority captured by global
+    /// capability values; the adapter never parses a grant or infers one.
+    ///
+    /// The bytecode is compiled by `build.rs` with this engine's `hermesc` and
+    /// is passed in exactly [`crate::bindings::scripts`] order. This call does
+    /// not run a checkpoint, task, timer, or wait.
+    // @ref LLP 0057.000#50-three-doors-one-implementation — the runtime calls the same bindings door an embedder calls
+    pub fn install(
+        &mut self,
+        groups: crate::bindings::Groups,
+        context: &crate::bindings::Context,
+    ) -> Result<(), JsError> {
+        if self.installed_groups.is_some() {
+            return Err(JsError::Thrown(
+                "the Ibex2 binding groups are already installed".into(),
+            ));
+        }
+        let scripts =
+            crate::bindings::scripts(groups).map_err(|error| JsError::Thrown(error.to_string()))?;
+        let compiled: Vec<_> = scripts
+            .into_iter()
+            .map(|(name, _)| compiled_binding(name))
+            .collect();
+        let mut out: *mut c_char = std::ptr::null_mut();
+        // SAFETY: the runtime is live; every byte/name span is static and the
+        // context's Arc-backed grant pointer is retained by endowed bindings.
+        let status = unsafe {
+            ibex2_hermes_install_groups(
+                self.handle,
+                groups.bits(),
+                context.grants_ptr(),
+                compiled.as_ptr(),
+                compiled.len(),
+                &mut out,
+            )
+        };
+        if status != 0 {
+            return Err(JsError::Thrown(
+                take_c_string(out).unwrap_or_else(|| "could not install Ibex2 bindings".into()),
+            ));
+        }
+        self.installed_groups = Some(groups);
+        Ok(())
+    }
+
+    /// Runtime bootstrap: install the loader's ESM helpers, then call the
+    /// engine-independent bindings door. The helpers are runtime machinery,
+    /// not a bindings group, and remain absent from caller-owned runtimes.
+    pub fn install_runtime(
+        &mut self,
+        groups: crate::bindings::Groups,
+        context: &crate::bindings::Context,
+    ) -> Result<(), JsError> {
+        self.eval_bytes(include_bytes!(concat!(env!("OUT_DIR"), "/esm.hbc")))?;
+        self.install(groups, context)
+    }
+
+    pub fn installed_groups(&self) -> Option<crate::bindings::Groups> {
+        self.installed_groups
     }
 
     /// Evaluate the JavaScript binding preludes that SHIP.

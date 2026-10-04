@@ -66,6 +66,7 @@ struct Ibex2Runtime {
   // Hermes's own (hermes-interfaces.h), reached through HermesRuntime.
   std::unique_ptr<facebook::hermes::HermesRuntime> runtime;
   std::unique_ptr<Adapter> bindings;
+  Groups groups = 0;
   // This runtime's own completion queue. Per-runtime so two runtimes in one
   // process cannot take each other's completions (task::Pump C5).
   const void *queue = nullptr;
@@ -770,18 +771,33 @@ std::shared_ptr<jsi::Value> load_module(jsi::Runtime &rt, Ibex2Runtime *owner,
       owner->module_grants.push_back(grants);
     }
 
-    jsi::Value fetch_binding = jsi::Value(
-        rt, make_async_binding(rt, "fetch", 101, owner, grants));
-    if (owner->make_fetch.isObject() &&
-        owner->make_fetch.getObject(rt).isFunction(rt)) {
-      fetch_binding = owner->make_fetch.getObject(rt).getFunction(rt).call(
-          rt, std::move(fetch_binding));
+    jsi::Value fetch_binding = jsi::Value::undefined();
+    if ((owner->groups & GROUP_FETCH) != 0) {
+      fetch_binding = jsi::Value(rt, owner->bindings->fetch(grants));
+    } else if (owner->groups == 0) {
+      // Compatibility path for the pre-groups test API.
+      fetch_binding = jsi::Value(
+          rt, make_async_binding(rt, "fetch", 101, owner, grants));
+      if (owner->make_fetch.isObject() &&
+          owner->make_fetch.getObject(rt).isFunction(rt)) {
+        fetch_binding = owner->make_fetch.getObject(rt).getFunction(rt).call(
+            rt, std::move(fetch_binding));
+      }
     }
 
-    auto storage = owner->bindings->storage(
-        grants, owner->make_sqlite.getObject(rt).getFunction(rt));
-    auto fs = storage.getPropertyAsObject(rt, "fs");
-    auto sqlite_binding = storage.getProperty(rt, "sqlite");
+    jsi::Value fs_value = jsi::Value::undefined();
+    jsi::Value sqlite_binding = jsi::Value::undefined();
+    if ((owner->groups & GROUP_STORAGE) != 0) {
+      auto storage = owner->bindings->storage(grants);
+      fs_value = storage.getProperty(rt, "fs");
+      sqlite_binding = storage.getProperty(rt, "sqlite");
+    } else if (owner->groups == 0 && owner->make_sqlite.isObject() &&
+               owner->make_sqlite.getObject(rt).isFunction(rt)) {
+      auto storage = owner->bindings->storage(
+          grants, owner->make_sqlite.getObject(rt).getFunction(rt));
+      fs_value = storage.getProperty(rt, "fs");
+      sqlite_binding = storage.getProperty(rt, "sqlite");
+    }
 
     // `process.env` is a SNAPSHOT of exactly the variables this grant set
     // names (LLP 0059.000 §3.8), not a live proxy and not the real
@@ -790,29 +806,31 @@ std::shared_ptr<jsi::Value> load_module(jsi::Runtime &rt, Ibex2Runtime *owner,
     // object. That is the whole capability model in one object — a package
     // reading AWS_SECRET_ACCESS_KEY finds undefined unless someone said
     // otherwise.
-    jsi::Object process(rt);
-    jsi::Object env(rt);
-    size_t env_count = ibex2_grants_env_count(grants);
-    for (size_t i = 0; i < env_count; ++i) {
-      char *name = nullptr;
-      char *value = nullptr;
-      if (ibex2_grants_env_at(grants, i, &name, &value) == 0) {
-        continue;
+    jsi::Value process_value = jsi::Value::undefined();
+    if ((owner->groups & GROUP_ENV) != 0 || owner->groups == 0) {
+      jsi::Object process(rt);
+      jsi::Object env(rt);
+      size_t env_count = ibex2_grants_env_count(grants);
+      for (size_t i = 0; i < env_count; ++i) {
+        char *name = nullptr;
+        char *value = nullptr;
+        if (ibex2_grants_env_at(grants, i, &name, &value) == 0) {
+          continue;
+        }
+        env.setProperty(rt, jsi::PropNameID::forUtf8(rt, std::string(name)),
+                        jsi::String::createFromUtf8(rt, std::string(value)));
+        ibex2_string_free(name);
+        ibex2_string_free(value);
       }
-      env.setProperty(rt, jsi::PropNameID::forUtf8(rt, std::string(name)),
-                      jsi::String::createFromUtf8(rt, std::string(value)));
-      ibex2_string_free(name);
-      ibex2_string_free(value);
+      jsi::Value env_value(rt, env);
+      freeze(rt, env_value);
+      process.setProperty(rt, jsi::PropNameID::forAscii(rt, "env"), env_value);
+      process_value = jsi::Value(rt, process);
     }
-    jsi::Value env_value(rt, env);
-    freeze(rt, env_value);
-    process.setProperty(rt, jsi::PropNameID::forAscii(rt, "env"), env_value);
 
-    jsi::Value fs_value(rt, fs);
-    jsi::Value process_value(rt, process);
-    freeze(rt, fs_value);
-    freeze(rt, process_value);
-    freeze(rt, fetch_binding);
+    if (fs_value.isObject()) freeze(rt, fs_value);
+    if (process_value.isObject()) freeze(rt, process_value);
+    if (fetch_binding.isObject()) freeze(rt, fetch_binding);
     shared = owner->shared
                  .emplace(grants, Ibex2Runtime::SharedBindings{
                                       std::move(fetch_binding),
@@ -992,6 +1010,39 @@ int ibex2_hermes_clear_deadline(void *handle) {
 } // extern "C"
 
 extern "C" {
+
+/// Install the selected bindings through the engine-independent JSI adapter.
+/// Runtime-only bootstrap consumes endowed capability globals before any
+/// module runs; their factories remain in Adapter for per-module authority.
+int ibex2_hermes_install_groups(void *handle, uint16_t groups,
+                                const void *grants,
+                                const CompiledScript *scripts,
+                                size_t script_count, char **out_error) {
+  auto *rt = static_cast<Ibex2Runtime *>(handle);
+  if (rt == nullptr || rt->runtime == nullptr || rt->bindings == nullptr)
+    return 1;
+  try {
+    auto &runtime = *rt->runtime;
+    rt->bindings->install(groups, grants, scripts, script_count);
+    auto global = runtime.global();
+    auto remove = [&](const char *name) {
+      runtime.global().getPropertyAsObject(runtime, "Reflect")
+          .getPropertyAsFunction(runtime, "deleteProperty")
+          .call(runtime, global, jsi::String::createFromUtf8(runtime, name));
+    };
+    if ((groups & GROUP_FETCH) != 0) remove("fetch");
+    if ((groups & GROUP_STORAGE) != 0) {
+      remove("fs");
+      remove("sqlite");
+    }
+    if ((groups & GROUP_ENV) != 0) remove("process");
+    rt->groups = groups;
+    return 0;
+  } catch (const std::exception &error) {
+    if (out_error != nullptr) *out_error = dup_c_string(error.what());
+    return 1;
+  }
+}
 
 /// Install `fetch`, bound to the grants it will carry for its whole lifetime.
 ///

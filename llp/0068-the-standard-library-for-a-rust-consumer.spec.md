@@ -145,6 +145,10 @@ The pre-existing `Adapter` constructor, `set_binding`, `async_binding`,
 `storage`, `settle`, and `deliver_one` remain source-compatible for Exact2's
 current storage embedder. `storage` still returns frozen `{fs, sqlite}` and
 modifies no globals; `install` is the additive whole-surface door.
+`Hermes::install_runtime(groups, &context)` installs its runtime-only ESM
+prelude and then calls this same `Adapter::install`; the module loader asks the
+adapter's retained factories for per-module endowed values and removes the
+temporary capability globals before project code.
 
 Implemented 2026-09-07 (Charlie: make the bindings available in Rust and
 TypeScript; Codex). `ibex2::bindings::Context` supplies a separate Rust state

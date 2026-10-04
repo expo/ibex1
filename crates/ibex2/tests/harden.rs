@@ -4,10 +4,15 @@
 
 use ibex2::engine::hermes::{DynamicCode, Hermes};
 
+fn install_runtime(rt: &mut Hermes) {
+    let context = ibex2::bindings::Context::new(ibex2::grant::GrantSet::none());
+    rt.install_runtime(ibex2::bindings::Groups::DEFAULT, &context)
+        .expect("bindings");
+}
+
 fn hardened() -> Hermes {
     let mut rt = Hermes::new(DynamicCode::Closed).expect("runtime");
-    assert!(rt.install_stdlib());
-    rt.install_bindings().expect("bindings");
+    install_runtime(&mut rt);
     rt.harden().expect("harden");
     rt
 }
@@ -117,8 +122,7 @@ fn the_freeze_stays_within_its_budget() {
     let mut samples: Vec<f64> = (0..20)
         .map(|_| {
             let mut rt = Hermes::new(DynamicCode::Closed).expect("runtime");
-            assert!(rt.install_stdlib());
-            rt.install_bindings().expect("bindings");
+            install_runtime(&mut rt);
             let t = std::time::Instant::now();
             rt.harden().expect("harden");
             t.elapsed().as_secs_f64() * 1000.0
@@ -142,8 +146,7 @@ fn the_freeze_stays_within_its_budget() {
 fn the_global_object_carries_exactly_the_allowed_names() {
     let mut rt = Hermes::new(DynamicCode::Closed).expect("runtime");
     let baseline: std::collections::BTreeSet<String> = rt.global_names().into_iter().collect();
-    assert!(rt.install_stdlib());
-    rt.install_bindings().expect("bindings");
+    install_runtime(&mut rt);
     rt.harden().expect("harden");
     let added: std::collections::BTreeSet<String> = rt
         .global_names()

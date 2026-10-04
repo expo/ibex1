@@ -84,6 +84,9 @@ public:
   void install(Groups groups, const void* grants,
                const CompiledScript* scripts, size_t script_count);
   jsi::Function async_binding(const char* name, uint32_t op, const void* grants);
+  // Endowed values built from the factories retained by install().
+  jsi::Function fetch(const void* grants);
+  jsi::Object storage(const void* grants);
   // sqlite_factory is the completion value of precompiled bindings/sqlite.js.
   // This returns frozen {fs, sqlite}; it never modifies the global object.
   jsi::Object storage(const void* grants, const jsi::Function& sqlite_factory);

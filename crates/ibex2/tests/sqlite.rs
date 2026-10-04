@@ -21,8 +21,10 @@ fn runtime(
         std::fs::create_dir_all(path).unwrap();
     }
     let mut runtime = Hermes::new(DynamicCode::Closed).unwrap();
-    assert!(runtime.install_stdlib());
-    runtime.install_bindings().unwrap();
+    let context = ibex2::bindings::Context::new(ibex2::grant::GrantSet::none());
+    runtime
+        .install_runtime(ibex2::bindings::Groups::DEFAULT, &context)
+        .unwrap();
     runtime
         .set_app_directories(AppDirectories::new(data, cache, temporary).unwrap())
         .unwrap();
@@ -65,8 +67,10 @@ fn sqlite_refuses_tampering_with_an_admitted_intl_intrinsic() {
         std::fs::create_dir_all(path).unwrap();
     }
     let mut runtime = Hermes::new(DynamicCode::Closed).unwrap();
-    assert!(runtime.install_stdlib());
-    runtime.install_bindings().unwrap();
+    let context = ibex2::bindings::Context::new(ibex2::grant::GrantSet::none());
+    runtime
+        .install_runtime(ibex2::bindings::Groups::DEFAULT, &context)
+        .unwrap();
     // Linux trusted bootstrap replaces this exact method and narrowly updates
     // SQLite's construction-time integrity snapshot. A later replacement must
     // still be refused after freezing; admitting the name is not a whitelist.

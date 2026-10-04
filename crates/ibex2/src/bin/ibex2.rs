@@ -433,10 +433,10 @@ fn run(
     // ours: the baseline R5 subtracts. Everything else must be in
     // ALLOWED_GLOBALS by name — no prefix, no "looks like an intrinsic".
     let baseline: std::collections::BTreeSet<String> = rt.global_names().into_iter().collect();
-    if !rt.install_stdlib() {
-        return Err("could not install the standard library".into());
-    }
-    rt.install_bindings().map_err(|e| e.to_string())?;
+    let groups = ibex2::bindings::Groups::DEFAULT;
+    let context = ibex2::bindings::Context::new(ibex2::grant::GrantSet::none());
+    rt.install_runtime(groups, &context)
+        .map_err(|e| e.to_string())?;
     let compiler = if compile || precompiled_only {
         match compiler_for_run(&root, precompiled_only) {
             Ok(compiler) => Some(compiler),

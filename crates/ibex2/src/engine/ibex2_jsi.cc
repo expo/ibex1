@@ -624,11 +624,10 @@ void Adapter::install(Groups groups, const void* grants,
   }
 #endif
 
+  state_->groups = groups;
   auto global = rt.global();
   if (has(groups, GROUP_FETCH)) {
-    auto raw = async_binding("fetch", 101, grants);
-    auto fetch = state_->fetch_factory.getObject(rt).getFunction(rt).call(rt, raw);
-    global.setProperty(rt, "fetch", std::move(fetch));
+    global.setProperty(rt, "fetch", fetch(grants));
   } else if (has(groups, GROUP_PURE)) {
     for (const char* name : {"__ibex2_headers_free", "__ibex2_text_encode",
                              "__ibex2_text_decode", "__ibex2_text_encode_into"})
@@ -637,15 +636,13 @@ void Adapter::install(Groups groups, const void* grants,
   if (has(groups, GROUP_ABORT) && !has(groups, GROUP_FETCH))
     remove_global(rt, global, "__ibex2_abort");
   if (has(groups, GROUP_STORAGE)) {
-    auto storage_value = storage(
-        grants, state_->sqlite_factory.getObject(rt).getFunction(rt));
+    auto storage_value = storage(grants);
     global.setProperty(rt, "fs", storage_value.getProperty(rt, "fs"));
     global.setProperty(rt, "sqlite", storage_value.getProperty(rt, "sqlite"));
   }
   if (has(groups, GROUP_ENV))
     global.setProperty(rt, "process", make_process(rt, grants));
 
-  state_->groups = groups;
   state_->installed = true;
 }
 
@@ -722,6 +719,28 @@ jsi::Function Adapter::async_binding(const char* name, uint32_t op, const void* 
         if (op == 113 || op == 116) return filesystem_promise(r, std::move(promise), op);
         return promise;
       });
+}
+
+jsi::Function Adapter::fetch(const void* grants) {
+  if (!runtime_) throw std::logic_error("Ibex2 bindings are detached");
+  auto& rt = *runtime_;
+  state_->require(rt);
+  if (!has(state_->groups, GROUP_FETCH) || !state_->fetch_factory.isObject() ||
+      !state_->fetch_factory.getObject(rt).isFunction(rt))
+    throw std::logic_error("Ibex2 FETCH group is not installed");
+  auto raw = async_binding("fetch", 101, grants);
+  return state_->fetch_factory.getObject(rt).getFunction(rt)
+      .call(rt, raw).getObject(rt).getFunction(rt);
+}
+
+jsi::Object Adapter::storage(const void* grants) {
+  if (!runtime_) throw std::logic_error("Ibex2 bindings are detached");
+  auto& rt = *runtime_;
+  state_->require(rt);
+  if (!has(state_->groups, GROUP_STORAGE) || !state_->sqlite_factory.isObject() ||
+      !state_->sqlite_factory.getObject(rt).isFunction(rt))
+    throw std::logic_error("Ibex2 STORAGE group is not installed");
+  return storage(grants, state_->sqlite_factory.getObject(rt).getFunction(rt));
 }
 
 namespace {
