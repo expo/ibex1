@@ -61,6 +61,38 @@ fn boot() -> Phases {
     }
 }
 
+fn groups_without_events() -> ibex2::bindings::Groups {
+    use ibex2::bindings::Groups;
+    let groups = Groups::PURE
+        | Groups::CONSOLE
+        | Groups::TIMERS
+        | Groups::ABORT
+        | Groups::CRYPTO
+        | Groups::FETCH
+        | Groups::STORAGE
+        | Groups::ENV
+        | Groups::SECRETS
+        | Groups::KV;
+    #[cfg(target_os = "linux")]
+    let groups = groups | Groups::INTL;
+    groups
+}
+
+fn post_create_floor(groups: ibex2::bindings::Groups) -> Duration {
+    let mut rt = Hermes::new(DynamicCode::Closed).expect("runtime");
+    let t = Instant::now();
+    let context = ibex2::bindings::Context::new(ibex2::grant::GrantSet::none());
+    rt.install_runtime(groups, &context).expect("bindings");
+    rt.harden().expect("harden");
+    rt.eval("1 + 1").expect("first eval");
+    t.elapsed()
+}
+
+fn median(mut values: Vec<f64>) -> f64 {
+    values.sort_by(|a, b| a.partial_cmp(b).expect("finite measurement"));
+    values[values.len() / 2]
+}
+
 #[test]
 #[ignore]
 fn boot_floor() {
@@ -148,4 +180,41 @@ fn boot_floor() {
     println!("  same phase on the same machine. Take the MINIMUM over several fresh");
     println!("  processes as the estimate, and run it on a quiet machine. The first");
     println!("  run after a link is always an outlier: the binary's pages are cold.");
+}
+
+/// The D5 family delta, paired inside one process to remove runtime creation
+/// and most machine-load noise. Diagnostic only, like the other cost tests.
+#[test]
+#[ignore]
+fn event_group_floor_delta() {
+    let with = ibex2::bindings::Groups::DEFAULT;
+    let without = groups_without_events();
+    assert_eq!(
+        with.bits() & !ibex2::bindings::Groups::EVENTS.bits(),
+        without.bits()
+    );
+
+    let _ = post_create_floor(without);
+    let _ = post_create_floor(with);
+    let mut with_samples = Vec::new();
+    let mut without_samples = Vec::new();
+    let mut paired_deltas = Vec::new();
+    for index in 0..101 {
+        let (without_elapsed, with_elapsed) = if index % 2 == 0 {
+            (post_create_floor(without), post_create_floor(with))
+        } else {
+            let with_elapsed = post_create_floor(with);
+            (post_create_floor(without), with_elapsed)
+        };
+        let without_us = without_elapsed.as_secs_f64() * 1_000_000.0;
+        let with_us = with_elapsed.as_secs_f64() * 1_000_000.0;
+        without_samples.push(without_us);
+        with_samples.push(with_us);
+        paired_deltas.push(with_us - without_us);
+    }
+
+    println!("\n=== EVENTS incremental boot floor (release) ===");
+    println!("  without EVENTS: {:.1} us", median(without_samples));
+    println!("  with EVENTS:    {:.1} us", median(with_samples));
+    println!("  paired delta:   {:+.1} us", median(paired_deltas));
 }
