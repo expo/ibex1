@@ -207,7 +207,13 @@
     var redirect = init.redirect === undefined ? (inherited ? inherited.redirect : "follow") : String(init.redirect);
     var signal = init.signal === undefined ? (inherited ? inherited.signal : undefined) : init.signal;
     var headers = new Headers(init.headers === undefined && inherited ? inherited.headers : init.headers);
-    var body = init.body === undefined && inherited ? inherited.body : convertBody(init.body, headers);
+    var body;
+    try {
+      body = init.body === undefined && inherited ? inherited.body : convertBody(init.body, headers);
+    } catch (error) {
+      freeHeaders(headers._handle);
+      throw error;
+    }
     requests.set(this, { url: url, method: method, redirect: redirect, signal: signal, headers: headers, body: body });
   }
   ["url", "method", "redirect", "signal", "headers"].forEach(function (name) {
@@ -232,7 +238,9 @@
         var state = requests.get(request), signal = state.signal;
         if (signal != null && abort.own(signal).aborted) return Promise.reject(abort.own(signal).reason);
         var url = state.url, method = state.method, body = state.body, redirect = state.redirect;
-        headers = new Headers(state.headers);
+        // `request` is an internal one-shot snapshot. Passing its own Headers
+        // handle avoids a second clone; every exit below frees this handle.
+        headers = state.headers;
         token = control(0);
         if (signal != null) unsubscribe = abort.subscribe(signal, function () { control(1, token); });
         return raw(url, method, body, redirect, headers._handle, token).then(function (handle) {
